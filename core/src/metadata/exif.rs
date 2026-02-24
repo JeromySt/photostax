@@ -1,3 +1,49 @@
+//! EXIF metadata reading from JPEG and TIFF images.
+//!
+//! This module provides functions to extract EXIF (Exchangeable Image File Format)
+//! metadata from image files. EXIF data contains camera/scanner settings, timestamps,
+//! and other technical information embedded in image files.
+//!
+//! ## Standard Tags Extracted
+//!
+//! The [`read_exif_tags`] function extracts these commonly-used tags:
+//!
+//! | Tag | Description |
+//! |-----|-------------|
+//! | `ImageDescription` | Description of the image |
+//! | `Make` | Camera/scanner manufacturer |
+//! | `Model` | Camera/scanner model |
+//! | `Orientation` | Image orientation |
+//! | `DateTime` | File modification time |
+//! | `DateTimeOriginal` | Original capture time |
+//! | `DateTimeDigitized` | Digitization time |
+//! | `ExposureTime` | Exposure duration |
+//! | `FNumber` | F-stop number |
+//! | `ISOSpeed` | ISO sensitivity |
+//! | `FocalLength` | Lens focal length |
+//! | `ImageWidth` | Image width in pixels |
+//! | `ImageLength` | Image height in pixels |
+//! | `Artist` | Image creator |
+//! | `Copyright` | Copyright notice |
+//! | `GPSLatitude` | GPS latitude |
+//! | `GPSLongitude` | GPS longitude |
+//! | `XResolution` | Horizontal resolution |
+//! | `YResolution` | Vertical resolution |
+//! | `Software` | Software used |
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::metadata::exif::read_exif_tags;
+//! use std::path::Path;
+//!
+//! let tags = read_exif_tags(Path::new("photo.jpg"))?;
+//! if let Some(make) = tags.get("Make") {
+//!     println!("Scanned with: {}", make);
+//! }
+//! # Ok::<(), photostax_core::metadata::exif::ExifError>(())
+//! ```
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -33,8 +79,38 @@ const STANDARD_TAGS: &[(Tag, &str)] = &[
 
 /// Read standard EXIF tags from a JPEG or TIFF file.
 ///
-/// Returns a map of tag name → display value for all tags present in the file.
-/// Non-JPEG/TIFF or files without EXIF data return an empty map (not an error).
+/// Returns a map of tag name → display value for commonly-used EXIF fields.
+/// Files without EXIF data (or non-image files) return an empty map rather
+/// than an error, making this function safe to call on any file.
+///
+/// # Arguments
+///
+/// * `path` - Path to a JPEG or TIFF image file
+///
+/// # Returns
+///
+/// A `HashMap` mapping tag names (e.g., `"Make"`, `"DateTime"`) to their
+/// string values.
+///
+/// # Errors
+///
+/// - [`ExifError::Io`] if the file cannot be read
+/// - [`ExifError::Parse`] if the EXIF data is malformed
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use photostax_core::metadata::exif::read_exif_tags;
+/// use std::path::Path;
+///
+/// let tags = read_exif_tags(Path::new("photo.jpg"))?;
+/// println!("Found {} EXIF tags", tags.len());
+///
+/// if let Some(date) = tags.get("DateTimeOriginal") {
+///     println!("Photo taken: {}", date);
+/// }
+/// # Ok::<(), photostax_core::metadata::exif::ExifError>(())
+/// ```
 pub fn read_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError> {
     let file = File::open(path).map_err(ExifError::Io)?;
     let mut reader = BufReader::new(file);
@@ -59,6 +135,34 @@ pub fn read_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError>
 }
 
 /// Read all EXIF fields (not just standard ones) from a JPEG or TIFF file.
+///
+/// Unlike [`read_exif_tags`], this function returns every EXIF field found,
+/// including vendor-specific and obscure tags.
+///
+/// # Arguments
+///
+/// * `path` - Path to a JPEG or TIFF image file
+///
+/// # Returns
+///
+/// A `HashMap` mapping tag names to their string values.
+///
+/// # Errors
+///
+/// Same as [`read_exif_tags`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use photostax_core::metadata::exif::read_all_exif_tags;
+/// use std::path::Path;
+///
+/// let all_tags = read_all_exif_tags(Path::new("photo.jpg"))?;
+/// for (tag, value) in &all_tags {
+///     println!("{}: {}", tag, value);
+/// }
+/// # Ok::<(), photostax_core::metadata::exif::ExifError>(())
+/// ```
 pub fn read_all_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError> {
     let file = File::open(path).map_err(ExifError::Io)?;
     let mut reader = BufReader::new(file);
@@ -82,10 +186,22 @@ pub fn read_all_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifEr
 }
 
 /// Errors from EXIF operations.
+///
+/// # Variants
+///
+/// | Variant | When It Occurs |
+/// |---------|----------------|
+/// | [`Io`](Self::Io) | File cannot be opened or read |
+/// | [`Parse`](Self::Parse) | EXIF data is present but malformed |
 #[derive(Debug, thiserror::Error)]
 pub enum ExifError {
+    /// An I/O error occurred while reading the file.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The EXIF data could not be parsed.
+    ///
+    /// This typically indicates corrupted or non-standard EXIF data.
     #[error("EXIF parse error: {0}")]
     Parse(String),
 }

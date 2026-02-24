@@ -1,3 +1,47 @@
+//! Directory scanning and photo stack grouping.
+//!
+//! This module provides functionality to scan directories containing Epson FastFoto
+//! scans and group related files into [`PhotoStack`] objects based on the FastFoto
+//! naming convention.
+//!
+//! ## FastFoto Naming Convention
+//!
+//! Epson FastFoto scanners produce files with a consistent naming pattern:
+//!
+//! ```text
+//! IMG_0001.jpg      # Original front scan (no suffix)
+//! IMG_0001_a.jpg    # Enhanced/color-corrected front (suffix: _a)
+//! IMG_0001_b.jpg    # Back of photo (suffix: _b)
+//! ```
+//!
+//! The scanner detects these suffixes and groups files with the same base name
+//! into a single [`PhotoStack`] with ID `IMG_0001`.
+//!
+//! ## Performance
+//!
+//! - Single-pass directory scan using [`std::fs::read_dir`]
+//! - O(n) time complexity where n is the number of files
+//! - Memory usage proportional to the number of unique stacks
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::scanner::{scan_directory, ScannerConfig};
+//! use std::path::Path;
+//!
+//! let config = ScannerConfig::default();
+//! let stacks = scan_directory(Path::new("/photos"), &config)?;
+//!
+//! for stack in stacks {
+//!     println!("{}: {} files", stack.id, [
+//!         stack.original.as_ref(),
+//!         stack.enhanced.as_ref(),
+//!         stack.back.as_ref(),
+//!     ].iter().filter(|x| x.is_some()).count());
+//! }
+//! # Ok::<(), std::io::Error>(())
+//! ```
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -5,13 +49,46 @@ use std::path::Path;
 use crate::photo_stack::PhotoStack;
 
 /// Configuration for the FastFoto file scanner.
+///
+/// Controls how files are identified and grouped into photo stacks. The default
+/// configuration matches the standard Epson FastFoto naming convention.
+///
+/// # Fields
+///
+/// | Field | Default | Description |
+/// |-------|---------|-------------|
+/// | `enhanced_suffix` | `_a` | Suffix for enhanced/color-corrected images |
+/// | `back_suffix` | `_b` | Suffix for back-of-photo scans |
+/// | `extensions` | `jpg`, `jpeg`, `tif`, `tiff` | File extensions to scan |
+///
+/// # Examples
+///
+/// Using custom suffixes for a different scanner:
+///
+/// ```
+/// use photostax_core::scanner::ScannerConfig;
+///
+/// let config = ScannerConfig {
+///     enhanced_suffix: "_enhanced".to_string(),
+///     back_suffix: "_back".to_string(),
+///     extensions: vec!["jpg".to_string()],
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct ScannerConfig {
-    /// Suffix appended to the base name for enhanced images (default: `_a`).
+    /// Suffix appended to the base name for enhanced/color-corrected images.
+    ///
+    /// Default: `_a` (FastFoto convention for auto-enhanced images)
     pub enhanced_suffix: String,
-    /// Suffix appended to the base name for back-of-photo images (default: `_b`).
+
+    /// Suffix appended to the base name for back-of-photo images.
+    ///
+    /// Default: `_b` (FastFoto convention for back scans)
     pub back_suffix: String,
-    /// File extensions to consider (default: `["jpg", "jpeg", "tif", "tiff"]`).
+
+    /// File extensions to consider as valid image files.
+    ///
+    /// Default: `["jpg", "jpeg", "tif", "tiff"]` (both JPEG and TIFF formats)
     pub extensions: Vec<String>,
 }
 
@@ -31,6 +108,55 @@ impl Default for ScannerConfig {
 }
 
 /// Scans a directory and groups Epson FastFoto files into [`PhotoStack`] objects.
+///
+/// Files are grouped by their base name (without suffix or extension). The function
+/// recognizes the `_a` (enhanced) and `_b` (back) suffixes from the FastFoto naming
+/// convention.
+///
+/// # Arguments
+///
+/// * `dir` - The directory path to scan
+/// * `config` - Scanner configuration specifying suffixes and extensions
+///
+/// # Returns
+///
+/// A vector of [`PhotoStack`] objects sorted alphabetically by ID.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if the directory cannot be read.
+///
+/// # Performance
+///
+/// This function performs a single-pass scan of the directory. Files are processed
+/// in the order returned by the filesystem, then sorted at the end.
+///
+/// # Examples
+///
+/// Basic usage with default configuration:
+///
+/// ```rust,no_run
+/// use photostax_core::scanner::{scan_directory, ScannerConfig};
+/// use std::path::Path;
+///
+/// let stacks = scan_directory(Path::new("/photos"), &ScannerConfig::default())?;
+/// println!("Found {} photo stacks", stacks.len());
+/// # Ok::<(), std::io::Error>(())
+/// ```
+///
+/// Scanning with custom configuration:
+///
+/// ```rust,no_run
+/// use photostax_core::scanner::{scan_directory, ScannerConfig};
+/// use std::path::Path;
+///
+/// let config = ScannerConfig {
+///     extensions: vec!["tif".to_string()], // TIFF only
+///     ..ScannerConfig::default()
+/// };
+/// let stacks = scan_directory(Path::new("/archive"), &config)?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec<PhotoStack>> {
     let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
 
@@ -80,13 +206,18 @@ pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec
     Ok(result)
 }
 
+/// Internal classification of file variants.
 #[derive(Debug)]
 enum Variant {
+    /// Original scan (no suffix)
     Original,
+    /// Enhanced/color-corrected (`_a` suffix)
     Enhanced,
+    /// Back of photo (`_b` suffix)
     Back,
 }
 
+/// Classify a file stem into its base name and variant type.
 fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
     if let Some(base) = stem.strip_suffix(&config.enhanced_suffix) {
         (base.to_string(), Variant::Enhanced)

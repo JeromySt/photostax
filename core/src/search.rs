@@ -1,32 +1,121 @@
+//! Search and filtering for photo stacks.
+//!
+//! This module provides a fluent builder API for constructing search queries
+//! and filtering photo stacks based on metadata and structural criteria.
+//!
+//! ## Query Builder Pattern
+//!
+//! [`SearchQuery`] uses the builder pattern for ergonomic filter construction:
+//!
+//! ```
+//! use photostax_core::search::SearchQuery;
+//!
+//! let query = SearchQuery::new()
+//!     .with_exif_filter("Make", "EPSON")
+//!     .with_has_back(true)
+//!     .with_text("birthday");
+//! ```
+//!
+//! ## Filter Composition
+//!
+//! Multiple filters are combined with AND logic. A stack must match all
+//! specified criteria to be included in results.
+//!
+//! ```
+//! use photostax_core::search::{SearchQuery, filter_stacks};
+//! use photostax_core::photo_stack::PhotoStack;
+//!
+//! let stacks: Vec<PhotoStack> = vec![]; // your stacks
+//! let query = SearchQuery::new()
+//!     .with_exif_filter("Make", "EPSON")   // AND
+//!     .with_has_back(true)                  // AND
+//!     .with_custom_filter("album", "2024"); // AND
+//!
+//! let results = filter_stacks(&stacks, &query);
+//! ```
+
 use crate::photo_stack::PhotoStack;
 
 /// Filter criteria for searching photo stacks.
+///
+/// Build queries using method chaining, then apply with [`filter_stacks`].
+/// All filters use AND logic (a stack must match all criteria).
+///
+/// # Examples
+///
+/// Find EPSON photos with back scans containing "birthday":
+///
+/// ```
+/// use photostax_core::search::SearchQuery;
+///
+/// let query = SearchQuery::new()
+///     .with_exif_filter("Make", "EPSON")
+///     .with_has_back(true)
+///     .with_text("birthday");
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct SearchQuery {
-    /// Filter by EXIF tag key-value pairs (all must match).
+    /// EXIF tag filters (all must match). Key is tag name, value is substring to find.
     pub exif_filters: Vec<(String, String)>,
-    /// Filter by custom tag key-value pairs (all must match).
+
+    /// Custom tag filters (all must match). Key is tag name, value is substring to find.
     pub custom_filters: Vec<(String, String)>,
-    /// Free-text search across all metadata values.
+
+    /// Free-text search across ID and all metadata values.
     pub text_query: Option<String>,
-    /// Only include stacks that have a back scan.
+
+    /// Filter by presence of back scan (`Some(true)` = must have, `Some(false)` = must not have).
     pub has_back: Option<bool>,
-    /// Only include stacks that have an enhanced scan.
+
+    /// Filter by presence of enhanced scan (`Some(true)` = must have, `Some(false)` = must not have).
     pub has_enhanced: Option<bool>,
 }
 
 impl SearchQuery {
+    /// Create a new empty search query.
+    ///
+    /// An empty query matches all stacks. Add filters with the `with_*` methods.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add an EXIF tag filter (tag value must contain the given text).
+    /// Add an EXIF tag filter (tag value must contain the given text, case-insensitive).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - EXIF tag name (e.g., `"Make"`, `"Model"`, `"DateTime"`)
+    /// * `contains` - Substring to search for in the tag value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// let query = SearchQuery::new()
+    ///     .with_exif_filter("Make", "EPSON")
+    ///     .with_exif_filter("DateTime", "2024");
+    /// ```
     pub fn with_exif_filter(mut self, key: impl Into<String>, contains: impl Into<String>) -> Self {
         self.exif_filters.push((key.into(), contains.into()));
         self
     }
 
-    /// Add a custom tag filter (tag value string must contain the given text).
+    /// Add a custom tag filter (tag value string must contain the given text, case-insensitive).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Custom tag name (e.g., `"album"`, `"ocr_text"`, `"people"`)
+    /// * `contains` - Substring to search for in the tag value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// let query = SearchQuery::new()
+    ///     .with_custom_filter("album", "Family")
+    ///     .with_custom_filter("ocr_text", "Happy Birthday");
+    /// ```
     pub fn with_custom_filter(
         mut self,
         key: impl Into<String>,
@@ -37,18 +126,59 @@ impl SearchQuery {
     }
 
     /// Set a free-text search across all metadata.
+    ///
+    /// Searches the stack ID, all EXIF tag values, and all custom tag values
+    /// for the given text (case-insensitive).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// // Find any stack mentioning "birthday"
+    /// let query = SearchQuery::new().with_text("birthday");
+    /// ```
     pub fn with_text(mut self, query: impl Into<String>) -> Self {
         self.text_query = Some(query.into());
         self
     }
 
     /// Filter for stacks that have/don't have a back scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `has_back` - `true` to require back scans, `false` to exclude them
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// // Only photos with back scans (for OCR processing)
+    /// let with_backs = SearchQuery::new().with_has_back(true);
+    ///
+    /// // Only photos without back scans
+    /// let without_backs = SearchQuery::new().with_has_back(false);
+    /// ```
     pub fn with_has_back(mut self, has_back: bool) -> Self {
         self.has_back = Some(has_back);
         self
     }
 
     /// Filter for stacks that have/don't have an enhanced scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `has_enhanced` - `true` to require enhanced images, `false` to exclude them
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// // Only color-corrected photos
+    /// let enhanced = SearchQuery::new().with_has_enhanced(true);
+    /// ```
     pub fn with_has_enhanced(mut self, has_enhanced: bool) -> Self {
         self.has_enhanced = Some(has_enhanced);
         self
@@ -56,6 +186,32 @@ impl SearchQuery {
 }
 
 /// Filter a collection of photo stacks based on a search query.
+///
+/// Returns a new vector containing only stacks that match all query criteria.
+/// An empty query returns all stacks.
+///
+/// # Arguments
+///
+/// * `stacks` - Slice of photo stacks to filter
+/// * `query` - Search criteria (all filters are AND'd together)
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::search::{SearchQuery, filter_stacks};
+/// use photostax_core::photo_stack::PhotoStack;
+///
+/// let stacks = vec![
+///     PhotoStack::new("IMG_001"),
+///     PhotoStack::new("IMG_002"),
+/// ];
+///
+/// // Filter by ID containing "001"
+/// let query = SearchQuery::new().with_text("001");
+/// let results = filter_stacks(&stacks, &query);
+/// assert_eq!(results.len(), 1);
+/// assert_eq!(results[0].id, "IMG_001");
+/// ```
 pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoStack> {
     stacks
         .iter()
@@ -64,6 +220,7 @@ pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoSta
         .collect()
 }
 
+/// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
     // Check structural filters
     if let Some(has_back) = query.has_back {

@@ -1,3 +1,39 @@
+//! # photostax-cli
+//!
+//! Command-line tool for inspecting and managing Epson FastFoto photo stacks.
+//!
+//! ## Usage
+//!
+//! ```text
+//! photostax-cli <directory> [search-text]
+//! ```
+//!
+//! ### Arguments
+//!
+//! - `directory` — Path to a directory containing FastFoto scans
+//! - `search-text` (optional) — Filter results by text in metadata
+//!
+//! ## Examples
+//!
+//! List all photo stacks in a directory:
+//!
+//! ```text
+//! photostax-cli /photos
+//! ```
+//!
+//! Search for stacks containing "birthday":
+//!
+//! ```text
+//! photostax-cli /photos birthday
+//! ```
+//!
+//! ## Output
+//!
+//! For each stack, displays:
+//! - Stack ID and file presence indicator
+//! - Paths to original, enhanced, and back images
+//! - Count of EXIF and custom tags
+
 use std::path::PathBuf;
 
 use photostax_core::backends::local::LocalRepository;
