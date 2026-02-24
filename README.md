@@ -18,10 +18,13 @@ Epson FastFoto scanners produce multiple files per scanned photo:
 ## Architecture
 
 - **Rust core** (`photostax-core`) — single source of truth with high-performance scanning, metadata, and storage backend support
+- **CLI tool** (`photostax-cli`) — command-line interface for scanning, searching, and managing photo stacks
 - **Client bindings** — idiomatic libraries for C# (.NET), TypeScript (Node.js), and more
 - **Storage backends** — pluggable `Repository` trait (local filesystem now; OneDrive, Google Drive planned)
 
 ## Quick Start
+
+### Library Usage
 
 ```rust
 use photostax_core::backends::local::LocalRepository;
@@ -37,6 +40,28 @@ for stack in &stacks {
     }
 }
 ```
+
+### CLI Usage
+
+```sh
+# Scan a directory and list all photo stacks
+photostax-cli scan /photos
+
+# Search for stacks containing "birthday"
+photostax-cli search /photos birthday
+
+# Show detailed info about a specific stack
+photostax-cli info /photos IMG_0001
+
+# Export all stacks as JSON
+photostax-cli export /photos --output stacks.json
+
+# Manage metadata
+photostax-cli metadata write /photos IMG_0001 --tag album="Family Photos"
+photostax-cli metadata read /photos IMG_0001 --format json
+```
+
+See [cli/README.md](cli/README.md) for complete CLI documentation.
 
 ## Building
 

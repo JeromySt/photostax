@@ -4,6 +4,55 @@
 //! embedding metadata in files. This module provides support for reading and
 //! writing XMP data in JPEG and TIFF files, using the Dublin Core namespace
 //! for standard fields and a custom photostax namespace for application-specific data.
+//!
+//! ## XMP Namespaces Used
+//!
+//! | Namespace | URI | Purpose |
+//! |-----------|-----|---------|
+//! | Dublin Core (`dc`) | `http://purl.org/dc/elements/1.1/` | Standard fields |
+//! | Photostax | `http://github.com/JeromySt/photostax/ns/1.0/` | Custom fields |
+//! | RDF | `http://www.w3.org/1999/02/22-rdf-syntax-ns#` | RDF wrapper |
+//! | XMP Meta | `adobe:ns:meta/` | XMP packet wrapper |
+//!
+//! ## Dublin Core Field Mappings
+//!
+//! These keys are automatically mapped to Dublin Core:
+//!
+//! | Key | DC Field | Description |
+//! |-----|----------|-------------|
+//! | `description`, `ImageDescription` | `dc:description` | Image description |
+//! | `creator`, `Artist` | `dc:creator` | Creator/author |
+//! | `title` | `dc:title` | Image title |
+//! | `subject`, `keywords` | `dc:subject` | Keywords/tags |
+//! | `rights`, `copyright` | `dc:rights` | Copyright notice |
+//! | `date`, `DateTime` | `dc:date` | Creation date |
+//!
+//! All other keys are stored in the `photostax:` namespace.
+//!
+//! ## Format Support
+//!
+//! | Format | Read | Write |
+//! |--------|------|-------|
+//! | JPEG | Embedded APP1 segment | Embedded APP1 segment |
+//! | TIFF | Sidecar `.xmp` file | Sidecar `.xmp` file |
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::metadata::xmp::{read_xmp, write_xmp};
+//! use std::collections::HashMap;
+//! use std::path::Path;
+//!
+//! // Write XMP metadata
+//! let mut metadata = HashMap::new();
+//! metadata.insert("description".to_string(), "Family reunion 2024".to_string());
+//! metadata.insert("stackId".to_string(), "IMG_0042".to_string());
+//! write_xmp(Path::new("photo.jpg"), &metadata)?;
+//!
+//! // Read it back
+//! let read_meta = read_xmp(Path::new("photo.jpg"))?;
+//! # Ok::<(), photostax_core::metadata::xmp::XmpError>(())
+//! ```
 
 use std::collections::HashMap;
 use std::fs;
@@ -26,22 +75,65 @@ const XMP_NS_PHOTOSTAX: &str = "http://github.com/JeromySt/photostax/ns/1.0/";
 const XMP_APP1_HEADER: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 
 /// Errors from XMP operations.
+///
+/// # Variants
+///
+/// | Variant | When It Occurs |
+/// |---------|----------------|
+/// | [`Io`](Self::Io) | File cannot be read or written |
+/// | [`ImageParse`](Self::ImageParse) | Image file structure is invalid |
+/// | [`XmpParse`](Self::XmpParse) | XMP XML is malformed |
+/// | [`UnsupportedFormat`](Self::UnsupportedFormat) | File is not JPEG or TIFF |
 #[derive(Debug, thiserror::Error)]
 pub enum XmpError {
+    /// An I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The image file could not be parsed.
     #[error("Image parsing error: {0}")]
     ImageParse(String),
+
+    /// The XMP XML could not be parsed.
     #[error("XMP parsing error: {0}")]
     XmpParse(String),
+
+    /// The file format is not supported for XMP operations.
+    ///
+    /// Only JPEG and TIFF files are supported.
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 }
 
 /// Write XMP metadata to a file, detecting format from extension.
 ///
-/// For JPEG files, writes XMP into an APP1 segment.
-/// For TIFF files, writes to a `.xmp` sidecar file (direct TIFF modification is complex).
+/// For JPEG files, writes XMP into an APP1 segment embedded in the file.
+/// For TIFF files, writes to a sidecar `.xmp` file alongside the image
+/// (direct TIFF modification is complex and error-prone).
+///
+/// # Arguments
+///
+/// * `path` - Path to the image file
+/// * `metadata` - Key-value pairs to write as XMP
+///
+/// # Errors
+///
+/// - [`XmpError::UnsupportedFormat`] if the file is not JPEG or TIFF
+/// - [`XmpError::Io`] if the file cannot be read or written
+/// - [`XmpError::ImageParse`] if the JPEG structure is invalid
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use photostax_core::metadata::xmp::write_xmp;
+/// use std::collections::HashMap;
+/// use std::path::Path;
+///
+/// let mut metadata = HashMap::new();
+/// metadata.insert("description".to_string(), "Beach vacation".to_string());
+/// write_xmp(Path::new("photo.jpg"), &metadata)?;
+/// # Ok::<(), photostax_core::metadata::xmp::XmpError>(())
+/// ```
 pub fn write_xmp(path: &Path, metadata: &HashMap<String, String>) -> Result<(), XmpError> {
     match detect_image_format(path) {
         Some(ImageFormat::Jpeg) => write_xmp_to_jpeg(path, metadata),
@@ -55,6 +147,35 @@ pub fn write_xmp(path: &Path, metadata: &HashMap<String, String>) -> Result<(), 
 }
 
 /// Read XMP metadata from a file, detecting format from extension.
+///
+/// For JPEG files, reads from embedded APP1 segment.
+/// For TIFF files, reads from sidecar `.xmp` file if present.
+///
+/// # Arguments
+///
+/// * `path` - Path to the image file
+///
+/// # Returns
+///
+/// A map of metadata keys to values. Returns empty map if no XMP data exists.
+///
+/// # Errors
+///
+/// - [`XmpError::UnsupportedFormat`] if the file is not JPEG or TIFF
+/// - [`XmpError::Io`] if the file cannot be read
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use photostax_core::metadata::xmp::read_xmp;
+/// use std::path::Path;
+///
+/// let metadata = read_xmp(Path::new("photo.jpg"))?;
+/// if let Some(desc) = metadata.get("description") {
+///     println!("Description: {}", desc);
+/// }
+/// # Ok::<(), photostax_core::metadata::xmp::XmpError>(())
+/// ```
 pub fn read_xmp(path: &Path) -> Result<HashMap<String, String>, XmpError> {
     match detect_image_format(path) {
         Some(ImageFormat::Jpeg) => read_xmp_from_jpeg(path),
@@ -70,6 +191,16 @@ pub fn read_xmp(path: &Path) -> Result<HashMap<String, String>, XmpError> {
 /// Write XMP metadata into a JPEG file.
 ///
 /// Reads the existing file, injects/updates the XMP APP1 segment, and writes back.
+/// Any existing XMP segment is replaced.
+///
+/// # Arguments
+///
+/// * `path` - Path to the JPEG file
+/// * `metadata` - Key-value pairs to write
+///
+/// # Errors
+///
+/// Returns [`XmpError`] if the file cannot be read, parsed, or written.
 pub fn write_xmp_to_jpeg(path: &Path, metadata: &HashMap<String, String>) -> Result<(), XmpError> {
     let data = fs::read(path)?;
     let mut jpeg =
@@ -108,7 +239,17 @@ pub fn write_xmp_to_jpeg(path: &Path, metadata: &HashMap<String, String>) -> Res
 /// Write XMP metadata for a TIFF file.
 ///
 /// Due to TIFF's complex structure, we write to a sidecar `.xmp` file instead of
-/// modifying the TIFF directly. This is the same approach used by many photo apps.
+/// modifying the TIFF directly. This is the same approach used by many photo apps
+/// (Adobe Lightroom, etc.).
+///
+/// # Arguments
+///
+/// * `path` - Path to the TIFF file
+/// * `metadata` - Key-value pairs to write
+///
+/// # Sidecar Location
+///
+/// For `photo.tif`, creates `photo.xmp` in the same directory.
 pub fn write_xmp_to_tiff(path: &Path, metadata: &HashMap<String, String>) -> Result<(), XmpError> {
     let xmp_xml = build_xmp_xml(metadata);
     let sidecar_path = path.with_extension("xmp");
@@ -117,6 +258,12 @@ pub fn write_xmp_to_tiff(path: &Path, metadata: &HashMap<String, String>) -> Res
 }
 
 /// Read XMP metadata from a JPEG file.
+///
+/// Searches for an APP1 segment with the XMP header and parses its contents.
+///
+/// # Returns
+///
+/// A map of metadata keys to values. Returns empty map if no XMP segment exists.
 pub fn read_xmp_from_jpeg(path: &Path) -> Result<HashMap<String, String>, XmpError> {
     let data = fs::read(path)?;
     let jpeg = Jpeg::from_bytes(data.into()).map_err(|e| XmpError::ImageParse(e.to_string()))?;
@@ -141,7 +288,12 @@ pub fn read_xmp_from_jpeg(path: &Path) -> Result<HashMap<String, String>, XmpErr
 
 /// Read XMP metadata from a TIFF file.
 ///
-/// Tries to read from a sidecar `.xmp` file first, then attempts to read embedded XMP.
+/// Tries to read from a sidecar `.xmp` file first. Returns empty map if no
+/// sidecar exists.
+///
+/// # Sidecar Location
+///
+/// For `photo.tif`, looks for `photo.xmp` in the same directory.
 pub fn read_xmp_from_tiff(path: &Path) -> Result<HashMap<String, String>, XmpError> {
     // Try sidecar file first
     let sidecar_path = path.with_extension("xmp");
