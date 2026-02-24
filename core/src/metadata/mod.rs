@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod exif;
 pub mod sidecar;
+pub mod xmp;
 
 /// Supported image formats for photo stacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

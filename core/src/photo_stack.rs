@@ -32,6 +32,8 @@ pub struct PhotoStack {
 pub struct Metadata {
     /// Standard EXIF/IPTC/XMP tags read from the image files.
     pub exif_tags: HashMap<String, String>,
+    /// XMP metadata tags readable by standard photo applications.
+    pub xmp_tags: HashMap<String, String>,
     /// Extended custom metadata stored in the sidecar database.
     pub custom_tags: HashMap<String, serde_json::Value>,
 }
