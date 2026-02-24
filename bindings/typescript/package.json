@@ -1,0 +1,47 @@
+{
+  "name": "@photostax/core",
+  "version": "0.1.0",
+  "description": "Unified photo stack library for Epson FastFoto repositories - Node.js binding",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "photostax",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JeromySt/photostax"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "jest",
+    "prepublishOnly": "napi prepublish -t npm"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.0.0",
+    "@types/jest": "^29.0.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "keywords": [
+    "epson",
+    "fastfoto",
+    "photo",
+    "scanner",
+    "exif",
+    "metadata",
+    "tiff",
+    "jpeg"
+  ]
+}

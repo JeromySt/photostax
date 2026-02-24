@@ -4,6 +4,7 @@ members = [
     "core",
     "cli",
     "ffi",
+    "bindings/typescript",
 ]
 
 [workspace.package]
