@@ -11,7 +11,7 @@ pub struct ScannerConfig {
     pub enhanced_suffix: String,
     /// Suffix appended to the base name for back-of-photo images (default: `_b`).
     pub back_suffix: String,
-    /// File extensions to consider (default: `["jpg", "jpeg"]`).
+    /// File extensions to consider (default: `["jpg", "jpeg", "tif", "tiff"]`).
     pub extensions: Vec<String>,
 }
 
@@ -20,7 +20,12 @@ impl Default for ScannerConfig {
         Self {
             enhanced_suffix: "_a".to_string(),
             back_suffix: "_b".to_string(),
-            extensions: vec!["jpg".to_string(), "jpeg".to_string()],
+            extensions: vec![
+                "jpg".to_string(),
+                "jpeg".to_string(),
+                "tif".to_string(),
+                "tiff".to_string(),
+            ],
         }
     }
 }
@@ -140,5 +145,79 @@ mod tests {
         let (base, variant) = classify_stem("IMG_001_b", &config);
         assert_eq!(base, "IMG_001");
         assert!(matches!(variant, Variant::Back));
+    }
+
+    #[test]
+    fn test_scan_tiff_only_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create TIFF test files
+        fs::write(dir.join("IMG_001.tif"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.tif"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_001_b.tif"), b"back").unwrap();
+        fs::write(dir.join("IMG_002.tiff"), b"original2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.enhanced.is_some());
+        assert!(s1.back.is_some());
+
+        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        assert!(s2.original.is_some());
+    }
+
+    #[test]
+    fn test_scan_mixed_jpg_and_tiff_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create mixed JPEG and TIFF files (different stacks)
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_002.tif"), b"original2").unwrap();
+        fs::write(dir.join("IMG_002_a.tif"), b"enhanced2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.enhanced.is_some());
+
+        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        assert!(s2.original.is_some());
+        assert!(s2.enhanced.is_some());
+    }
+
+    #[test]
+    fn test_scan_stack_with_mixed_extensions() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create a stack where original is jpg and back is tif
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_b.tif"), b"back").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.back.is_some());
+        // Verify they have different extensions
+        let orig_ext = s1.original.as_ref().unwrap().extension().unwrap();
+        let back_ext = s1.back.as_ref().unwrap().extension().unwrap();
+        assert_eq!(orig_ext, "jpg");
+        assert_eq!(back_ext, "tif");
     }
 }

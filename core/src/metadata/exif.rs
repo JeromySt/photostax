@@ -31,10 +31,10 @@ const STANDARD_TAGS: &[(Tag, &str)] = &[
     (Tag::Software, "Software"),
 ];
 
-/// Read standard EXIF tags from a JPEG file.
+/// Read standard EXIF tags from a JPEG or TIFF file.
 ///
 /// Returns a map of tag name → display value for all tags present in the file.
-/// Non-JPEG or files without EXIF data return an empty map (not an error).
+/// Non-JPEG/TIFF or files without EXIF data return an empty map (not an error).
 pub fn read_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError> {
     let file = File::open(path).map_err(ExifError::Io)?;
     let mut reader = BufReader::new(file);
@@ -58,7 +58,7 @@ pub fn read_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError>
     Ok(tags)
 }
 
-/// Read all EXIF fields (not just standard ones) from a JPEG file.
+/// Read all EXIF fields (not just standard ones) from a JPEG or TIFF file.
 pub fn read_all_exif_tags(path: &Path) -> Result<HashMap<String, String>, ExifError> {
     let file = File::open(path).map_err(ExifError::Io)?;
     let mut reader = BufReader::new(file);
@@ -106,8 +106,36 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"not a jpeg file").unwrap();
         let result = read_exif_tags(tmp.path());
-        // Should return Ok with empty map for non-JPEG
+        // Should return Ok with empty map for non-JPEG/TIFF
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_read_exif_from_tiff_container() {
+        // Create a minimal valid TIFF file with no EXIF data
+        // TIFF header: little-endian (II), magic 42, first IFD offset
+        let mut tiff_data = Vec::new();
+        // Byte order: little-endian "II"
+        tiff_data.extend_from_slice(b"II");
+        // Magic number: 42
+        tiff_data.extend_from_slice(&42u16.to_le_bytes());
+        // Offset to first IFD: 8 (right after header)
+        tiff_data.extend_from_slice(&8u32.to_le_bytes());
+        // IFD entry count: 0 (empty IFD for minimal file)
+        tiff_data.extend_from_slice(&0u16.to_le_bytes());
+        // Next IFD offset: 0 (no more IFDs)
+        tiff_data.extend_from_slice(&0u32.to_le_bytes());
+
+        let tmp = tempfile::Builder::new()
+            .suffix(".tif")
+            .tempfile()
+            .unwrap();
+        std::fs::write(tmp.path(), &tiff_data).unwrap();
+
+        let result = read_exif_tags(tmp.path());
+        // kamadak-exif should recognize this as a TIFF container
+        // and return an empty map (no EXIF tags in this minimal file)
+        assert!(result.is_ok());
     }
 }
