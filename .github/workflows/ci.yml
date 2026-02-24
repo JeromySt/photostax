@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    - name: Cache cargo registry & build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Build
+      run: cargo build --workspace
+
+    - name: Test
+      run: cargo test --workspace
+
+  security:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run cargo audit
+      run: cargo audit
+      continue-on-error: true
+
+  # Auto-create pre-release on push to main
+  prerelease:
+    name: Create Pre-release
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build release binaries
+      run: cargo build --workspace --release
+
+    - name: Get version and generate tag
+      id: version
+      run: |
+        VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "photostax-core") | .version')
+        SHORT_SHA=$(git rev-parse --short HEAD)
+        TIMESTAMP=$(date +%Y%m%d%H%M%S)
+        TAG="v${VERSION}-pre.${TIMESTAMP}.${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "tag=${TAG}" >> $GITHUB_OUTPUT
+        echo "Generated pre-release tag: ${TAG}"
+
+    - name: Create pre-release tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag ${{ steps.version.outputs.tag }}
+        git push origin ${{ steps.version.outputs.tag }}
+
+    - name: Create GitHub Pre-release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version.outputs.tag }}
+        name: Pre-release ${{ steps.version.outputs.tag }}
+        prerelease: true
+        generate_release_notes: true
