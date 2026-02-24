@@ -1,0 +1,510 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Photostax</name>
+    </assembly>
+    <members>
+        <member name="T:Photostax.ImageFormat">
+            <summary>
+            Image format enumeration.
+            </summary>
+        </member>
+        <member name="F:Photostax.ImageFormat.Jpeg">
+            <summary>
+            JPEG image format.
+            </summary>
+        </member>
+        <member name="F:Photostax.ImageFormat.Png">
+            <summary>
+            PNG image format.
+            </summary>
+        </member>
+        <member name="F:Photostax.ImageFormat.Tiff">
+            <summary>
+            TIFF image format.
+            </summary>
+        </member>
+        <member name="F:Photostax.ImageFormat.Unknown">
+            <summary>
+            Unknown image format.
+            </summary>
+        </member>
+        <member name="T:Photostax.Metadata">
+            <summary>
+            Metadata associated with a photo stack.
+            </summary>
+        </member>
+        <member name="P:Photostax.Metadata.ExifTags">
+            <summary>
+            Gets the EXIF tags.
+            </summary>
+        </member>
+        <member name="P:Photostax.Metadata.XmpTags">
+            <summary>
+            Gets the XMP tags.
+            </summary>
+        </member>
+        <member name="P:Photostax.Metadata.CustomTags">
+            <summary>
+            Gets the custom tags.
+            </summary>
+        </member>
+        <member name="M:Photostax.Metadata.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.Metadata"/> class.
+            </summary>
+        </member>
+        <member name="M:Photostax.Metadata.#ctor(System.Collections.Generic.IReadOnlyDictionary{System.String,System.String},System.Collections.Generic.IReadOnlyDictionary{System.String,System.String},System.Collections.Generic.IReadOnlyDictionary{System.String,System.Object})">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.Metadata"/> class with the specified tags.
+            </summary>
+            <param name="exifTags">EXIF tags dictionary.</param>
+            <param name="xmpTags">XMP tags dictionary.</param>
+            <param name="customTags">Custom tags dictionary.</param>
+        </member>
+        <member name="M:Photostax.Metadata.WithCustomTag(System.String,System.Object)">
+            <summary>
+            Creates a new metadata instance with the specified custom tag added or updated.
+            </summary>
+            <param name="key">The tag key.</param>
+            <param name="value">The tag value.</param>
+            <returns>A new metadata instance with the updated custom tag.</returns>
+        </member>
+        <member name="M:Photostax.Metadata.FromJson(System.String)">
+            <summary>
+            Parses metadata from a JSON string.
+            </summary>
+            <param name="json">The JSON string.</param>
+            <returns>The parsed metadata.</returns>
+        </member>
+        <member name="M:Photostax.Metadata.ToJson">
+            <summary>
+            Serializes the metadata to a JSON string.
+            </summary>
+            <returns>The JSON string.</returns>
+        </member>
+        <member name="T:Photostax.Native.NativeMethods">
+            <summary>
+            P/Invoke declarations for the photostax_ffi native library.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_repo_open(System.String)">
+            <summary>
+            Create a new repository from a directory path.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_repo_free(System.IntPtr)">
+            <summary>
+            Free a repository handle.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_repo_scan(System.IntPtr)">
+            <summary>
+            Scan the repository and return all photo stacks.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_repo_get_stack(System.IntPtr,System.String)">
+            <summary>
+            Get a single stack by ID.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_read_image(System.IntPtr,System.String,System.IntPtr@,System.UIntPtr@)">
+            <summary>
+            Read image bytes.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_write_metadata(System.IntPtr,System.String,System.String)">
+            <summary>
+            Write metadata to a stack.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_search(System.IntPtr,System.String)">
+            <summary>
+            Search/filter stacks.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_get_metadata(System.IntPtr,System.String)">
+            <summary>
+            Get metadata for a stack as a JSON string.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_get_exif_tag(System.IntPtr,System.String,System.String)">
+            <summary>
+            Get a specific EXIF tag value.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_get_custom_tag(System.IntPtr,System.String,System.String)">
+            <summary>
+            Get a specific custom tag value as JSON.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_set_custom_tag(System.IntPtr,System.String,System.String,System.String)">
+            <summary>
+            Set a custom tag value.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_stack_array_free(Photostax.Native.FfiPhotoStackArray)">
+            <summary>
+            Free a photo stack array.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_stack_free(System.IntPtr)">
+            <summary>
+            Free a single photo stack.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_string_free(System.IntPtr)">
+            <summary>
+            Free a string allocated by photostax.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.NativeMethods.photostax_bytes_free(System.IntPtr,System.UIntPtr)">
+            <summary>
+            Free a byte buffer allocated by photostax.
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.FfiResult">
+            <summary>
+            FFI result type for operations that may fail.
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiResult.Success">
+            <summary>
+            True if the operation succeeded.
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiResult.ErrorMessage">
+            <summary>
+            Error message (null on success, must be freed on failure).
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.FfiPhotoStack">
+            <summary>
+            A photo stack returned across FFI.
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStack.Id">
+            <summary>
+            Stack identifier (never null).
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStack.Original">
+            <summary>
+            Path to original image (null if absent).
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStack.Enhanced">
+            <summary>
+            Path to enhanced image (null if absent).
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStack.Back">
+            <summary>
+            Path to back image (null if absent).
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStack.MetadataJson">
+            <summary>
+            JSON-serialized metadata (never null, may be "{}").
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.FfiPhotoStackArray">
+            <summary>
+            Array of photo stacks from FFI.
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStackArray.Data">
+            <summary>
+            Pointer to array of stacks (null if len == 0).
+            </summary>
+        </member>
+        <member name="F:Photostax.Native.FfiPhotoStackArray.Len">
+            <summary>
+            Number of stacks in the array.
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.RepoSafeHandle">
+            <summary>
+            Safe handle for repository pointers.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.RepoSafeHandle.#ctor">
+            <summary>
+            Creates a new repository safe handle.
+            </summary>
+        </member>
+        <member name="P:Photostax.Native.RepoSafeHandle.IsInvalid">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.RepoSafeHandle.ReleaseHandle">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.RepoSafeHandle.FromPointer(System.IntPtr)">
+            <summary>
+            Creates a safe handle from a raw pointer.
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.StackSafeHandle">
+            <summary>
+            Safe handle for stack pointers.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.StackSafeHandle.#ctor">
+            <summary>
+            Creates a new stack safe handle.
+            </summary>
+        </member>
+        <member name="P:Photostax.Native.StackSafeHandle.IsInvalid">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.StackSafeHandle.ReleaseHandle">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.StackSafeHandle.FromPointer(System.IntPtr)">
+            <summary>
+            Creates a safe handle from a raw pointer.
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.StringSafeHandle">
+            <summary>
+            Safe handle for string pointers.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.StringSafeHandle.#ctor">
+            <summary>
+            Creates a new string safe handle.
+            </summary>
+        </member>
+        <member name="P:Photostax.Native.StringSafeHandle.IsInvalid">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.StringSafeHandle.ReleaseHandle">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.StringSafeHandle.FromPointer(System.IntPtr)">
+            <summary>
+            Creates a safe handle from a raw pointer.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.StringSafeHandle.GetString">
+            <summary>
+            Gets the string value from the handle.
+            </summary>
+        </member>
+        <member name="T:Photostax.Native.BytesSafeHandle">
+            <summary>
+            Safe handle for byte buffer pointers.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.BytesSafeHandle.#ctor">
+            <summary>
+            Creates a new bytes safe handle.
+            </summary>
+        </member>
+        <member name="P:Photostax.Native.BytesSafeHandle.IsInvalid">
+            <inheritdoc/>
+        </member>
+        <member name="P:Photostax.Native.BytesSafeHandle.Length">
+            <summary>
+            Gets the length of the byte buffer.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.BytesSafeHandle.ReleaseHandle">
+            <inheritdoc/>
+        </member>
+        <member name="M:Photostax.Native.BytesSafeHandle.FromPointer(System.IntPtr,System.UIntPtr)">
+            <summary>
+            Creates a safe handle from a raw pointer and length.
+            </summary>
+        </member>
+        <member name="M:Photostax.Native.BytesSafeHandle.ToArray">
+            <summary>
+            Gets the byte array from the handle.
+            </summary>
+        </member>
+        <member name="T:Photostax.PhotoStack">
+            <summary>
+            Represents a photo stack with its associated images and metadata.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.Id">
+            <summary>
+            Gets the unique identifier for this stack.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.OriginalPath">
+            <summary>
+            Gets the path to the original image, or null if not present.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.EnhancedPath">
+            <summary>
+            Gets the path to the enhanced image, or null if not present.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.BackPath">
+            <summary>
+            Gets the path to the back image, or null if not present.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.Metadata">
+            <summary>
+            Gets the metadata associated with this stack.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.HasAnyImage">
+            <summary>
+            Gets a value indicating whether this stack has any image.
+            </summary>
+        </member>
+        <member name="P:Photostax.PhotoStack.Format">
+            <summary>
+            Gets the image format, or null if no images are present.
+            </summary>
+        </member>
+        <member name="M:Photostax.PhotoStack.#ctor(System.String,System.String,System.String,System.String,Photostax.Metadata)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.PhotoStack"/> class.
+            </summary>
+            <param name="id">The stack identifier.</param>
+            <param name="originalPath">Path to the original image.</param>
+            <param name="enhancedPath">Path to the enhanced image.</param>
+            <param name="backPath">Path to the back image.</param>
+            <param name="metadata">The stack metadata.</param>
+        </member>
+        <member name="T:Photostax.PhotostaxException">
+            <summary>
+            Exception thrown when a Photostax operation fails.
+            </summary>
+        </member>
+        <member name="M:Photostax.PhotostaxException.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.PhotostaxException"/> class.
+            </summary>
+        </member>
+        <member name="M:Photostax.PhotostaxException.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.PhotostaxException"/> class with a message.
+            </summary>
+            <param name="message">The error message.</param>
+        </member>
+        <member name="M:Photostax.PhotostaxException.#ctor(System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.PhotostaxException"/> class with a message and inner exception.
+            </summary>
+            <param name="message">The error message.</param>
+            <param name="innerException">The inner exception.</param>
+        </member>
+        <member name="T:Photostax.PhotostaxRepository">
+            <summary>
+            Represents a local photo repository.
+            </summary>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Photostax.PhotostaxRepository"/> class.
+            </summary>
+            <param name="directoryPath">The path to the repository directory.</param>
+            <exception cref="T:System.ArgumentNullException">Thrown when <paramref name="directoryPath"/> is null.</exception>
+            <exception cref="T:Photostax.PhotostaxException">Thrown when the repository cannot be opened.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.Scan">
+            <summary>
+            Scans the repository and returns all photo stacks.
+            </summary>
+            <returns>A list of photo stacks found in the repository.</returns>
+            <exception cref="T:System.ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.GetStack(System.String)">
+            <summary>
+            Gets a single photo stack by its identifier.
+            </summary>
+            <param name="id">The stack identifier.</param>
+            <returns>The photo stack.</returns>
+            <exception cref="T:System.ArgumentNullException">Thrown when <paramref name="id"/> is null.</exception>
+            <exception cref="T:Photostax.PhotostaxException">Thrown when the stack is not found.</exception>
+            <exception cref="T:System.ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.ReadImage(System.String)">
+            <summary>
+            Reads the bytes of an image file.
+            </summary>
+            <param name="path">The path to the image file.</param>
+            <returns>The image bytes.</returns>
+            <exception cref="T:System.ArgumentNullException">Thrown when <paramref name="path"/> is null.</exception>
+            <exception cref="T:Photostax.PhotostaxException">Thrown when the image cannot be read.</exception>
+            <exception cref="T:System.ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.WriteMetadata(System.String,Photostax.Metadata)">
+            <summary>
+            Writes metadata to a photo stack.
+            </summary>
+            <param name="stackId">The stack identifier.</param>
+            <param name="metadata">The metadata to write.</param>
+            <exception cref="T:System.ArgumentNullException">Thrown when <paramref name="stackId"/> or <paramref name="metadata"/> is null.</exception>
+            <exception cref="T:Photostax.PhotostaxException">Thrown when the metadata cannot be written.</exception>
+            <exception cref="T:System.ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.Search(Photostax.SearchQuery)">
+            <summary>
+            Searches for photo stacks matching the specified query.
+            </summary>
+            <param name="query">The search query.</param>
+            <returns>A list of matching photo stacks.</returns>
+            <exception cref="T:System.ArgumentNullException">Thrown when <paramref name="query"/> is null.</exception>
+            <exception cref="T:System.ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+        </member>
+        <member name="M:Photostax.PhotostaxRepository.Dispose">
+            <summary>
+            Disposes the repository and releases all resources.
+            </summary>
+        </member>
+        <member name="T:Photostax.SearchQuery">
+            <summary>
+            Builder for search queries.
+            </summary>
+        </member>
+        <member name="M:Photostax.SearchQuery.WithText(System.String)">
+            <summary>
+            Adds a text search filter.
+            </summary>
+            <param name="text">The text to search for.</param>
+            <returns>This query builder for chaining.</returns>
+        </member>
+        <member name="M:Photostax.SearchQuery.WithExifFilter(System.String,System.String)">
+            <summary>
+            Adds an EXIF tag filter.
+            </summary>
+            <param name="key">The EXIF tag key.</param>
+            <param name="contains">The value to search for.</param>
+            <returns>This query builder for chaining.</returns>
+        </member>
+        <member name="M:Photostax.SearchQuery.WithCustomFilter(System.String,System.String)">
+            <summary>
+            Adds a custom tag filter.
+            </summary>
+            <param name="key">The custom tag key.</param>
+            <param name="contains">The value to search for.</param>
+            <returns>This query builder for chaining.</returns>
+        </member>
+        <member name="M:Photostax.SearchQuery.WithHasBack(System.Boolean)">
+            <summary>
+            Filters by whether the stack has a back image.
+            </summary>
+            <param name="hasBack">True to require back image, false to exclude it.</param>
+            <returns>This query builder for chaining.</returns>
+        </member>
+        <member name="M:Photostax.SearchQuery.WithHasEnhanced(System.Boolean)">
+            <summary>
+            Filters by whether the stack has an enhanced image.
+            </summary>
+            <param name="hasEnhanced">True to require enhanced image, false to exclude it.</param>
+            <returns>This query builder for chaining.</returns>
+        </member>
+        <member name="M:Photostax.SearchQuery.ToJson">
+            <summary>
+            Serializes the query to JSON for FFI.
+            </summary>
+        </member>
+    </members>
+</doc>

@@ -1,0 +1,14 @@
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\bin\Debug\net8.0\Photostax.deps.json
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\bin\Debug\net8.0\Photostax.dll
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\bin\Debug\net8.0\Photostax.pdb
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\bin\Debug\net8.0\Photostax.xml
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.GeneratedMSBuildEditorConfig.editorconfig
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.AssemblyInfoInputs.cache
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.AssemblyInfo.cs
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.csproj.CoreCompileInputs.cache
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.sourcelink.json
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.dll
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\refint\Photostax.dll
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.xml
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\Photostax.pdb
+C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\src\Photostax\obj\Debug\net8.0\ref\Photostax.dll
