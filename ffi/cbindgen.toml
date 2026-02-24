@@ -1,0 +1,36 @@
+# cbindgen configuration for C header generation
+
+language = "C"
+
+# Include guard for the header
+include_guard = "PHOTOSTAX_H"
+
+# Add standard includes
+sys_includes = ["stddef.h", "stdint.h", "stdbool.h"]
+
+# Documentation style
+documentation_style = "c99"
+
+# Generate #ifdef __cplusplus extern "C" blocks
+cpp_compat = true
+
+[export]
+# Only export items prefixed with photostax_ or Ffi or Photostax
+prefix = "photostax"
+include = ["FfiPhotoStack", "FfiPhotoStackArray", "FfiResult", "PhotostaxRepo"]
+
+[parse]
+# Parse dependencies
+parse_deps = false
+
+[fn]
+# Rename style for functions (keep as-is since we use snake_case)
+rename_args = "None"
+
+[struct]
+# Rename style for structs
+rename_fields = "None"
+
+[enum]
+# Rename style for enums
+rename_variants = "None"

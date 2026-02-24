@@ -1,3 +1,47 @@
+//! Directory scanning and photo stack grouping.
+//!
+//! This module provides functionality to scan directories containing Epson FastFoto
+//! scans and group related files into [`PhotoStack`] objects based on the FastFoto
+//! naming convention.
+//!
+//! ## FastFoto Naming Convention
+//!
+//! Epson FastFoto scanners produce files with a consistent naming pattern:
+//!
+//! ```text
+//! IMG_0001.jpg      # Original front scan (no suffix)
+//! IMG_0001_a.jpg    # Enhanced/color-corrected front (suffix: _a)
+//! IMG_0001_b.jpg    # Back of photo (suffix: _b)
+//! ```
+//!
+//! The scanner detects these suffixes and groups files with the same base name
+//! into a single [`PhotoStack`] with ID `IMG_0001`.
+//!
+//! ## Performance
+//!
+//! - Single-pass directory scan using [`std::fs::read_dir`]
+//! - O(n) time complexity where n is the number of files
+//! - Memory usage proportional to the number of unique stacks
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::scanner::{scan_directory, ScannerConfig};
+//! use std::path::Path;
+//!
+//! let config = ScannerConfig::default();
+//! let stacks = scan_directory(Path::new("/photos"), &config)?;
+//!
+//! for stack in stacks {
+//!     println!("{}: {} files", stack.id, [
+//!         stack.original.as_ref(),
+//!         stack.enhanced.as_ref(),
+//!         stack.back.as_ref(),
+//!     ].iter().filter(|x| x.is_some()).count());
+//! }
+//! # Ok::<(), std::io::Error>(())
+//! ```
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -5,13 +49,46 @@ use std::path::Path;
 use crate::photo_stack::PhotoStack;
 
 /// Configuration for the FastFoto file scanner.
+///
+/// Controls how files are identified and grouped into photo stacks. The default
+/// configuration matches the standard Epson FastFoto naming convention.
+///
+/// # Fields
+///
+/// | Field | Default | Description |
+/// |-------|---------|-------------|
+/// | `enhanced_suffix` | `_a` | Suffix for enhanced/color-corrected images |
+/// | `back_suffix` | `_b` | Suffix for back-of-photo scans |
+/// | `extensions` | `jpg`, `jpeg`, `tif`, `tiff` | File extensions to scan |
+///
+/// # Examples
+///
+/// Using custom suffixes for a different scanner:
+///
+/// ```
+/// use photostax_core::scanner::ScannerConfig;
+///
+/// let config = ScannerConfig {
+///     enhanced_suffix: "_enhanced".to_string(),
+///     back_suffix: "_back".to_string(),
+///     extensions: vec!["jpg".to_string()],
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct ScannerConfig {
-    /// Suffix appended to the base name for enhanced images (default: `_a`).
+    /// Suffix appended to the base name for enhanced/color-corrected images.
+    ///
+    /// Default: `_a` (FastFoto convention for auto-enhanced images)
     pub enhanced_suffix: String,
-    /// Suffix appended to the base name for back-of-photo images (default: `_b`).
+
+    /// Suffix appended to the base name for back-of-photo images.
+    ///
+    /// Default: `_b` (FastFoto convention for back scans)
     pub back_suffix: String,
-    /// File extensions to consider (default: `["jpg", "jpeg"]`).
+
+    /// File extensions to consider as valid image files.
+    ///
+    /// Default: `["jpg", "jpeg", "tif", "tiff"]` (both JPEG and TIFF formats)
     pub extensions: Vec<String>,
 }
 
@@ -20,12 +97,66 @@ impl Default for ScannerConfig {
         Self {
             enhanced_suffix: "_a".to_string(),
             back_suffix: "_b".to_string(),
-            extensions: vec!["jpg".to_string(), "jpeg".to_string()],
+            extensions: vec![
+                "jpg".to_string(),
+                "jpeg".to_string(),
+                "tif".to_string(),
+                "tiff".to_string(),
+            ],
         }
     }
 }
 
 /// Scans a directory and groups Epson FastFoto files into [`PhotoStack`] objects.
+///
+/// Files are grouped by their base name (without suffix or extension). The function
+/// recognizes the `_a` (enhanced) and `_b` (back) suffixes from the FastFoto naming
+/// convention.
+///
+/// # Arguments
+///
+/// * `dir` - The directory path to scan
+/// * `config` - Scanner configuration specifying suffixes and extensions
+///
+/// # Returns
+///
+/// A vector of [`PhotoStack`] objects sorted alphabetically by ID.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if the directory cannot be read.
+///
+/// # Performance
+///
+/// This function performs a single-pass scan of the directory. Files are processed
+/// in the order returned by the filesystem, then sorted at the end.
+///
+/// # Examples
+///
+/// Basic usage with default configuration:
+///
+/// ```rust,no_run
+/// use photostax_core::scanner::{scan_directory, ScannerConfig};
+/// use std::path::Path;
+///
+/// let stacks = scan_directory(Path::new("/photos"), &ScannerConfig::default())?;
+/// println!("Found {} photo stacks", stacks.len());
+/// # Ok::<(), std::io::Error>(())
+/// ```
+///
+/// Scanning with custom configuration:
+///
+/// ```rust,no_run
+/// use photostax_core::scanner::{scan_directory, ScannerConfig};
+/// use std::path::Path;
+///
+/// let config = ScannerConfig {
+///     extensions: vec!["tif".to_string()], // TIFF only
+///     ..ScannerConfig::default()
+/// };
+/// let stacks = scan_directory(Path::new("/archive"), &config)?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec<PhotoStack>> {
     let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
 
@@ -75,13 +206,18 @@ pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec
     Ok(result)
 }
 
+/// Internal classification of file variants.
 #[derive(Debug)]
 enum Variant {
+    /// Original scan (no suffix)
     Original,
+    /// Enhanced/color-corrected (`_a` suffix)
     Enhanced,
+    /// Back of photo (`_b` suffix)
     Back,
 }
 
+/// Classify a file stem into its base name and variant type.
 fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
     if let Some(base) = stem.strip_suffix(&config.enhanced_suffix) {
         (base.to_string(), Variant::Enhanced)
@@ -140,5 +276,278 @@ mod tests {
         let (base, variant) = classify_stem("IMG_001_b", &config);
         assert_eq!(base, "IMG_001");
         assert!(matches!(variant, Variant::Back));
+    }
+
+    #[test]
+    fn test_scan_tiff_only_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create TIFF test files
+        fs::write(dir.join("IMG_001.tif"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.tif"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_001_b.tif"), b"back").unwrap();
+        fs::write(dir.join("IMG_002.tiff"), b"original2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.enhanced.is_some());
+        assert!(s1.back.is_some());
+
+        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        assert!(s2.original.is_some());
+    }
+
+    #[test]
+    fn test_scan_mixed_jpg_and_tiff_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create mixed JPEG and TIFF files (different stacks)
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_002.tif"), b"original2").unwrap();
+        fs::write(dir.join("IMG_002_a.tif"), b"enhanced2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.enhanced.is_some());
+
+        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        assert!(s2.original.is_some());
+        assert!(s2.enhanced.is_some());
+    }
+
+    #[test]
+    fn test_scan_stack_with_mixed_extensions() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create a stack where original is jpg and back is tif
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_b.tif"), b"back").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+
+        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        assert!(s1.original.is_some());
+        assert!(s1.back.is_some());
+        // Verify they have different extensions
+        let orig_ext = s1.original.as_ref().unwrap().extension().unwrap();
+        let back_ext = s1.back.as_ref().unwrap().extension().unwrap();
+        assert_eq!(orig_ext, "jpg");
+        assert_eq!(back_ext, "tif");
+    }
+
+    #[test]
+    fn test_scan_empty_directory() {
+        let tmp = TempDir::new().unwrap();
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(tmp.path(), &config).unwrap();
+        assert!(stacks.is_empty());
+    }
+
+    #[test]
+    fn test_scan_directory_with_no_valid_images() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create non-image files
+        fs::write(dir.join("readme.txt"), b"text").unwrap();
+        fs::write(dir.join("image.png"), b"png").unwrap();
+        fs::write(dir.join("data.bmp"), b"bmp").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+        assert!(stacks.is_empty());
+    }
+
+    #[test]
+    fn test_scan_unusual_casing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with unusual casing
+        fs::write(dir.join("IMG_001.JPG"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.Jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_002.TIF"), b"original2").unwrap();
+        fs::write(dir.join("IMG_002_a.Tif"), b"enhanced2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+        assert!(stacks.iter().any(|s| s.id == "IMG_001"));
+        assert!(stacks.iter().any(|s| s.id == "IMG_002"));
+    }
+
+    #[test]
+    fn test_scan_enhanced_only_no_original() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create only enhanced file, no original
+        fs::write(dir.join("IMG_001_a.jpg"), b"enhanced").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert_eq!(s.id, "IMG_001");
+        assert!(s.original.is_none());
+        assert!(s.enhanced.is_some());
+        assert!(s.back.is_none());
+    }
+
+    #[test]
+    fn test_scan_back_only_no_original() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create only back file, no original
+        fs::write(dir.join("IMG_001_b.jpg"), b"back").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert_eq!(s.id, "IMG_001");
+        assert!(s.original.is_none());
+        assert!(s.enhanced.is_none());
+        assert!(s.back.is_some());
+    }
+
+    #[test]
+    fn test_scan_custom_config_suffixes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with custom suffixes
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_enhanced.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_001_back.jpg"), b"back").unwrap();
+
+        let config = ScannerConfig {
+            enhanced_suffix: "_enhanced".to_string(),
+            back_suffix: "_back".to_string(),
+            extensions: vec!["jpg".to_string()],
+        };
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert!(s.original.is_some());
+        assert!(s.enhanced.is_some());
+        assert!(s.back.is_some());
+    }
+
+    #[test]
+    fn test_scan_unicode_filenames() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with unicode filenames
+        fs::write(dir.join("写真_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("写真_001_a.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("фото_002.tif"), b"original2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+        assert!(stacks.iter().any(|s| s.id == "写真_001"));
+        assert!(stacks.iter().any(|s| s.id == "фото_002"));
+    }
+
+    #[test]
+    fn test_classify_stem_empty_string() {
+        let config = ScannerConfig::default();
+        let (base, variant) = classify_stem("", &config);
+        assert_eq!(base, "");
+        assert!(matches!(variant, Variant::Original));
+    }
+
+    #[test]
+    fn test_classify_stem_double_suffix_a_b() {
+        let config = ScannerConfig::default();
+        // File ending with _a_b - should strip _b first (back), base is IMG_001_a
+        let (base, variant) = classify_stem("IMG_001_a_b", &config);
+        assert_eq!(base, "IMG_001_a");
+        assert!(matches!(variant, Variant::Back));
+    }
+
+    #[test]
+    fn test_classify_stem_double_suffix_b_a() {
+        let config = ScannerConfig::default();
+        // File ending with _b_a - should strip _a first (enhanced), base is IMG_001_b
+        let (base, variant) = classify_stem("IMG_001_b_a", &config);
+        assert_eq!(base, "IMG_001_b");
+        assert!(matches!(variant, Variant::Enhanced));
+    }
+
+    #[test]
+    fn test_scanner_config_default() {
+        let config = ScannerConfig::default();
+        assert_eq!(config.enhanced_suffix, "_a");
+        assert_eq!(config.back_suffix, "_b");
+        assert!(config.extensions.contains(&"jpg".to_string()));
+        assert!(config.extensions.contains(&"jpeg".to_string()));
+        assert!(config.extensions.contains(&"tif".to_string()));
+        assert!(config.extensions.contains(&"tiff".to_string()));
+    }
+
+    #[test]
+    fn test_scan_ignores_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create a file in root
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+
+        // Create a subdirectory with files
+        let subdir = dir.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("IMG_002.jpg"), b"sub_original").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        // Should only find IMG_001, not the one in subdir
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_scan_results_sorted_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files in non-alphabetical order
+        fs::write(dir.join("ZZZ_001.jpg"), b"z").unwrap();
+        fs::write(dir.join("AAA_001.jpg"), b"a").unwrap();
+        fs::write(dir.join("MMM_001.jpg"), b"m").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 3);
+        assert_eq!(stacks[0].id, "AAA_001");
+        assert_eq!(stacks[1].id, "MMM_001");
+        assert_eq!(stacks[2].id, "ZZZ_001");
     }
 }

@@ -1,24 +1,117 @@
+//! SQLite sidecar database for custom metadata storage.
+//!
+//! This module provides a SQLite-based sidecar database for storing extended
+//! metadata that doesn't fit in EXIF or XMP. The database is stored alongside
+//! photo files as `.photostax.db`.
+//!
+//! ## Database Schema
+//!
+//! ```sql
+//! CREATE TABLE stack_metadata (
+//!     stack_id TEXT NOT NULL,    -- PhotoStack ID (e.g., "IMG_001")
+//!     key      TEXT NOT NULL,    -- Tag name (e.g., "ocr_text")
+//!     value    TEXT NOT NULL,    -- JSON-serialized value
+//!     PRIMARY KEY (stack_id, key)
+//! );
+//!
+//! CREATE INDEX idx_stack_metadata_key ON stack_metadata (key);
+//! ```
+//!
+//! ## Use Cases
+//!
+//! - **OCR results**: Store extracted text from back-of-photo scans
+//! - **Albums/collections**: Organize photos into logical groups
+//! - **People tags**: Tag people identified in photos
+//! - **Processing status**: Track which photos have been processed
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::metadata::sidecar::SidecarDb;
+//! use std::path::Path;
+//!
+//! let db = SidecarDb::open(Path::new("/photos"))?;
+//!
+//! // Store OCR result
+//! db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Happy Birthday!"))?;
+//!
+//! // Retrieve all tags for a stack
+//! let tags = db.get_tags("IMG_001")?;
+//! # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+//! ```
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
 
 /// Name of the sidecar database file placed alongside photo directories.
+///
+/// The database is created automatically when first accessed.
 pub const SIDECAR_DB_NAME: &str = ".photostax.db";
 
-/// A sidecar SQLite database for storing extended metadata per PhotoStack.
+/// A sidecar SQLite database for storing extended metadata per [`PhotoStack`].
+///
+/// The database provides key-value storage for arbitrary JSON metadata,
+/// indexed by stack ID. It's designed for data that doesn't fit in standard
+/// EXIF/XMP fields, such as OCR results, custom tags, and processing status.
+///
+/// # Schema
+///
+/// The database uses a simple key-value schema with composite primary key:
+///
+/// - `stack_id`: The [`PhotoStack`] ID (e.g., `"IMG_001"`)
+/// - `key`: Tag name (e.g., `"ocr_text"`, `"album"`)
+/// - `value`: JSON-serialized value
+///
+/// # Thread Safety
+///
+/// Each `SidecarDb` instance owns its own connection. For multi-threaded access,
+/// create separate instances or use connection pooling.
+///
+/// [`PhotoStack`]: crate::photo_stack::PhotoStack
 pub struct SidecarDb {
     conn: Connection,
 }
 
 impl SidecarDb {
     /// Open (or create) the sidecar database in the given directory.
+    ///
+    /// Creates the database file and schema if they don't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` - Directory containing photo files (database is created here)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarError::Sqlite`] if the database cannot be opened or created.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
     pub fn open(directory: &Path) -> Result<Self, SidecarError> {
         let db_path = directory.join(SIDECAR_DB_NAME);
         Self::open_path(&db_path)
     }
 
     /// Open (or create) the sidecar database at an explicit path.
+    ///
+    /// Use this when you need control over the database file location.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Full path to the database file
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarError::Sqlite`] if the database cannot be opened.
     pub fn open_path(path: &PathBuf) -> Result<Self, SidecarError> {
         let conn = Connection::open(path)?;
         let db = Self { conn };
@@ -44,6 +137,31 @@ impl SidecarDb {
     }
 
     /// Get all custom tags for a photo stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `stack_id` - The [`PhotoStack`] ID
+    ///
+    /// # Returns
+    ///
+    /// A map of tag names to JSON values. Returns empty map if stack has no tags.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    /// let tags = db.get_tags("IMG_001")?;
+    ///
+    /// if let Some(ocr) = tags.get("ocr_text") {
+    ///     println!("OCR result: {}", ocr);
+    /// }
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
+    ///
+    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
     pub fn get_tags(
         &self,
         stack_id: &str,
@@ -69,6 +187,35 @@ impl SidecarDb {
     }
 
     /// Set a single custom tag for a photo stack (upsert).
+    ///
+    /// If the tag already exists, its value is updated.
+    ///
+    /// # Arguments
+    ///
+    /// * `stack_id` - The [`PhotoStack`] ID
+    /// * `key` - Tag name
+    /// * `value` - Tag value (any JSON-serializable value)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    ///
+    /// // String value
+    /// db.set_tag("IMG_001", "album", &serde_json::json!("Family Reunion"))?;
+    ///
+    /// // Array value
+    /// db.set_tag("IMG_001", "people", &serde_json::json!(["John", "Jane"]))?;
+    ///
+    /// // Boolean value
+    /// db.set_tag("IMG_001", "processed", &serde_json::json!(true))?;
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
+    ///
+    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
     pub fn set_tag(
         &self,
         stack_id: &str,
@@ -88,6 +235,32 @@ impl SidecarDb {
     }
 
     /// Set multiple custom tags for a photo stack at once.
+    ///
+    /// Uses a single transaction for efficiency.
+    ///
+    /// # Arguments
+    ///
+    /// * `stack_id` - The [`PhotoStack`] ID
+    /// * `tags` - Map of tag names to values
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::collections::HashMap;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    ///
+    /// let mut tags = HashMap::new();
+    /// tags.insert("album".to_string(), serde_json::json!("Vacation 2024"));
+    /// tags.insert("location".to_string(), serde_json::json!("Hawaii"));
+    ///
+    /// db.set_tags("IMG_001", &tags)?;
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
+    ///
+    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
     pub fn set_tags(
         &self,
         stack_id: &str,
@@ -110,6 +283,17 @@ impl SidecarDb {
     }
 
     /// Remove a single custom tag.
+    ///
+    /// # Arguments
+    ///
+    /// * `stack_id` - The [`PhotoStack`] ID
+    /// * `key` - Tag name to remove
+    ///
+    /// # Returns
+    ///
+    /// `true` if the tag existed and was removed, `false` if it didn't exist.
+    ///
+    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
     pub fn remove_tag(&self, stack_id: &str, key: &str) -> Result<bool, SidecarError> {
         let count = self.conn.execute(
             "DELETE FROM stack_metadata WHERE stack_id = ?1 AND key = ?2",
@@ -119,6 +303,16 @@ impl SidecarDb {
     }
 
     /// Remove all custom tags for a photo stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `stack_id` - The [`PhotoStack`] ID
+    ///
+    /// # Returns
+    ///
+    /// The number of tags that were removed.
+    ///
+    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
     pub fn remove_all_tags(&self, stack_id: &str) -> Result<usize, SidecarError> {
         let count = self.conn.execute(
             "DELETE FROM stack_metadata WHERE stack_id = ?1",
@@ -128,6 +322,30 @@ impl SidecarDb {
     }
 
     /// Find all stack IDs that have a specific tag key.
+    ///
+    /// Useful for finding all photos with OCR text, all tagged photos, etc.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Tag name to search for
+    ///
+    /// # Returns
+    ///
+    /// List of stack IDs that have the specified tag.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    ///
+    /// // Find all photos with OCR text
+    /// let ocr_stacks = db.find_stacks_by_key("ocr_text")?;
+    /// println!("{} photos have OCR text", ocr_stacks.len());
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
     pub fn find_stacks_by_key(&self, key: &str) -> Result<Vec<String>, SidecarError> {
         let mut stmt = self
             .conn
@@ -142,6 +360,32 @@ impl SidecarDb {
     }
 
     /// Search for stacks where a tag value contains the given text.
+    ///
+    /// Performs a case-sensitive substring search across all tag values.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Text to search for in tag values
+    ///
+    /// # Returns
+    ///
+    /// List of (stack_id, key, value) tuples for matching tags.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::metadata::sidecar::SidecarDb;
+    /// use std::path::Path;
+    ///
+    /// let db = SidecarDb::open(Path::new("/photos"))?;
+    ///
+    /// // Search for "birthday" in any tag value
+    /// let matches = db.search_tags("birthday")?;
+    /// for (stack_id, key, value) in matches {
+    ///     println!("{} has '{}' in tag '{}'", stack_id, value, key);
+    /// }
+    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
+    /// ```
     pub fn search_tags(&self, query: &str) -> Result<Vec<(String, String, String)>, SidecarError> {
         let mut stmt = self.conn.prepare(
             "SELECT stack_id, key, value FROM stack_metadata WHERE value LIKE '%' || ?1 || '%'",
@@ -161,10 +405,20 @@ impl SidecarDb {
 }
 
 /// Errors from sidecar database operations.
+///
+/// # Variants
+///
+/// | Variant | When It Occurs |
+/// |---------|----------------|
+/// | [`Sqlite`](Self::Sqlite) | Database operation failed (open, query, write) |
+/// | [`Serialization`](Self::Serialization) | JSON serialization/deserialization failed |
 #[derive(Debug, thiserror::Error)]
 pub enum SidecarError {
+    /// A SQLite database error occurred.
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
+    /// JSON serialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
 }
@@ -270,5 +524,112 @@ mod tests {
         let results = db.search_tags("Birthday").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "IMG_001");
+    }
+
+    #[test]
+    fn test_remove_all_tags() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "tag1", &serde_json::json!("value1")).unwrap();
+        db.set_tag("IMG_001", "tag2", &serde_json::json!("value2")).unwrap();
+        db.set_tag("IMG_001", "tag3", &serde_json::json!("value3")).unwrap();
+
+        let count = db.remove_all_tags("IMG_001").unwrap();
+        assert_eq!(count, 3);
+
+        let tags = db.get_tags("IMG_001").unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_remove_all_tags_empty() {
+        let (_tmp, db) = test_db();
+
+        let count = db.remove_all_tags("NONEXISTENT").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_search_tags_no_results() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Hello World")).unwrap();
+
+        let results = db.search_tags("Nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_tags_special_sql_characters() {
+        let (_tmp, db) = test_db();
+
+        // Store values with special SQL characters
+        db.set_tag("IMG_001", "text", &serde_json::json!("100% complete")).unwrap();
+        db.set_tag("IMG_002", "text", &serde_json::json!("file_name_here")).unwrap();
+        db.set_tag("IMG_003", "text", &serde_json::json!("normal text")).unwrap();
+
+        // Note: The current implementation uses LIKE '%' || ?1 || '%' which means
+        // special SQL LIKE characters (% and _) in the search term still act as wildcards.
+        // This test documents the current behavior:
+        
+        // Search for "complete" - should find IMG_001
+        let results = db.search_tags("complete").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "IMG_001");
+
+        // Search for "file" - should find IMG_002
+        let results_file = db.search_tags("file").unwrap();
+        assert_eq!(results_file.len(), 1);
+        assert_eq!(results_file[0].0, "IMG_002");
+
+        // Searching for "100" should find IMG_001
+        let results_num = db.search_tags("100").unwrap();
+        assert_eq!(results_num.len(), 1);
+        assert_eq!(results_num[0].0, "IMG_001");
+    }
+
+    #[test]
+    fn test_get_tags_empty_stack() {
+        let (_tmp, db) = test_db();
+
+        let tags = db.get_tags("NONEXISTENT").unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_open_path_explicit() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("custom.db");
+
+        let db = SidecarDb::open_path(&db_path).unwrap();
+        db.set_tag("IMG_001", "key", &serde_json::json!("value")).unwrap();
+
+        // Verify file was created
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_sidecar_error_display() {
+        let err = SidecarError::Serialization("test error".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Serialization error"));
+        assert!(display.contains("test error"));
+    }
+
+    #[test]
+    fn test_sidecar_error_debug() {
+        let err = SidecarError::Serialization("test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Serialization"));
+    }
+
+    #[test]
+    fn test_find_stacks_by_key_no_results() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "tag1", &serde_json::json!("value")).unwrap();
+
+        let ids = db.find_stacks_by_key("nonexistent_key").unwrap();
+        assert!(ids.is_empty());
     }
 }

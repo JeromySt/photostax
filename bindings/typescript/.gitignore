@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+target/
+dist/
+*.node
+*.tsbuildinfo
+
+# Coverage
+coverage/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# napi-rs generated
+npm/
+*.node
+
+# Test fixtures (created during test runs)
+.photostax.db
