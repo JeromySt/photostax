@@ -9,7 +9,18 @@
 
 This crate provides C-compatible FFI bindings for `photostax-core`, enabling integration with C, C++, C#, Python, and other languages via P/Invoke or similar mechanisms.
 
-## Building
+## Installation
+
+For language-specific bindings, use the official packages:
+
+| Language | Package | Install |
+|----------|---------|---------|
+| .NET/C# | `Photostax` | `dotnet add package Photostax` |
+| TypeScript | `@photostax/core` | `npm install @photostax/core` |
+
+For direct FFI usage, build from source (see below).
+
+## Building from Source
 
 ```sh
 cargo build --release --package photostax-ffi
@@ -20,21 +31,18 @@ This produces:
 - `libphotostax_ffi.dylib` (macOS)
 - `photostax_ffi.dll` (Windows)
 
-## Usage (C)
+The C header file is generated at `ffi/photostax.h`.
+
+## Quick Start (C)
 
 ```c
 #include <stdio.h>
-
-// Forward declarations
-void* photostax_repository_new(const char* path);
-void photostax_repository_free(void* repo);
-int photostax_repository_scan_count(void* repo);
-const char* photostax_version(void);
+#include "photostax.h"
 
 int main() {
     printf("photostax version: %s\n", photostax_version());
 
-    void* repo = photostax_repository_new("/path/to/photos");
+    PhotostaxRepository repo = photostax_repository_new("/path/to/photos");
     if (repo) {
         int count = photostax_repository_scan_count(repo);
         printf("Found %d photo stacks\n", count);
@@ -44,7 +52,7 @@ int main() {
 }
 ```
 
-## Usage (C# P/Invoke)
+## Quick Start (C# P/Invoke)
 
 ```csharp
 using System.Runtime.InteropServices;
@@ -65,17 +73,44 @@ public static class PhotoStax
 }
 ```
 
-## API
+## API Overview
+
+### Repository Functions
 
 | Function | Description |
 |----------|-------------|
 | `photostax_repository_new(path)` | Create a repository handle |
 | `photostax_repository_free(repo)` | Free a repository handle |
 | `photostax_repository_scan_count(repo)` | Scan and return photo stack count |
+| `photostax_repository_scan_json(repo)` | Scan and return JSON array of stacks |
+
+### Metadata Functions
+
+| Function | Description |
+|----------|-------------|
+| `photostax_stack_metadata_json(stack)` | Get metadata as JSON |
+| `photostax_repository_write_metadata(repo, id, json)` | Write metadata to a stack |
+
+### Utility Functions
+
+| Function | Description |
+|----------|-------------|
 | `photostax_version()` | Get library version string |
+| `photostax_last_error()` | Get last error message |
+| `photostax_string_free(str)` | Free a string returned by FFI |
+
+## Memory Management
+
+- **Handles** returned by `*_new()` must be freed with corresponding `*_free()`
+- **Strings** returned by `*_json()` functions must be freed with `photostax_string_free()`
+- **Const strings** (like `photostax_version()`) are owned by the library and must not be freed
+
+See [docs/bindings-guide.md](../docs/bindings-guide.md) for detailed FFI conventions.
 
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../LICENSE-APACHE) or [MIT License](../LICENSE-MIT) at your option.
 
-See the [main repository](https://github.com/JeromySt/photostax) for more details.
+---
+
+[← Back to main README](../README.md) | [Bindings Guide](../docs/bindings-guide.md)

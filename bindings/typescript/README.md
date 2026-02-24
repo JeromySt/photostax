@@ -1,7 +1,8 @@
 # @photostax/core
 
-Node.js binding for the photostax library - a unified photo stack library for Epson FastFoto repositories.
+**Node.js binding for the photostax library — access Epson FastFoto repositories from TypeScript/JavaScript.**
 
+[![npm](https://img.shields.io/npm/v/@photostax/core.svg)](https://www.npmjs.com/package/@photostax/core)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](../../LICENSE-MIT)
 
 ## Overview
@@ -21,14 +22,6 @@ This library groups these files into `PhotoStack` objects and provides access to
 ```bash
 npm install @photostax/core
 ```
-
-### Prerequisites
-
-Building from source requires:
-- [Rust toolchain](https://rustup.rs/) (rustc 1.70+)
-- Node.js 18+ with npm
-- Python 3.x (for node-gyp)
-- C++ compiler (Visual Studio Build Tools on Windows, GCC/Clang on Unix)
 
 ## Quick Start
 
@@ -50,71 +43,21 @@ for (const stack of stacks) {
 }
 ```
 
-## API Reference
+## API Overview
 
 ### PhotostaxRepository
 
 The main class for accessing photo stacks.
 
-#### Constructor
+| Method | Description |
+|--------|-------------|
+| `scan()` | Discover all photo stacks in the repository |
+| `getStack(id)` | Get a specific stack by ID |
+| `readImage(path)` | Read raw image bytes as Buffer |
+| `writeMetadata(id, metadata)` | Write metadata to a stack |
+| `search(query)` | Find stacks matching a query |
 
-```typescript
-new PhotostaxRepository(directoryPath: string)
-```
-
-Creates a repository rooted at the given directory.
-
-#### Methods
-
-##### `scan(): PhotoStack[]`
-
-Scans the directory and returns all discovered photo stacks with metadata.
-
-```typescript
-const stacks = repo.scan();
-```
-
-##### `getStack(id: string): PhotoStack`
-
-Retrieves a single stack by its ID (base filename without suffix).
-
-```typescript
-const stack = repo.getStack('IMG_001');
-```
-
-##### `readImage(path: string): Buffer`
-
-Reads the raw bytes of an image file.
-
-```typescript
-const buffer = repo.readImage(stack.original!);
-```
-
-##### `writeMetadata(stackId: string, metadata: Partial<Metadata>): void`
-
-Writes metadata to a stack. XMP tags are written to image files, custom tags go to the sidecar database.
-
-```typescript
-repo.writeMetadata('IMG_001', {
-  customTags: { album: 'Family Reunion', people: ['John', 'Jane'] }
-});
-```
-
-##### `search(query: SearchQuery): PhotoStack[]`
-
-Searches for stacks matching the given criteria.
-
-```typescript
-const results = repo.search({
-  text: 'birthday',
-  hasBack: true,
-  exifFilters: [{ key: 'Make', value: 'EPSON' }]
-});
-```
-
-### Types
-
-#### PhotoStack
+### PhotoStack
 
 ```typescript
 interface PhotoStack {
@@ -126,7 +69,7 @@ interface PhotoStack {
 }
 ```
 
-#### Metadata
+### Metadata
 
 ```typescript
 interface Metadata {
@@ -136,7 +79,7 @@ interface Metadata {
 }
 ```
 
-#### SearchQuery
+### SearchQuery
 
 ```typescript
 interface SearchQuery {
@@ -146,24 +89,25 @@ interface SearchQuery {
   hasBack?: boolean;                   // Filter by back scan presence
   hasEnhanced?: boolean;               // Filter by enhanced scan presence
 }
-
-interface KeyValueFilter {
-  key: string;
-  value: string;
-}
 ```
 
 ### Utility Functions
 
-#### `isNativeAvailable(): boolean`
-
-Returns `true` if the native addon was loaded successfully.
-
-#### `getNativeLoadError(): Error | null`
-
-Returns the error if the native addon failed to load, or `null` on success.
+| Function | Description |
+|----------|-------------|
+| `isNativeAvailable()` | Check if native addon loaded successfully |
+| `getNativeLoadError()` | Get error if native addon failed to load |
 
 ## Building from Source
+
+### Prerequisites
+
+- [Rust toolchain](https://rustup.rs/) (1.70+)
+- [Node.js 18+](https://nodejs.org/) with npm
+- Python 3.x (for node-gyp)
+- C++ compiler (Visual Studio Build Tools on Windows, GCC/Clang on Unix)
+
+### Build Steps
 
 ```bash
 # Clone the repository
@@ -190,20 +134,25 @@ npm run build:debug
 
 ## Supported Platforms
 
-The native addon builds for:
-- Windows (x64, arm64)
-- macOS (x64, arm64)
-- Linux (x64, arm64, musl)
+Pre-built binaries are published for:
 
-Pre-built binaries are published to npm for common platforms.
+| Platform | Architectures |
+|----------|---------------|
+| Windows | x64, arm64 |
+| macOS | x64, arm64 |
+| Linux | x64, arm64, musl |
 
 ## File Format Support
 
-- **JPEG**: `.jpg`, `.jpeg`
-- **TIFF**: `.tif`, `.tiff`
-
-Both formats support EXIF metadata extraction. XMP metadata is read from embedded data (JPEG) or sidecar `.xmp` files (TIFF).
+| Format | Extensions | EXIF | XMP |
+|--------|------------|------|-----|
+| JPEG | `.jpg`, `.jpeg` | ✓ | Embedded |
+| TIFF | `.tif`, `.tiff` | ✓ | Embedded or sidecar |
 
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT license](../../LICENSE-MIT) at your option.
+
+---
+
+[← Back to main README](../../README.md) | [FFI Documentation](../../ffi/README.md)

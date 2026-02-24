@@ -8,16 +8,31 @@
 
 ## Overview
 
-Epson FastFoto scanners produce multiple files per scanned photo (`<name>.jpg`, `<name>_a.jpg`, `<name>_b.jpg`). This library groups them into a single `PhotoStack` abstraction, enabling applications to operate on complete photos rather than individual files.
+Epson FastFoto scanners produce multiple files per scanned photo:
+
+| File Pattern | Description |
+|--------------|-------------|
+| `<name>.jpg` or `<name>.tif` | Original front scan |
+| `<name>_a.jpg` or `<name>_a.tif` | Enhanced version (color-corrected) |
+| `<name>_b.jpg` or `<name>_b.tif` | Back of the photo |
+
+This library groups them into a single `PhotoStack` abstraction, enabling applications to operate on complete photos rather than individual files.
+
+## Installation
+
+```sh
+cargo add photostax-core
+```
 
 ## Features
 
+- **Multi-format support** — JPEG (`.jpg`, `.jpeg`) and TIFF (`.tif`, `.tiff`)
 - **PhotoStack abstraction** — Groups front, enhanced, and back scans into a single unit
 - **Repository trait** — Pluggable storage backends (local filesystem included)
-- **EXIF metadata** — Read and write photo metadata
-- **SQLite caching** — Fast indexed lookups for large collections
+- **Metadata support** — Read EXIF, read/write XMP, and custom sidecar database
+- **Search & filter** — Query stacks by metadata with a fluent builder API
 
-## Usage
+## Quick Start
 
 ```rust
 use photostax_core::backends::local::LocalRepository;
@@ -34,8 +49,52 @@ for stack in &stacks {
 }
 ```
 
+## API Overview
+
+### Core Types
+
+| Type | Description |
+|------|-------------|
+| `PhotoStack` | Represents a grouped photo with original, enhanced, and back scans |
+| `Metadata` | EXIF, XMP, and custom metadata for a photo stack |
+| `Repository` | Trait for storage backend abstraction |
+| `LocalRepository` | Local filesystem implementation |
+| `SearchQuery` | Builder for filtering stacks by metadata |
+
+### Key Methods
+
+```rust
+// Scanning
+let stacks = repo.scan()?;              // Discover all photo stacks
+let stack = repo.get_stack("IMG_001")?; // Get specific stack by ID
+
+// Metadata
+let metadata = repo.read_metadata("IMG_001")?;
+repo.write_metadata("IMG_001", &metadata)?;
+
+// Search
+let query = SearchQuery::new()
+    .with_text("vacation")
+    .with_has_back(true);
+let results = repo.search(&query)?;
+
+// Read image bytes
+let bytes = repo.read_image(&stack.original.unwrap())?;
+```
+
+## Building from Source
+
+```sh
+git clone https://github.com/JeromySt/photostax
+cd photostax
+cargo build --release --package photostax-core
+cargo test --package photostax-core
+```
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../LICENSE-APACHE) or [MIT License](../LICENSE-MIT) at your option.
 
-See the [main repository](https://github.com/JeromySt/photostax) for more details.
+---
+
+[← Back to main README](../README.md) | [API Documentation](https://docs.rs/photostax-core)

@@ -1,24 +1,18 @@
 # Photostax .NET Binding
 
-A .NET wrapper for the `photostax-ffi` native library, providing idiomatic C# access to Epson FastFoto photo repositories.
+**A .NET wrapper for the photostax library — access Epson FastFoto photo repositories from C#.**
+
+[![NuGet](https://img.shields.io/nuget/v/Photostax.svg)](https://www.nuget.org/packages/Photostax)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/JeromySt/photostax#license)
+
+## Overview
+
+This package provides idiomatic C# access to Epson FastFoto photo repositories. It groups scanner output files (original, enhanced, back scans) into `PhotoStack` objects and provides metadata reading and writing.
 
 ## Installation
 
-### NuGet Package
-
 ```bash
 dotnet add package Photostax
-```
-
-### Building from Source
-
-1. Clone the repository
-2. Build the native library (see [Building Native Library](#building-native-library))
-3. Build the .NET library:
-
-```bash
-cd bindings/dotnet
-dotnet build
 ```
 
 ## Quick Start
@@ -56,127 +50,92 @@ var metadata = new Metadata().WithCustomTag("album", "Family Photos");
 repo.WriteMetadata(stacks[0].Id, metadata);
 ```
 
-## API Reference
+## API Overview
 
 ### PhotostaxRepository
 
 The main entry point for working with photo repositories.
 
-```csharp
-public sealed class PhotostaxRepository : IDisposable
-{
-    // Open a repository at the specified path
-    public PhotostaxRepository(string directoryPath);
-    
-    // Scan for all photo stacks
-    public IReadOnlyList<PhotoStack> Scan();
-    
-    // Get a specific stack by ID
-    public PhotoStack GetStack(string id);
-    
-    // Read image bytes
-    public byte[] ReadImage(string path);
-    
-    // Write metadata to a stack
-    public void WriteMetadata(string stackId, Metadata metadata);
-    
-    // Search for stacks matching a query
-    public IReadOnlyList<PhotoStack> Search(SearchQuery query);
-}
-```
+| Method | Description |
+|--------|-------------|
+| `Scan()` | Discover all photo stacks in the repository |
+| `GetStack(id)` | Get a specific stack by ID |
+| `ReadImage(path)` | Read raw image bytes |
+| `WriteMetadata(id, metadata)` | Write metadata to a stack |
+| `Search(query)` | Find stacks matching a query |
 
 ### PhotoStack
 
 Represents a photo stack with its associated images and metadata.
 
-```csharp
-public sealed class PhotoStack
-{
-    public string Id { get; }
-    public string? OriginalPath { get; }
-    public string? EnhancedPath { get; }
-    public string? BackPath { get; }
-    public Metadata Metadata { get; }
-    public bool HasAnyImage { get; }
-    public ImageFormat? Format { get; }
-}
-```
-
-### Metadata
-
-Metadata associated with a photo stack, including EXIF, XMP, and custom tags.
-
-```csharp
-public sealed class Metadata
-{
-    public IReadOnlyDictionary<string, string> ExifTags { get; }
-    public IReadOnlyDictionary<string, string> XmpTags { get; }
-    public IReadOnlyDictionary<string, object?> CustomTags { get; }
-    
-    // Create a new metadata with a custom tag added/updated
-    public Metadata WithCustomTag(string key, object? value);
-}
-```
+| Property | Type | Description |
+|----------|------|-------------|
+| `Id` | `string` | Unique stack identifier |
+| `OriginalPath` | `string?` | Path to original scan |
+| `EnhancedPath` | `string?` | Path to enhanced scan |
+| `BackPath` | `string?` | Path to back scan |
+| `Metadata` | `Metadata` | EXIF, XMP, and custom tags |
+| `Format` | `ImageFormat?` | JPEG, TIFF, or Unknown |
 
 ### SearchQuery
 
 Builder for constructing search queries.
 
 ```csharp
-public sealed class SearchQuery
-{
-    public SearchQuery WithText(string text);
-    public SearchQuery WithExifFilter(string key, string contains);
-    public SearchQuery WithCustomFilter(string key, string contains);
-    public SearchQuery WithHasBack(bool hasBack);
-    public SearchQuery WithHasEnhanced(bool hasEnhanced);
-}
+var query = new SearchQuery()
+    .WithText("vacation")           // Free-text search
+    .WithExifFilter("Make", "EPSON") // EXIF tag filter
+    .WithCustomFilter("album", "2020") // Custom tag filter
+    .WithHasBack(true)              // Has back scan
+    .WithHasEnhanced(true);         // Has enhanced scan
 ```
 
-### ImageFormat
+## Building from Source
 
-Enum representing supported image formats.
+### Prerequisites
 
-```csharp
-public enum ImageFormat
-{
-    Jpeg,
-    Png,
-    Tiff,
-    Unknown
-}
-```
+- [.NET SDK 8.0+](https://dotnet.microsoft.com/download)
+- [Rust toolchain](https://rustup.rs/) (for building native library)
 
-## Building Native Library
-
-The native library must be built before using this binding:
+### Build Steps
 
 ```bash
-# From repository root
+# 1. Build native library
+cd <repo_root>
 cargo build --release -p photostax-ffi
+
+# 2. Build .NET library
+cd bindings/dotnet
+dotnet build
+
+# 3. Run tests
+dotnet test
 ```
 
-The resulting library will be in `target/release/`:
-- Windows: `photostax_ffi.dll`
-- macOS: `libphotostax_ffi.dylib`
-- Linux: `libphotostax_ffi.so`
+### Native Library Location
 
-Ensure the native library is in your application's runtime directory or system library path.
+The native library must be in your application's runtime directory:
+
+| Platform | File |
+|----------|------|
+| Windows | `photostax_ffi.dll` |
+| macOS | `libphotostax_ffi.dylib` |
+| Linux | `libphotostax_ffi.so` |
 
 ## Running Tests
 
 ```bash
 cd bindings/dotnet
 dotnet test
-```
 
-To run integration tests (requires native library):
-
-```bash
-dotnet test --filter "Category!=Integration"  # Skip integration tests
-dotnet test                                    # Run all tests (requires native lib)
+# Skip integration tests (no native library required)
+dotnet test --filter "Category!=Integration"
 ```
 
 ## License
 
-This project is dual-licensed under MIT or Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT License](../../LICENSE-MIT) at your option.
+
+---
+
+[← Back to main README](../../README.md) | [FFI Documentation](../../ffi/README.md)
