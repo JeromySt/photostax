@@ -1,0 +1,208 @@
+use crate::photo_stack::PhotoStack;
+
+/// Filter criteria for searching photo stacks.
+#[derive(Debug, Default, Clone)]
+pub struct SearchQuery {
+    /// Filter by EXIF tag key-value pairs (all must match).
+    pub exif_filters: Vec<(String, String)>,
+    /// Filter by custom tag key-value pairs (all must match).
+    pub custom_filters: Vec<(String, String)>,
+    /// Free-text search across all metadata values.
+    pub text_query: Option<String>,
+    /// Only include stacks that have a back scan.
+    pub has_back: Option<bool>,
+    /// Only include stacks that have an enhanced scan.
+    pub has_enhanced: Option<bool>,
+}
+
+impl SearchQuery {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an EXIF tag filter (tag value must contain the given text).
+    pub fn with_exif_filter(mut self, key: impl Into<String>, contains: impl Into<String>) -> Self {
+        self.exif_filters.push((key.into(), contains.into()));
+        self
+    }
+
+    /// Add a custom tag filter (tag value string must contain the given text).
+    pub fn with_custom_filter(
+        mut self,
+        key: impl Into<String>,
+        contains: impl Into<String>,
+    ) -> Self {
+        self.custom_filters.push((key.into(), contains.into()));
+        self
+    }
+
+    /// Set a free-text search across all metadata.
+    pub fn with_text(mut self, query: impl Into<String>) -> Self {
+        self.text_query = Some(query.into());
+        self
+    }
+
+    /// Filter for stacks that have/don't have a back scan.
+    pub fn with_has_back(mut self, has_back: bool) -> Self {
+        self.has_back = Some(has_back);
+        self
+    }
+
+    /// Filter for stacks that have/don't have an enhanced scan.
+    pub fn with_has_enhanced(mut self, has_enhanced: bool) -> Self {
+        self.has_enhanced = Some(has_enhanced);
+        self
+    }
+}
+
+/// Filter a collection of photo stacks based on a search query.
+pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoStack> {
+    stacks
+        .iter()
+        .filter(|stack| matches_query(stack, query))
+        .cloned()
+        .collect()
+}
+
+fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    // Check structural filters
+    if let Some(has_back) = query.has_back {
+        if stack.back.is_some() != has_back {
+            return false;
+        }
+    }
+
+    if let Some(has_enhanced) = query.has_enhanced {
+        if stack.enhanced.is_some() != has_enhanced {
+            return false;
+        }
+    }
+
+    // Check EXIF tag filters
+    for (key, contains) in &query.exif_filters {
+        match stack.metadata.exif_tags.get(key) {
+            Some(value) if value.to_lowercase().contains(&contains.to_lowercase()) => {}
+            _ => return false,
+        }
+    }
+
+    // Check custom tag filters
+    for (key, contains) in &query.custom_filters {
+        match stack.metadata.custom_tags.get(key) {
+            Some(value) => {
+                let value_str = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                if !value_str.to_lowercase().contains(&contains.to_lowercase()) {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    // Check free-text search
+    if let Some(ref text) = query.text_query {
+        let text_lower = text.to_lowercase();
+        let found_in_id = stack.id.to_lowercase().contains(&text_lower);
+        let found_in_exif = stack
+            .metadata
+            .exif_tags
+            .values()
+            .any(|v| v.to_lowercase().contains(&text_lower));
+        let found_in_custom = stack.metadata.custom_tags.values().any(|v| {
+            let s = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            s.to_lowercase().contains(&text_lower)
+        });
+
+        if !found_in_id && !found_in_exif && !found_in_custom {
+            return false;
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::photo_stack::{Metadata, PhotoStack};
+    use std::path::PathBuf;
+
+    fn make_stack(id: &str, has_back: bool, exif: Vec<(&str, &str)>, custom: Vec<(&str, &str)>) -> PhotoStack {
+        let mut metadata = Metadata::default();
+        for (k, v) in exif {
+            metadata.exif_tags.insert(k.to_string(), v.to_string());
+        }
+        for (k, v) in custom {
+            metadata.custom_tags.insert(k.to_string(), serde_json::json!(v));
+        }
+        PhotoStack {
+            id: id.to_string(),
+            original: Some(PathBuf::from(format!("{id}.jpg"))),
+            enhanced: Some(PathBuf::from(format!("{id}_a.jpg"))),
+            back: if has_back { Some(PathBuf::from(format!("{id}_b.jpg"))) } else { None },
+            metadata,
+        }
+    }
+
+    #[test]
+    fn test_filter_by_text() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![], vec![("ocr_text", "Happy Birthday")]),
+            make_stack("IMG_002", true, vec![], vec![("ocr_text", "Merry Christmas")]),
+        ];
+
+        let q = SearchQuery::new().with_text("birthday");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_by_has_back() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_has_back(true);
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_by_exif_tag() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![("Make", "EPSON")], vec![]),
+            make_stack("IMG_002", false, vec![("Make", "Canon")], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_exif_filter("Make", "epson");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_combined_filters() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![("Make", "EPSON")], vec![("ocr_text", "Hello")]),
+            make_stack("IMG_002", true, vec![("Make", "EPSON")], vec![("ocr_text", "World")]),
+            make_stack("IMG_003", false, vec![("Make", "EPSON")], vec![("ocr_text", "Hello")]),
+        ];
+
+        let q = SearchQuery::new()
+            .with_exif_filter("Make", "EPSON")
+            .with_has_back(true)
+            .with_text("hello");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+}
