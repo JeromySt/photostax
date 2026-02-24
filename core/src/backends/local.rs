@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::metadata::exif;
 use crate::metadata::sidecar::SidecarDb;
+use crate::metadata::xmp;
 use crate::photo_stack::{Metadata, PhotoStack};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, ScannerConfig};
@@ -44,6 +45,16 @@ impl LocalRepository {
         }
     }
 
+    /// Load XMP tags from the best available image in the stack.
+    /// Prefers the enhanced image, falls back to original.
+    fn load_xmp_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
+        let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
+        match candidate {
+            Some(path) => xmp::read_xmp(path).unwrap_or_default(),
+            None => std::collections::HashMap::new(),
+        }
+    }
+
     /// Load custom tags from the sidecar database.
     fn load_sidecar_tags(
         &self,
@@ -55,9 +66,10 @@ impl LocalRepository {
         }
     }
 
-    /// Enrich a PhotoStack with EXIF and sidecar metadata.
+    /// Enrich a PhotoStack with EXIF, XMP, and sidecar metadata.
     fn enrich_metadata(&self, stack: &mut PhotoStack) {
         stack.metadata.exif_tags = self.load_exif_tags(stack);
+        stack.metadata.xmp_tags = self.load_xmp_tags(stack);
         stack.metadata.custom_tags = self.load_sidecar_tags(&stack.id);
     }
 }
@@ -86,6 +98,30 @@ impl Repository for LocalRepository {
     }
 
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
+        // Write XMP tags to the image file (preferred method for photo app compatibility)
+        if !tags.xmp_tags.is_empty() {
+            // Prefer enhanced image, fall back to original
+            let target = stack.enhanced.as_ref().or(stack.original.as_ref());
+            if let Some(path) = target {
+                // Write XMP - if it fails, log warning but don't fail the operation
+                if let Err(e) = xmp::write_xmp(path, &tags.xmp_tags) {
+                    eprintln!(
+                        "Warning: Failed to write XMP to {}: {}. Falling back to sidecar storage.",
+                        path.display(),
+                        e
+                    );
+                    // Fall back to sidecar DB for XMP tags
+                    let db = SidecarDb::open(&self.root)
+                        .map_err(|e| RepositoryError::Other(e.to_string()))?;
+                    for (key, value) in &tags.xmp_tags {
+                        let prefixed_key = format!("xmp:{key}");
+                        db.set_tag(&stack.id, &prefixed_key, &serde_json::Value::String(value.clone()))
+                            .map_err(|e| RepositoryError::Other(e.to_string()))?;
+                    }
+                }
+            }
+        }
+
         // Write custom tags to sidecar DB
         if !tags.custom_tags.is_empty() {
             let db = SidecarDb::open(&self.root)
@@ -94,9 +130,8 @@ impl Repository for LocalRepository {
                 .map_err(|e| RepositoryError::Other(e.to_string()))?;
         }
 
-        // Note: EXIF writing to JPEG files is a future enhancement.
-        // For now, EXIF tags in the Metadata are stored in the sidecar DB
-        // alongside custom tags to preserve the original files.
+        // Store EXIF tags in sidecar DB (EXIF writing to files is complex and risky)
+        // This preserves user-provided EXIF values without modifying original EXIF data
         if !tags.exif_tags.is_empty() {
             let db = SidecarDb::open(&self.root)
                 .map_err(|e| RepositoryError::Other(e.to_string()))?;
