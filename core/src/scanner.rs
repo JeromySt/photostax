@@ -220,4 +220,203 @@ mod tests {
         assert_eq!(orig_ext, "jpg");
         assert_eq!(back_ext, "tif");
     }
+
+    #[test]
+    fn test_scan_empty_directory() {
+        let tmp = TempDir::new().unwrap();
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(tmp.path(), &config).unwrap();
+        assert!(stacks.is_empty());
+    }
+
+    #[test]
+    fn test_scan_directory_with_no_valid_images() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create non-image files
+        fs::write(dir.join("readme.txt"), b"text").unwrap();
+        fs::write(dir.join("image.png"), b"png").unwrap();
+        fs::write(dir.join("data.bmp"), b"bmp").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+        assert!(stacks.is_empty());
+    }
+
+    #[test]
+    fn test_scan_unusual_casing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with unusual casing
+        fs::write(dir.join("IMG_001.JPG"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_a.Jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_002.TIF"), b"original2").unwrap();
+        fs::write(dir.join("IMG_002_a.Tif"), b"enhanced2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+        assert!(stacks.iter().any(|s| s.id == "IMG_001"));
+        assert!(stacks.iter().any(|s| s.id == "IMG_002"));
+    }
+
+    #[test]
+    fn test_scan_enhanced_only_no_original() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create only enhanced file, no original
+        fs::write(dir.join("IMG_001_a.jpg"), b"enhanced").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert_eq!(s.id, "IMG_001");
+        assert!(s.original.is_none());
+        assert!(s.enhanced.is_some());
+        assert!(s.back.is_none());
+    }
+
+    #[test]
+    fn test_scan_back_only_no_original() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create only back file, no original
+        fs::write(dir.join("IMG_001_b.jpg"), b"back").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert_eq!(s.id, "IMG_001");
+        assert!(s.original.is_none());
+        assert!(s.enhanced.is_none());
+        assert!(s.back.is_some());
+    }
+
+    #[test]
+    fn test_scan_custom_config_suffixes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with custom suffixes
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("IMG_001_enhanced.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("IMG_001_back.jpg"), b"back").unwrap();
+
+        let config = ScannerConfig {
+            enhanced_suffix: "_enhanced".to_string(),
+            back_suffix: "_back".to_string(),
+            extensions: vec!["jpg".to_string()],
+        };
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert!(s.original.is_some());
+        assert!(s.enhanced.is_some());
+        assert!(s.back.is_some());
+    }
+
+    #[test]
+    fn test_scan_unicode_filenames() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files with unicode filenames
+        fs::write(dir.join("写真_001.jpg"), b"original").unwrap();
+        fs::write(dir.join("写真_001_a.jpg"), b"enhanced").unwrap();
+        fs::write(dir.join("фото_002.tif"), b"original2").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 2);
+        assert!(stacks.iter().any(|s| s.id == "写真_001"));
+        assert!(stacks.iter().any(|s| s.id == "фото_002"));
+    }
+
+    #[test]
+    fn test_classify_stem_empty_string() {
+        let config = ScannerConfig::default();
+        let (base, variant) = classify_stem("", &config);
+        assert_eq!(base, "");
+        assert!(matches!(variant, Variant::Original));
+    }
+
+    #[test]
+    fn test_classify_stem_double_suffix_a_b() {
+        let config = ScannerConfig::default();
+        // File ending with _a_b - should strip _b first (back), base is IMG_001_a
+        let (base, variant) = classify_stem("IMG_001_a_b", &config);
+        assert_eq!(base, "IMG_001_a");
+        assert!(matches!(variant, Variant::Back));
+    }
+
+    #[test]
+    fn test_classify_stem_double_suffix_b_a() {
+        let config = ScannerConfig::default();
+        // File ending with _b_a - should strip _a first (enhanced), base is IMG_001_b
+        let (base, variant) = classify_stem("IMG_001_b_a", &config);
+        assert_eq!(base, "IMG_001_b");
+        assert!(matches!(variant, Variant::Enhanced));
+    }
+
+    #[test]
+    fn test_scanner_config_default() {
+        let config = ScannerConfig::default();
+        assert_eq!(config.enhanced_suffix, "_a");
+        assert_eq!(config.back_suffix, "_b");
+        assert!(config.extensions.contains(&"jpg".to_string()));
+        assert!(config.extensions.contains(&"jpeg".to_string()));
+        assert!(config.extensions.contains(&"tif".to_string()));
+        assert!(config.extensions.contains(&"tiff".to_string()));
+    }
+
+    #[test]
+    fn test_scan_ignores_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create a file in root
+        fs::write(dir.join("IMG_001.jpg"), b"original").unwrap();
+
+        // Create a subdirectory with files
+        let subdir = dir.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("IMG_002.jpg"), b"sub_original").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        // Should only find IMG_001, not the one in subdir
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(stacks[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_scan_results_sorted_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Create files in non-alphabetical order
+        fs::write(dir.join("ZZZ_001.jpg"), b"z").unwrap();
+        fs::write(dir.join("AAA_001.jpg"), b"a").unwrap();
+        fs::write(dir.join("MMM_001.jpg"), b"m").unwrap();
+
+        let config = ScannerConfig::default();
+        let stacks = scan_directory(dir, &config).unwrap();
+
+        assert_eq!(stacks.len(), 3);
+        assert_eq!(stacks[0].id, "AAA_001");
+        assert_eq!(stacks[1].id, "MMM_001");
+        assert_eq!(stacks[2].id, "ZZZ_001");
+    }
 }

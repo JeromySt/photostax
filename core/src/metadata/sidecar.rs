@@ -271,4 +271,111 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "IMG_001");
     }
+
+    #[test]
+    fn test_remove_all_tags() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "tag1", &serde_json::json!("value1")).unwrap();
+        db.set_tag("IMG_001", "tag2", &serde_json::json!("value2")).unwrap();
+        db.set_tag("IMG_001", "tag3", &serde_json::json!("value3")).unwrap();
+
+        let count = db.remove_all_tags("IMG_001").unwrap();
+        assert_eq!(count, 3);
+
+        let tags = db.get_tags("IMG_001").unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_remove_all_tags_empty() {
+        let (_tmp, db) = test_db();
+
+        let count = db.remove_all_tags("NONEXISTENT").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_search_tags_no_results() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Hello World")).unwrap();
+
+        let results = db.search_tags("Nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_tags_special_sql_characters() {
+        let (_tmp, db) = test_db();
+
+        // Store values with special SQL characters
+        db.set_tag("IMG_001", "text", &serde_json::json!("100% complete")).unwrap();
+        db.set_tag("IMG_002", "text", &serde_json::json!("file_name_here")).unwrap();
+        db.set_tag("IMG_003", "text", &serde_json::json!("normal text")).unwrap();
+
+        // Note: The current implementation uses LIKE '%' || ?1 || '%' which means
+        // special SQL LIKE characters (% and _) in the search term still act as wildcards.
+        // This test documents the current behavior:
+        
+        // Search for "complete" - should find IMG_001
+        let results = db.search_tags("complete").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "IMG_001");
+
+        // Search for "file" - should find IMG_002
+        let results_file = db.search_tags("file").unwrap();
+        assert_eq!(results_file.len(), 1);
+        assert_eq!(results_file[0].0, "IMG_002");
+
+        // Searching for "100" should find IMG_001
+        let results_num = db.search_tags("100").unwrap();
+        assert_eq!(results_num.len(), 1);
+        assert_eq!(results_num[0].0, "IMG_001");
+    }
+
+    #[test]
+    fn test_get_tags_empty_stack() {
+        let (_tmp, db) = test_db();
+
+        let tags = db.get_tags("NONEXISTENT").unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_open_path_explicit() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("custom.db");
+
+        let db = SidecarDb::open_path(&db_path).unwrap();
+        db.set_tag("IMG_001", "key", &serde_json::json!("value")).unwrap();
+
+        // Verify file was created
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_sidecar_error_display() {
+        let err = SidecarError::Serialization("test error".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Serialization error"));
+        assert!(display.contains("test error"));
+    }
+
+    #[test]
+    fn test_sidecar_error_debug() {
+        let err = SidecarError::Serialization("test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Serialization"));
+    }
+
+    #[test]
+    fn test_find_stacks_by_key_no_results() {
+        let (_tmp, db) = test_db();
+
+        db.set_tag("IMG_001", "tag1", &serde_json::json!("value")).unwrap();
+
+        let ids = db.find_stacks_by_key("nonexistent_key").unwrap();
+        assert!(ids.is_empty());
+    }
 }

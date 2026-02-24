@@ -138,4 +138,37 @@ mod tests {
         // and return an empty map (no EXIF tags in this minimal file)
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_read_all_exif_tags_nonexistent() {
+        let result = read_all_exif_tags(&PathBuf::from("nonexistent.jpg"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_all_exif_tags_non_image() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"not an image").unwrap();
+        let result = read_all_exif_tags(tmp.path());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_exif_error_display() {
+        let io_err = ExifError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let display = format!("{}", io_err);
+        assert!(display.contains("I/O error"));
+
+        let parse_err = ExifError::Parse("invalid format".to_string());
+        let display2 = format!("{}", parse_err);
+        assert!(display2.contains("EXIF parse error"));
+    }
+
+    #[test]
+    fn test_exif_error_debug() {
+        let err = ExifError::Parse("test error".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Parse"));
+    }
 }

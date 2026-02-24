@@ -205,4 +205,186 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "IMG_001");
     }
+
+    #[test]
+    fn test_filter_by_has_enhanced_true() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            {
+                let mut s = make_stack("IMG_002", false, vec![], vec![]);
+                s.enhanced = None;
+                s
+            },
+        ];
+
+        let q = SearchQuery::new().with_has_enhanced(true);
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_by_has_enhanced_false() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            {
+                let mut s = make_stack("IMG_002", false, vec![], vec![]);
+                s.enhanced = None;
+                s
+            },
+        ];
+
+        let q = SearchQuery::new().with_has_enhanced(false);
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_002");
+    }
+
+    #[test]
+    fn test_filter_empty_stacks_list() {
+        let stacks: Vec<PhotoStack> = vec![];
+        let q = SearchQuery::new().with_text("anything");
+        let results = filter_stacks(&stacks, &q);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filter_no_filters_returns_all() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+            make_stack("IMG_003", true, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new();
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_multiple_exif_filters_and_semantics() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![("Make", "EPSON"), ("Model", "FF-680W")], vec![]),
+            make_stack("IMG_002", false, vec![("Make", "EPSON"), ("Model", "Other")], vec![]),
+            make_stack("IMG_003", false, vec![("Make", "Canon"), ("Model", "FF-680W")], vec![]),
+        ];
+
+        let q = SearchQuery::new()
+            .with_exif_filter("Make", "EPSON")
+            .with_exif_filter("Model", "FF-680W");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_multiple_custom_filters_and_semantics() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![("tag1", "value1"), ("tag2", "value2")]),
+            make_stack("IMG_002", false, vec![], vec![("tag1", "value1"), ("tag2", "other")]),
+            make_stack("IMG_003", false, vec![], vec![("tag1", "other"), ("tag2", "value2")]),
+        ];
+
+        let q = SearchQuery::new()
+            .with_custom_filter("tag1", "value1")
+            .with_custom_filter("tag2", "value2");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_text_query_matches_stack_id() {
+        let stacks = vec![
+            make_stack("FamilyPhotos_001", false, vec![], vec![]),
+            make_stack("VacationPics_002", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_text("Family");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "FamilyPhotos_001");
+    }
+
+    #[test]
+    fn test_custom_tag_with_non_string_values() {
+        let mut stack = PhotoStack::new("IMG_001");
+        stack.original = Some(PathBuf::from("IMG_001.jpg"));
+        stack.metadata.custom_tags.insert("count".to_string(), serde_json::json!(42));
+        stack.metadata.custom_tags.insert("tags".to_string(), serde_json::json!(["a", "b", "c"]));
+
+        let stacks = vec![stack];
+
+        // Number value search
+        let q = SearchQuery::new().with_custom_filter("count", "42");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+
+        // Array value search (should match stringified form)
+        let q2 = SearchQuery::new().with_custom_filter("tags", "b");
+        let results2 = filter_stacks(&stacks, &q2);
+        assert_eq!(results2.len(), 1);
+    }
+
+    #[test]
+    fn test_search_query_default() {
+        let q = SearchQuery::default();
+        assert!(q.exif_filters.is_empty());
+        assert!(q.custom_filters.is_empty());
+        assert!(q.text_query.is_none());
+        assert!(q.has_back.is_none());
+        assert!(q.has_enhanced.is_none());
+    }
+
+    #[test]
+    fn test_filter_missing_exif_tag() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![("Make", "EPSON")], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]), // No Make tag
+        ];
+
+        let q = SearchQuery::new().with_exif_filter("Make", "EPSON");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_missing_custom_tag() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![("ocr", "text")]),
+            make_stack("IMG_002", false, vec![], vec![]), // No ocr tag
+        ];
+
+        let q = SearchQuery::new().with_custom_filter("ocr", "text");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_has_back_false() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_has_back(false);
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_002");
+    }
+
+    #[test]
+    fn test_text_search_in_exif() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![("Software", "EPSON FastFoto")], vec![]),
+            make_stack("IMG_002", false, vec![("Software", "Adobe Photoshop")], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_text("FastFoto");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
 }

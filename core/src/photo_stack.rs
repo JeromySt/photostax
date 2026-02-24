@@ -115,4 +115,105 @@ mod tests {
         stack.back = Some(PathBuf::from("photo_b.jpg"));
         assert_eq!(stack.format(), None);
     }
+
+    #[test]
+    fn test_photo_stack_new_defaults() {
+        let stack = PhotoStack::new("test_id");
+        assert_eq!(stack.id, "test_id");
+        assert!(stack.original.is_none());
+        assert!(stack.enhanced.is_none());
+        assert!(stack.back.is_none());
+        assert!(stack.metadata.exif_tags.is_empty());
+        assert!(stack.metadata.xmp_tags.is_empty());
+        assert!(stack.metadata.custom_tags.is_empty());
+    }
+
+    #[test]
+    fn test_has_any_image_none() {
+        let stack = PhotoStack::new("test");
+        assert!(!stack.has_any_image());
+    }
+
+    #[test]
+    fn test_has_any_image_original_only() {
+        let mut stack = PhotoStack::new("test");
+        stack.original = Some(PathBuf::from("photo.jpg"));
+        assert!(stack.has_any_image());
+    }
+
+    #[test]
+    fn test_has_any_image_enhanced_only() {
+        let mut stack = PhotoStack::new("test");
+        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+        assert!(stack.has_any_image());
+    }
+
+    #[test]
+    fn test_has_any_image_back_only() {
+        let mut stack = PhotoStack::new("test");
+        stack.back = Some(PathBuf::from("photo_b.jpg"));
+        assert!(stack.has_any_image());
+    }
+
+    #[test]
+    fn test_has_any_image_all() {
+        let mut stack = PhotoStack::new("test");
+        stack.original = Some(PathBuf::from("photo.jpg"));
+        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+        stack.back = Some(PathBuf::from("photo_b.jpg"));
+        assert!(stack.has_any_image());
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let mut stack = PhotoStack::new("test_stack");
+        stack.original = Some(PathBuf::from("photo.jpg"));
+        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+        stack.metadata.exif_tags.insert("Make".to_string(), "EPSON".to_string());
+        stack.metadata.custom_tags.insert("ocr".to_string(), serde_json::json!("Hello"));
+
+        let json = serde_json::to_string(&stack).unwrap();
+        let deserialized: PhotoStack = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, "test_stack");
+        assert!(deserialized.original.is_some());
+        assert!(deserialized.enhanced.is_some());
+        assert!(deserialized.back.is_none());
+        assert_eq!(deserialized.metadata.exif_tags.get("Make"), Some(&"EPSON".to_string()));
+        assert_eq!(deserialized.metadata.custom_tags.get("ocr"), Some(&serde_json::json!("Hello")));
+    }
+
+    #[test]
+    fn test_metadata_default() {
+        let metadata = Metadata::default();
+        assert!(metadata.exif_tags.is_empty());
+        assert!(metadata.xmp_tags.is_empty());
+        assert!(metadata.custom_tags.is_empty());
+    }
+
+    #[test]
+    fn test_metadata_with_xmp_tags() {
+        let mut metadata = Metadata::default();
+        metadata.xmp_tags.insert("description".to_string(), "Test photo".to_string());
+        metadata.xmp_tags.insert("creator".to_string(), "John Doe".to_string());
+        
+        assert_eq!(metadata.xmp_tags.len(), 2);
+        assert_eq!(metadata.xmp_tags.get("description"), Some(&"Test photo".to_string()));
+    }
+
+    #[test]
+    fn test_photo_stack_clone() {
+        let mut stack = PhotoStack::new("test");
+        stack.original = Some(PathBuf::from("photo.jpg"));
+        
+        let cloned = stack.clone();
+        assert_eq!(cloned.id, stack.id);
+        assert_eq!(cloned.original, stack.original);
+    }
+
+    #[test]
+    fn test_photo_stack_new_from_string() {
+        let stack = PhotoStack::new(String::from("string_id"));
+        assert_eq!(stack.id, "string_id");
+    }
 }

@@ -567,4 +567,109 @@ mod tests {
         );
         assert_eq!(read_metadata.get("title"), Some(&"New title".to_string()));
     }
+
+    #[test]
+    fn test_write_empty_metadata() {
+        let jpeg_data = create_test_jpeg();
+        let tmp = NamedTempFile::with_suffix(".jpg").unwrap();
+        fs::write(tmp.path(), &jpeg_data).unwrap();
+
+        let metadata = HashMap::new();
+        write_xmp_to_jpeg(tmp.path(), &metadata).unwrap();
+
+        let read_metadata = read_xmp_from_jpeg(tmp.path()).unwrap();
+        assert!(read_metadata.is_empty());
+    }
+
+    #[test]
+    fn test_read_xmp_unsupported_format() {
+        let tmp = NamedTempFile::with_suffix(".png").unwrap();
+        fs::write(tmp.path(), b"fake png data").unwrap();
+
+        let result = read_xmp(tmp.path());
+        assert!(matches!(result, Err(XmpError::UnsupportedFormat(_))));
+    }
+
+    #[test]
+    fn test_xmp_error_display() {
+        let io_err = XmpError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        assert!(format!("{}", io_err).contains("I/O error"));
+
+        let parse_err = XmpError::ImageParse("invalid".to_string());
+        assert!(format!("{}", parse_err).contains("Image parsing error"));
+
+        let xmp_err = XmpError::XmpParse("bad xml".to_string());
+        assert!(format!("{}", xmp_err).contains("XMP parsing error"));
+
+        let fmt_err = XmpError::UnsupportedFormat("bmp".to_string());
+        assert!(format!("{}", fmt_err).contains("Unsupported format"));
+    }
+
+    #[test]
+    fn test_xmp_error_debug() {
+        let err = XmpError::ImageParse("test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("ImageParse"));
+    }
+
+    #[test]
+    fn test_build_xmp_xml_empty() {
+        let metadata = HashMap::new();
+        let xml = build_xmp_xml(&metadata);
+
+        // Should still have valid XMP structure
+        assert!(xml.contains("<?xpacket begin="));
+        assert!(xml.contains("<x:xmpmeta"));
+        assert!(xml.contains("</x:xmpmeta>"));
+        assert!(xml.contains("<?xpacket end=\"w\"?>"));
+    }
+
+    #[test]
+    fn test_escape_unescape_roundtrip() {
+        let original = "Tom & Jerry <friends> \"quoted\" 'apostrophe'";
+        let escaped = escape_xml(original);
+        let unescaped = unescape_xml(&escaped);
+        assert_eq!(original, unescaped);
+    }
+
+    #[test]
+    fn test_xmp_tiff_roundtrip_via_sidecar() {
+        let tmp = NamedTempFile::with_suffix(".tif").unwrap();
+        fs::write(tmp.path(), b"fake tiff data").unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("description".to_string(), "TIFF roundtrip test".to_string());
+        metadata.insert("customField".to_string(), "custom value".to_string());
+
+        // Write via generic function (creates sidecar)
+        write_xmp(tmp.path(), &metadata).unwrap();
+
+        // Read via generic function (reads sidecar)
+        let read_metadata = read_xmp(tmp.path()).unwrap();
+
+        assert_eq!(
+            read_metadata.get("description"),
+            Some(&"TIFF roundtrip test".to_string())
+        );
+        assert_eq!(
+            read_metadata.get("customField"),
+            Some(&"custom value".to_string())
+        );
+
+        // Clean up sidecar
+        let _ = fs::remove_file(tmp.path().with_extension("xmp"));
+    }
+
+    #[test]
+    fn test_xmp_file_no_extension() {
+        let tmp = tempfile::Builder::new()
+            .prefix("noext")
+            .suffix("")
+            .tempfile()
+            .unwrap();
+        fs::write(tmp.path(), b"data").unwrap();
+
+        let result = write_xmp(tmp.path(), &HashMap::new());
+        assert!(matches!(result, Err(XmpError::UnsupportedFormat(_))));
+    }
 }
