@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "kUpZLCEsBoE=",
+  "dgSpecHash": "UfbVOu8VFoQ=",
   "success": true,
-  "projectFilePath": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj",
+  "projectFilePath": "C:\\src\\repos\\photostax\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj",
   "expectedPackageFiles": [],
   "logs": []
 }

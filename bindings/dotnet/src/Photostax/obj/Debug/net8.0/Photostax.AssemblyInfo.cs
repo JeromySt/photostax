@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Unified photo stack library for Epson FastFoto repositories - .NET binding")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+2a19d34da4b0e962041fe473ed146599a443babd")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+c46fd29f076a71ae904141572c38a3c71961bb4f")]
 [assembly: System.Reflection.AssemblyProductAttribute("Photostax")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Photostax")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

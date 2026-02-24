@@ -8,6 +8,6 @@ build_property.PlatformNeutralAssembly =
 build_property.EnforceExtendedAnalyzerRules = 
 build_property._SupportedPlatformList = Linux,macOS,Windows
 build_property.RootNamespace = Photostax.Tests
-build_property.ProjectDir = C:\src\repos\photostax\.worktrees\b6bfa1df\bindings\dotnet\tests\Photostax.Tests\
+build_property.ProjectDir = C:\src\repos\photostax\bindings\dotnet\tests\Photostax.Tests\
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 

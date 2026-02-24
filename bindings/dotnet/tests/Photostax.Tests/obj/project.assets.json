@@ -970,11 +970,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
+      "projectUniqueName": "C:\\src\\repos\\photostax\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
       "projectName": "Photostax.Tests",
-      "projectPath": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
+      "projectPath": "C:\\src\\repos\\photostax\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
       "packagesPath": "C:\\Users\\thelo\\.nuget\\packages\\",
-      "outputPath": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\tests\\Photostax.Tests\\obj\\",
+      "outputPath": "C:\\src\\repos\\photostax\\bindings\\dotnet\\tests\\Photostax.Tests\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\thelo\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -989,8 +989,8 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "projectReferences": {
-            "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj": {
-              "projectPath": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj"
+            "C:\\src\\repos\\photostax\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj": {
+              "projectPath": "C:\\src\\repos\\photostax\\bindings\\dotnet\\src\\Photostax\\Photostax.csproj"
             }
           }
         }

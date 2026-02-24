@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "nOLSypimNN0=",
+  "dgSpecHash": "zIhE9WAY4BY=",
   "success": true,
-  "projectFilePath": "C:\\src\\repos\\photostax\\.worktrees\\b6bfa1df\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
+  "projectFilePath": "C:\\src\\repos\\photostax\\bindings\\dotnet\\tests\\Photostax.Tests\\Photostax.Tests.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\thelo\\.nuget\\packages\\coverlet.collector\\6.0.2\\coverlet.collector.6.0.2.nupkg.sha512",
     "C:\\Users\\thelo\\.nuget\\packages\\microsoft.codecoverage\\17.10.0\\microsoft.codecoverage.17.10.0.nupkg.sha512",
