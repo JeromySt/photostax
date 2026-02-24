@@ -1,0 +1,18 @@
+[package]
+name = "photostax-napi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Node.js native addon for photostax - Epson FastFoto photo stack library"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["napi9", "serde-json"] }
+napi-derive = "2"
+photostax-core = { path = "../../core" }
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "2"
