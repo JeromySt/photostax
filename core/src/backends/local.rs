@@ -1,3 +1,57 @@
+//! Local filesystem repository implementation.
+//!
+//! This module provides [`LocalRepository`], a [`Repository`] implementation that
+//! reads photo stacks from a local filesystem directory.
+//!
+//! ## Filesystem Layout
+//!
+//! The repository expects FastFoto-style file organization:
+//!
+//! ```text
+//! /photos/
+//! ├── .photostax.db          # Sidecar database (auto-created)
+//! ├── IMG_0001.jpg           # Original scan
+//! ├── IMG_0001_a.jpg         # Enhanced scan
+//! ├── IMG_0001_b.jpg         # Back scan
+//! ├── IMG_0002.tif           # Another stack (TIFF)
+//! ├── IMG_0002_a.tif
+//! └── IMG_0002.xmp           # XMP sidecar for TIFF
+//! ```
+//!
+//! ## Metadata Enrichment
+//!
+//! When scanning, [`LocalRepository`] automatically enriches each [`PhotoStack`]
+//! with metadata from three sources:
+//!
+//! 1. **EXIF tags** — Read from the enhanced image (or original if no enhanced)
+//! 2. **XMP tags** — Read from embedded XMP (JPEG) or sidecar `.xmp` file (TIFF)
+//! 3. **Custom tags** — Read from the `.photostax.db` sidecar database
+//!
+//! ## Examples
+//!
+//! ```rust,no_run
+//! use photostax_core::backends::local::LocalRepository;
+//! use photostax_core::repository::Repository;
+//!
+//! let repo = LocalRepository::new("/photos");
+//!
+//! // Scan all stacks
+//! let stacks = repo.scan()?;
+//! for stack in &stacks {
+//!     println!("{}: {} EXIF tags, {} custom tags",
+//!         stack.id,
+//!         stack.metadata.exif_tags.len(),
+//!         stack.metadata.custom_tags.len());
+//! }
+//!
+//! // Get a specific stack
+//! let stack = repo.get_stack("IMG_0001")?;
+//! # Ok::<(), photostax_core::repository::RepositoryError>(())
+//! ```
+//!
+//! [`Repository`]: crate::repository::Repository
+//! [`PhotoStack`]: crate::photo_stack::PhotoStack
+
 use std::path::{Path, PathBuf};
 
 use crate::metadata::exif;
@@ -8,6 +62,18 @@ use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, ScannerConfig};
 
 /// A repository backed by a local filesystem directory.
+///
+/// Scans a directory for FastFoto-style photo files and groups them into
+/// [`PhotoStack`] objects. Automatically enriches stacks with metadata from
+/// EXIF, XMP, and the sidecar database.
+///
+/// # Thread Safety
+///
+/// Multiple `LocalRepository` instances can safely operate on the same
+/// directory concurrently for read operations. Write operations (metadata
+/// updates) use SQLite's built-in locking.
+///
+/// [`PhotoStack`]: crate::photo_stack::PhotoStack
 pub struct LocalRepository {
     root: PathBuf,
     config: ScannerConfig,
@@ -15,6 +81,21 @@ pub struct LocalRepository {
 
 impl LocalRepository {
     /// Create a new `LocalRepository` rooted at the given directory.
+    ///
+    /// Uses default [`ScannerConfig`] (FastFoto naming convention).
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - Path to the directory containing photo files
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use photostax_core::backends::local::LocalRepository;
+    ///
+    /// let repo = LocalRepository::new("/photos");
+    /// let repo2 = LocalRepository::new(std::path::PathBuf::from("/archive"));
+    /// ```
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -23,6 +104,21 @@ impl LocalRepository {
     }
 
     /// Create a new `LocalRepository` with a custom scanner configuration.
+    ///
+    /// Use this when working with non-standard file naming conventions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::backends::local::LocalRepository;
+    /// use photostax_core::scanner::ScannerConfig;
+    ///
+    /// let config = ScannerConfig {
+    ///     extensions: vec!["tif".to_string()], // TIFF only
+    ///     ..ScannerConfig::default()
+    /// };
+    /// let repo = LocalRepository::with_config("/archive", config);
+    /// ```
     pub fn with_config(root: impl Into<PathBuf>, config: ScannerConfig) -> Self {
         Self {
             root: root.into(),
@@ -31,12 +127,24 @@ impl LocalRepository {
     }
 
     /// Returns the root directory of this repository.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::backends::local::LocalRepository;
+    ///
+    /// let repo = LocalRepository::new("/photos");
+    /// assert_eq!(repo.root().to_str(), Some("/photos"));
+    /// ```
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Load EXIF tags from the best available image in the stack.
-    /// Prefers the enhanced image, falls back to original.
+    ///
+    /// Prefers the enhanced image for EXIF data since it typically has
+    /// richer metadata from FastFoto's processing. Falls back to original
+    /// if no enhanced image exists.
     fn load_exif_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
         let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
@@ -46,7 +154,9 @@ impl LocalRepository {
     }
 
     /// Load XMP tags from the best available image in the stack.
-    /// Prefers the enhanced image, falls back to original.
+    ///
+    /// For JPEG: reads embedded XMP from the file.
+    /// For TIFF: reads from sidecar `.xmp` file if present.
     fn load_xmp_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
         let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
@@ -67,6 +177,11 @@ impl LocalRepository {
     }
 
     /// Enrich a PhotoStack with EXIF, XMP, and sidecar metadata.
+    ///
+    /// This is the core metadata merging logic that combines all three
+    /// metadata sources into the stack's unified [`Metadata`] structure.
+    ///
+    /// [`Metadata`]: crate::photo_stack::Metadata
     fn enrich_metadata(&self, stack: &mut PhotoStack) {
         stack.metadata.exif_tags = self.load_exif_tags(stack);
         stack.metadata.xmp_tags = self.load_xmp_tags(stack);
