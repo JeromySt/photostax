@@ -1,10 +1,15 @@
 [package]
 name = "photostax-core"
-description = "Unified photo stack library for Epson FastFoto repositories"
+description = "Unified photo stack library for Epson FastFoto repositories — scanning, metadata, and search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["epson", "fastfoto", "photo", "scanner", "exif"]
+categories = ["multimedia::images", "filesystem"]
+readme = "README.md"
+documentation = "https://docs.rs/photostax-core"
+exclude = ["tests/testdata/*"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

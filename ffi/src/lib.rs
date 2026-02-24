@@ -1,79 +1,74 @@
-//! # photostax-ffi
-//!
 //! C FFI bindings for the photostax-core library.
 //!
-//! This crate provides a C-compatible API for accessing photostax-core functionality
-//! from other languages via FFI (Foreign Function Interface). It supports:
-//!
-//! - .NET via P/Invoke
-//! - TypeScript/Node.js via napi-rs or FFI
-//! - Any language with C FFI support
-//!
-//! ## Building
-//!
-//! ```bash
-//! cargo build --package photostax-ffi
-//! ```
-//!
-//! This produces both a dynamic library (`cdylib`) and a static library (`staticlib`),
-//! along with a C header file (`photostax.h`) via cbindgen.
-//!
-//! ## Memory Management
-//!
-//! All pointers returned by FFI functions are owned by the caller and must be
-//! freed using the corresponding `*_free` functions:
-//!
-//! | Allocation Function | Free Function |
-//! |---------------------|---------------|
-//! | `photostax_repo_open` | `photostax_repo_free` |
-//! | `photostax_repo_scan` | `photostax_stack_array_free` |
-//! | `photostax_repo_get_stack` | `photostax_stack_free` |
-//! | `photostax_read_image` | `photostax_bytes_free` |
-//! | Any function returning `*mut c_char` | `photostax_string_free` |
-//!
-//! ## Error Handling
-//!
-//! Functions that can fail return an `FfiResult` struct with:
-//! - `success`: boolean indicating success/failure
-//! - `error_message`: null on success, error string on failure (must be freed)
-//!
-//! All functions catch panics to prevent unwinding across the FFI boundary.
-//!
-//! ## Example (C)
-//!
-//! ```c
-//! #include "photostax.h"
-//!
-//! int main() {
-//!     // Open a repository
-//!     PhotostaxRepo* repo = photostax_repo_open("/path/to/photos");
-//!     if (!repo) {
-//!         return 1;
-//!     }
-//!
-//!     // Scan for photo stacks
-//!     FfiPhotoStackArray stacks = photostax_repo_scan(repo);
-//!     for (size_t i = 0; i < stacks.len; i++) {
-//!         printf("Stack: %s\n", stacks.data[i].id);
-//!     }
-//!
-//!     // Clean up
-//!     photostax_stack_array_free(stacks);
-//!     photostax_repo_free(repo);
-//!     return 0;
-//! }
-//! ```
+//! This crate provides C-compatible functions for using photostax-core
+//! from languages like C, C++, C#, and others via P/Invoke or similar mechanisms.
 
-#![warn(missing_docs)]
 #![allow(clippy::missing_safety_doc)]
 
-pub mod types;
-pub mod repository;
-pub mod search;
-pub mod metadata;
+use std::ffi::CStr;
+use std::os::raw::c_char;
+use std::path::Path;
+use std::ptr;
 
-// Re-export all public FFI functions and types at crate root
-pub use types::*;
-pub use repository::*;
-pub use search::*;
-pub use metadata::*;
+use photostax_core::backends::local::LocalRepository;
+use photostax_core::repository::Repository;
+
+/// Create a new local repository handle.
+///
+/// # Safety
+/// The `path` must be a valid null-terminated UTF-8 string.
+/// The returned pointer must be freed with `photostax_repository_free`.
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repository_new(path: *const c_char) -> *mut LocalRepository {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+
+    let c_str = unsafe { CStr::from_ptr(path) };
+    let path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    Box::into_raw(Box::new(LocalRepository::new(Path::new(path_str))))
+}
+
+/// Free a repository handle.
+///
+/// # Safety
+/// The `repo` must be a valid pointer returned by `photostax_repository_new`,
+/// or null (in which case this is a no-op).
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repository_free(repo: *mut LocalRepository) {
+    if !repo.is_null() {
+        drop(unsafe { Box::from_raw(repo) });
+    }
+}
+
+/// Scan the repository and return the count of photo stacks found.
+/// Returns -1 on error.
+///
+/// # Safety
+/// The `repo` must be a valid pointer returned by `photostax_repository_new`.
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repository_scan_count(repo: *const LocalRepository) -> i32 {
+    if repo.is_null() {
+        return -1;
+    }
+
+    let repo = unsafe { &*repo };
+    match repo.scan() {
+        Ok(stacks) => stacks.len() as i32,
+        Err(_) => -1,
+    }
+}
+
+/// Get the version string of the library.
+///
+/// # Safety
+/// The returned string is statically allocated and must not be freed.
+#[no_mangle]
+pub extern "C" fn photostax_version() -> *const c_char {
+    static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
+    VERSION.as_ptr() as *const c_char
+}
