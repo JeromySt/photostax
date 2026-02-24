@@ -25,3 +25,29 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # NuGet dependencies (.NET bindings)
+  - package-ecosystem: "nuget"
+    directory: "/bindings/dotnet"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "dotnet"
+
+  # npm dependencies (TypeScript bindings)
+  - package-ecosystem: "npm"
+    directory: "/bindings/typescript"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "typescript"
