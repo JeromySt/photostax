@@ -38,7 +38,7 @@ jobs:
       run: cargo build --workspace --release --target ${{ matrix.target }}
 
     - name: Upload build artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.artifact }}
         path: target/${{ matrix.target }}/release/photostax-cli*
