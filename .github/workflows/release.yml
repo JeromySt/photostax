@@ -93,8 +93,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
-        with:
-          toolchain: stable
+      with:
+        toolchain: stable
 
     - name: Publish photostax-core to crates.io
       run: cargo publish -p photostax-core
@@ -160,8 +160,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
-        with:
-          toolchain: stable
+      with:
+        toolchain: stable
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
