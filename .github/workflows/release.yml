@@ -30,7 +30,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
       with:
         targets: ${{ matrix.target }}
 
@@ -91,7 +91,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
 
     - name: Publish photostax-core to crates.io
       run: cargo publish -p photostax-core
@@ -156,7 +156,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
 
     - name: Setup Node.js
       uses: actions/setup-node@v4

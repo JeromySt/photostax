@@ -26,6 +26,7 @@ yarn-error.log*
 .yarn/
 .pnp.*
 package-lock.json
+!bindings/typescript/package-lock.json
 yarn.lock
 coverage/
 .nyc_output/
