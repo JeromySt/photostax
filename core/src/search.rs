@@ -290,19 +290,30 @@ mod tests {
     use crate::photo_stack::{Metadata, PhotoStack};
     use std::path::PathBuf;
 
-    fn make_stack(id: &str, has_back: bool, exif: Vec<(&str, &str)>, custom: Vec<(&str, &str)>) -> PhotoStack {
+    fn make_stack(
+        id: &str,
+        has_back: bool,
+        exif: Vec<(&str, &str)>,
+        custom: Vec<(&str, &str)>,
+    ) -> PhotoStack {
         let mut metadata = Metadata::default();
         for (k, v) in exif {
             metadata.exif_tags.insert(k.to_string(), v.to_string());
         }
         for (k, v) in custom {
-            metadata.custom_tags.insert(k.to_string(), serde_json::json!(v));
+            metadata
+                .custom_tags
+                .insert(k.to_string(), serde_json::json!(v));
         }
         PhotoStack {
             id: id.to_string(),
             original: Some(PathBuf::from(format!("{id}.jpg"))),
             enhanced: Some(PathBuf::from(format!("{id}_a.jpg"))),
-            back: if has_back { Some(PathBuf::from(format!("{id}_b.jpg"))) } else { None },
+            back: if has_back {
+                Some(PathBuf::from(format!("{id}_b.jpg")))
+            } else {
+                None
+            },
             metadata,
         }
     }
@@ -310,8 +321,18 @@ mod tests {
     #[test]
     fn test_filter_by_text() {
         let stacks = vec![
-            make_stack("IMG_001", true, vec![], vec![("ocr_text", "Happy Birthday")]),
-            make_stack("IMG_002", true, vec![], vec![("ocr_text", "Merry Christmas")]),
+            make_stack(
+                "IMG_001",
+                true,
+                vec![],
+                vec![("ocr_text", "Happy Birthday")],
+            ),
+            make_stack(
+                "IMG_002",
+                true,
+                vec![],
+                vec![("ocr_text", "Merry Christmas")],
+            ),
         ];
 
         let q = SearchQuery::new().with_text("birthday");
@@ -349,9 +370,24 @@ mod tests {
     #[test]
     fn test_combined_filters() {
         let stacks = vec![
-            make_stack("IMG_001", true, vec![("Make", "EPSON")], vec![("ocr_text", "Hello")]),
-            make_stack("IMG_002", true, vec![("Make", "EPSON")], vec![("ocr_text", "World")]),
-            make_stack("IMG_003", false, vec![("Make", "EPSON")], vec![("ocr_text", "Hello")]),
+            make_stack(
+                "IMG_001",
+                true,
+                vec![("Make", "EPSON")],
+                vec![("ocr_text", "Hello")],
+            ),
+            make_stack(
+                "IMG_002",
+                true,
+                vec![("Make", "EPSON")],
+                vec![("ocr_text", "World")],
+            ),
+            make_stack(
+                "IMG_003",
+                false,
+                vec![("Make", "EPSON")],
+                vec![("ocr_text", "Hello")],
+            ),
         ];
 
         let q = SearchQuery::new()
@@ -365,14 +401,11 @@ mod tests {
 
     #[test]
     fn test_filter_by_has_enhanced_true() {
-        let stacks = vec![
-            make_stack("IMG_001", false, vec![], vec![]),
-            {
-                let mut s = make_stack("IMG_002", false, vec![], vec![]);
-                s.enhanced = None;
-                s
-            },
-        ];
+        let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
+            let mut s = make_stack("IMG_002", false, vec![], vec![]);
+            s.enhanced = None;
+            s
+        }];
 
         let q = SearchQuery::new().with_has_enhanced(true);
         let results = filter_stacks(&stacks, &q);
@@ -382,14 +415,11 @@ mod tests {
 
     #[test]
     fn test_filter_by_has_enhanced_false() {
-        let stacks = vec![
-            make_stack("IMG_001", false, vec![], vec![]),
-            {
-                let mut s = make_stack("IMG_002", false, vec![], vec![]);
-                s.enhanced = None;
-                s
-            },
-        ];
+        let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
+            let mut s = make_stack("IMG_002", false, vec![], vec![]);
+            s.enhanced = None;
+            s
+        }];
 
         let q = SearchQuery::new().with_has_enhanced(false);
         let results = filter_stacks(&stacks, &q);
@@ -421,9 +451,24 @@ mod tests {
     #[test]
     fn test_multiple_exif_filters_and_semantics() {
         let stacks = vec![
-            make_stack("IMG_001", false, vec![("Make", "EPSON"), ("Model", "FF-680W")], vec![]),
-            make_stack("IMG_002", false, vec![("Make", "EPSON"), ("Model", "Other")], vec![]),
-            make_stack("IMG_003", false, vec![("Make", "Canon"), ("Model", "FF-680W")], vec![]),
+            make_stack(
+                "IMG_001",
+                false,
+                vec![("Make", "EPSON"), ("Model", "FF-680W")],
+                vec![],
+            ),
+            make_stack(
+                "IMG_002",
+                false,
+                vec![("Make", "EPSON"), ("Model", "Other")],
+                vec![],
+            ),
+            make_stack(
+                "IMG_003",
+                false,
+                vec![("Make", "Canon"), ("Model", "FF-680W")],
+                vec![],
+            ),
         ];
 
         let q = SearchQuery::new()
@@ -437,9 +482,24 @@ mod tests {
     #[test]
     fn test_multiple_custom_filters_and_semantics() {
         let stacks = vec![
-            make_stack("IMG_001", false, vec![], vec![("tag1", "value1"), ("tag2", "value2")]),
-            make_stack("IMG_002", false, vec![], vec![("tag1", "value1"), ("tag2", "other")]),
-            make_stack("IMG_003", false, vec![], vec![("tag1", "other"), ("tag2", "value2")]),
+            make_stack(
+                "IMG_001",
+                false,
+                vec![],
+                vec![("tag1", "value1"), ("tag2", "value2")],
+            ),
+            make_stack(
+                "IMG_002",
+                false,
+                vec![],
+                vec![("tag1", "value1"), ("tag2", "other")],
+            ),
+            make_stack(
+                "IMG_003",
+                false,
+                vec![],
+                vec![("tag1", "other"), ("tag2", "value2")],
+            ),
         ];
 
         let q = SearchQuery::new()
@@ -467,8 +527,14 @@ mod tests {
     fn test_custom_tag_with_non_string_values() {
         let mut stack = PhotoStack::new("IMG_001");
         stack.original = Some(PathBuf::from("IMG_001.jpg"));
-        stack.metadata.custom_tags.insert("count".to_string(), serde_json::json!(42));
-        stack.metadata.custom_tags.insert("tags".to_string(), serde_json::json!(["a", "b", "c"]));
+        stack
+            .metadata
+            .custom_tags
+            .insert("count".to_string(), serde_json::json!(42));
+        stack
+            .metadata
+            .custom_tags
+            .insert("tags".to_string(), serde_json::json!(["a", "b", "c"]));
 
         let stacks = vec![stack];
 
@@ -535,8 +601,18 @@ mod tests {
     #[test]
     fn test_text_search_in_exif() {
         let stacks = vec![
-            make_stack("IMG_001", false, vec![("Software", "EPSON FastFoto")], vec![]),
-            make_stack("IMG_002", false, vec![("Software", "Adobe Photoshop")], vec![]),
+            make_stack(
+                "IMG_001",
+                false,
+                vec![("Software", "EPSON FastFoto")],
+                vec![],
+            ),
+            make_stack(
+                "IMG_002",
+                false,
+                vec![("Software", "Adobe Photoshop")],
+                vec![],
+            ),
         ];
 
         let q = SearchQuery::new().with_text("FastFoto");

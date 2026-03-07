@@ -108,3 +108,90 @@ impl FfiResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn test_ffi_photo_stack_array_empty() {
+        let array = FfiPhotoStackArray::empty();
+        assert!(array.data.is_null());
+        assert_eq!(array.len, 0);
+    }
+
+    #[test]
+    fn test_ffi_result_success() {
+        let result = FfiResult::success();
+        assert!(result.success);
+        assert!(result.error_message.is_null());
+    }
+
+    #[test]
+    fn test_ffi_result_error_message() {
+        let result = FfiResult::error("something went wrong");
+        assert!(!result.success);
+        assert!(!result.error_message.is_null());
+        let msg = unsafe { CStr::from_ptr(result.error_message) }
+            .to_str()
+            .unwrap();
+        assert_eq!(msg, "something went wrong");
+        unsafe { drop(CString::from_raw(result.error_message)) };
+    }
+
+    #[test]
+    fn test_ffi_result_error_empty_message() {
+        let result = FfiResult::error("");
+        assert!(!result.success);
+        assert!(!result.error_message.is_null());
+        let msg = unsafe { CStr::from_ptr(result.error_message) }
+            .to_str()
+            .unwrap();
+        assert_eq!(msg, "");
+        unsafe { drop(CString::from_raw(result.error_message)) };
+    }
+
+    #[test]
+    fn test_photostax_repo_struct_size() {
+        // PhotostaxRepo wraps a LocalRepository
+        assert!(std::mem::size_of::<PhotostaxRepo>() > 0);
+    }
+
+    #[test]
+    fn test_ffi_photo_stack_repr_c() {
+        // Verify the struct has the expected fields and layout
+        let stack = FfiPhotoStack {
+            id: std::ptr::null_mut(),
+            original: std::ptr::null_mut(),
+            enhanced: std::ptr::null_mut(),
+            back: std::ptr::null_mut(),
+            metadata_json: std::ptr::null_mut(),
+        };
+        assert!(stack.id.is_null());
+        assert!(stack.original.is_null());
+        assert!(stack.enhanced.is_null());
+        assert!(stack.back.is_null());
+        assert!(stack.metadata_json.is_null());
+    }
+
+    #[test]
+    fn test_ffi_photo_stack_array_repr_c() {
+        let array = FfiPhotoStackArray {
+            data: std::ptr::null_mut(),
+            len: 42,
+        };
+        assert!(array.data.is_null());
+        assert_eq!(array.len, 42);
+    }
+
+    #[test]
+    fn test_ffi_result_repr_c() {
+        let result = FfiResult {
+            success: true,
+            error_message: std::ptr::null_mut(),
+        };
+        assert!(result.success);
+        assert!(result.error_message.is_null());
+    }
+}

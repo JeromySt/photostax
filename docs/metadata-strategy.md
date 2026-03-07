@@ -10,7 +10,7 @@ photostax uses a three-tier metadata system:
 |------|--------|--------|------------------|
 | **EXIF** | Image files | Read-only | Universal |
 | **XMP** | Image files / sidecars | Read/Write | High (Adobe standard) |
-| **Sidecar DB** | SQLite database | Read/Write | photostax-only |
+| **XMP Sidecar** | `.xmp` files | Read/Write | High (Adobe standard) |
 
 ## EXIF Tags (Read-Only)
 
@@ -92,84 +92,72 @@ XMP (Extensible Metadata Platform) is Adobe's standard for embedded metadata. ph
 | TIFF | Embedded in TIFF tag | Same as JPEG |
 | Sidecar | `<filename>.xmp` | Used when embedding fails |
 
-## Sidecar Database
+## XMP Sidecar Files
 
-For metadata that doesn't fit XMP's model (complex structures, relationships, full-text search), photostax uses a SQLite sidecar database.
+For application-specific metadata that doesn't map to standard XMP properties
+(custom tags, EXIF overrides), photostax stores data in XMP sidecar files
+alongside the images.
 
-### Database Location
+### Sidecar File Layout
+
+Each photo stack gets a single `.xmp` file named after the stack ID:
 
 ```
-<repository_root>/.photostax/metadata.db
+/photos/
+├── IMG_001.jpg
+├── IMG_001_a.jpg
+├── IMG_001_b.jpg
+├── IMG_001.xmp           ← XMP sidecar for the stack
+├── IMG_002.tif
+└── IMG_002.xmp
 ```
 
-### Schema
+### Data Stored in Sidecar
 
-```sql
--- Core metadata table
-CREATE TABLE stacks (
-    id TEXT PRIMARY KEY,           -- Stack ID (e.g., "Photo_0001")
-    original_path TEXT,            -- Path to original file
-    enhanced_path TEXT,            -- Path to enhanced file
-    back_path TEXT,                -- Path to back file
-    format TEXT,                   -- "jpeg" or "tiff"
-    created_at TEXT,               -- First scan timestamp
-    updated_at TEXT                -- Last modification
-);
+| Category | Namespace | Example |
+|----------|-----------|---------|
+| Standard XMP | `dc:` | `dc:description`, `dc:creator` |
+| Custom tags | `photostax:customTags` | JSON blob of key-value pairs |
+| EXIF overrides | `photostax:exifOverrides` | JSON blob of key-value pairs |
 
--- Custom key-value tags
-CREATE TABLE custom_tags (
-    stack_id TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT,                    -- JSON-encoded value
-    PRIMARY KEY (stack_id, key),
-    FOREIGN KEY (stack_id) REFERENCES stacks(id)
-);
+### Advantages Over a Database
 
--- Full-text search index
-CREATE VIRTUAL TABLE search_index USING fts5(
-    stack_id,
-    title,
-    description,
-    keywords,
-    ocr_text,                      -- Text from back scans
-    content='stacks'
-);
-```
-
-### Use Cases for Sidecar DB
-
-| Use Case | Why Not XMP? |
-|----------|--------------|
-| OCR text from backs | Large text blob, search index needed |
-| Face detection data | Complex coordinates, not standardized |
-| Relationship links | Album/collection membership |
-| Full-text search | FTS5 index for fast queries |
+| Benefit | Description |
+|---------|-------------|
+| **Portable** | `.xmp` files travel with images when copied/moved |
+| **Interoperable** | Adobe Lightroom, darktable, and other apps read `.xmp` files |
+| **No dependencies** | No database engine required |
+| **Inspectable** | Plain XML, human-readable |
+| **Backup-friendly** | Standard file backup tools capture sidecars automatically |
 
 ## Tag Priority and Merging
 
 When loading metadata, photostax merges from multiple sources with this priority:
 
 ```
-Priority: XMP > EXIF > Sidecar DB (for shared keys)
+Priority: XMP sidecar > Embedded XMP > EXIF (for shared keys)
 ```
 
 ### Merge Algorithm
 
 ```python
-def merge_metadata(exif, xmp, sidecar):
+def merge_metadata(exif, embedded_xmp, sidecar_xmp):
     result = {}
     
-    # 1. Start with sidecar (lowest priority for standard tags)
-    result.update(sidecar.standard_tags)
-    
-    # 2. Override with EXIF (read from file)
+    # 1. Start with EXIF (lowest priority for editable tags)
     result.update(exif.tags)
     
-    # 3. Override with XMP (highest priority for editable tags)
-    result.update(xmp.properties)
+    # 2. Override with embedded XMP
+    result.update(embedded_xmp.properties)
     
-    # 4. Always include custom sidecar tags (no conflict possible)
-    result['custom'] = sidecar.custom_tags
+    # 3. Override with sidecar XMP (highest priority)
+    result.update(sidecar_xmp.xmp_tags)
+    
+    # 4. Apply EXIF overrides from sidecar
+    result.update(sidecar_xmp.exif_overrides)
+    
+    # 5. Always include custom tags from sidecar (no conflict possible)
+    result['custom'] = sidecar_xmp.custom_tags
     
     return result
 ```
@@ -181,23 +169,20 @@ def merge_metadata(exif, xmp, sidecar):
 | Description | "Scanned photo" | "Beach vacation 2020" | "Beach vacation 2020" (XMP wins) |
 | DateTime | "2024:01:15 10:30:00" | — | "2024:01:15 10:30:00" (EXIF preserved) |
 | Rating | — | "4" | "4" (XMP-only tag) |
-| People | — | — | ["John", "Jane"] (sidecar custom) |
+| People | — | — | ["John", "Jane"] (sidecar custom tag) |
 
 ## Writing Metadata
 
 ### Write Operation Flow
 
 ```
-1. Application calls repo.writeMetadata(stackId, metadata)
+1. Application calls repo.write_metadata(stack, metadata)
 
-2. For standard properties (title, description, keywords, etc.):
-   a. Write to XMP in image file
-   b. If write fails (permissions, format), write to sidecar XMP file
-   
-3. For custom properties:
-   a. Store in sidecar SQLite database
-   
-4. Update search index
+2. For all properties (XMP, custom tags, EXIF overrides):
+   a. Read-modify-write the stack's XMP sidecar file (.xmp)
+   b. Standard XMP keys go into dc: namespace
+   c. Custom tags serialized as JSON in photostax:customTags
+   d. EXIF overrides serialized as JSON in photostax:exifOverrides
 ```
 
 ### Code Example
@@ -218,10 +203,92 @@ repo.write_metadata("Photo_0001", &metadata)?;
 ## Best Practices
 
 1. **Use XMP for standard tags**: Ensures other apps can read them
-2. **Use sidecar DB for app-specific data**: OCR, faces, internal IDs
-3. **Never modify EXIF**: Preserves original scanner data
-4. **Back up the sidecar database**: Contains custom metadata
+2. **Use custom tags for app-specific data**: OCR text, faces, internal IDs stored in sidecar XMP
+3. **Never modify EXIF**: Preserves original scanner data; use EXIF overrides instead
+4. **Back up sidecar files**: `.xmp` files contain all custom metadata
 5. **Use keywords for searchability**: Indexed by most photo apps
+
+## AI / ML Integration
+
+photostax exposes its metadata write-back API for use by any AI, ML, or external
+analysis tool.  There is no separate "AI metadata" namespace — AI is just another
+writer that uses the same standard fields.  This ensures that metadata produced by
+AI assessment is immediately readable by **every** standard photo application
+(Lightroom, darktable, Google Photos, Apple Photos, etc.).
+
+### How AI Should Write Metadata
+
+1. **Use `xmp_tags` for standard Dublin Core fields** — these are embedded directly
+   into JPEG files and into the XMP sidecar, readable by any viewer.
+2. **Use `custom_tags` for structured / rich data** — arrays, objects, and any data
+   that doesn't fit a flat string.  These live in the XMP sidecar under the
+   `photostax:customTags` namespace.
+3. **Use `write_metadata()`** — the single entry-point that handles embedding, sidecar
+   creation, and merge logic.
+
+### Dublin Core Mapping (xmp_tags)
+
+These keys are automatically mapped to the universally-recognised `dc:` namespace:
+
+| `xmp_tags` Key | XMP Property | AI Use Case |
+|----------------|--------------|-------------|
+| `description` | `dc:description` | AI-generated caption / scene description |
+| `title` | `dc:title` | Suggested photo title |
+| `subject` | `dc:subject` | Keywords: people, places, objects, events (comma-separated) |
+| `creator` | `dc:creator` | Photographer or AI attribution |
+| `date` | `dc:date` | AI-estimated original photo date |
+| `rights` | `dc:rights` | Copyright notice |
+
+Any key **not** in the above list (e.g. `scene`, `estimated_time`) is stored in the
+`photostax:` namespace in XMP — still standards-compliant and visible in advanced
+viewers.
+
+### Structured Custom Tags (custom_tags)
+
+For richer data that benefits from JSON types, write to `custom_tags`:
+
+| Key | JSON Value | Description |
+|-----|------------|-------------|
+| `people` | `["Alice", "Bob"]` | People identified in the photo |
+| `places` | `["Paris", "Eiffel Tower"]` | Named locations or landmarks |
+| `location` | `{"lat": 48.8, "lng": 2.3}` | Geo-coordinates |
+| `events` | `["Wedding"]` | Events depicted |
+| `holidays` | `["Christmas"]` | Holidays or celebrations detected |
+| `era` | `"1980s"` | Estimated decade |
+| `mood` | `"joyful"` | Emotional tone of the photo |
+| `scene` | `"outdoor beach at sunset"` | Scene classification |
+| `objects` | `["dog", "car"]` | Notable objects detected |
+| `ocr_front` | `"Hello World"` | OCR text from front of photo |
+| `ocr_back` | `"Happy Birthday!"` | OCR text from back of photo |
+| `caption` | `"A family of four on the beach"` | Long-form AI caption |
+| `colors` | `["blue", "green"]` | Dominant colours |
+| `confidence` | `0.92` | Overall AI confidence score |
+
+### Example: AI Enrichment Flow
+
+```rust
+use photostax_core::photo_stack::Metadata;
+
+let mut metadata = Metadata::default();
+
+// Standard XMP — written to the image file and sidecar, readable everywhere
+metadata.xmp_tags.insert("description".into(), "Family at the beach".into());
+metadata.xmp_tags.insert("subject".into(), "beach, family, Alice, Bob".into());
+metadata.xmp_tags.insert("date".into(), "1985-07-04".into());
+
+// Structured data — stored in the XMP sidecar as JSON
+metadata.custom_tags.insert("people".into(), serde_json::json!(["Alice", "Bob"]));
+metadata.custom_tags.insert("events".into(), serde_json::json!(["Family Reunion"]));
+metadata.custom_tags.insert("location".into(), serde_json::json!({"lat": 37.82, "lng": -122.48}));
+metadata.custom_tags.insert("mood".into(), serde_json::json!("joyful"));
+
+// Write once — embeds XMP in the JPEG + updates the .xmp sidecar
+repo.write_metadata("IMG_0001", &metadata)?;
+```
+
+After this call, **any** photo viewer that reads Dublin Core XMP will see the
+description, keywords, and date.  Applications that understand the `photostax:`
+namespace (or simply parse the sidecar XML) can also read the structured custom tags.
 
 ---
 

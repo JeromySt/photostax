@@ -5,6 +5,11 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod metadata;
+pub mod repository;
+pub mod search;
+pub mod types;
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::Path;
@@ -71,4 +76,119 @@ pub unsafe extern "C" fn photostax_repository_scan_count(repo: *const LocalRepos
 pub extern "C" fn photostax_version() -> *const c_char {
     static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr() as *const c_char
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn test_repository_new_null_path() {
+        let result = unsafe { photostax_repository_new(ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_repository_new_valid_path() {
+        let path = CString::new(".").unwrap();
+        let repo = unsafe { photostax_repository_new(path.as_ptr()) };
+        assert!(!repo.is_null());
+        unsafe { photostax_repository_free(repo) };
+    }
+
+    #[test]
+    fn test_repository_new_with_testdata() {
+        let testdata = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("core")
+            .join("tests")
+            .join("testdata");
+        let path = CString::new(testdata.to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repository_new(path.as_ptr()) };
+        assert!(!repo.is_null());
+        unsafe { photostax_repository_free(repo) };
+    }
+
+    #[test]
+    fn test_repository_free_null() {
+        // Should not panic
+        unsafe { photostax_repository_free(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_repository_scan_count_null() {
+        let result = unsafe { photostax_repository_scan_count(ptr::null()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_repository_scan_count_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repository_new(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let count = unsafe { photostax_repository_scan_count(repo) };
+        assert_eq!(count, 0);
+
+        unsafe { photostax_repository_free(repo) };
+    }
+
+    #[test]
+    fn test_repository_scan_count_with_testdata() {
+        let testdata = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("core")
+            .join("tests")
+            .join("testdata");
+        let path = CString::new(testdata.to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repository_new(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let count = unsafe { photostax_repository_scan_count(repo) };
+        assert!(count > 0, "Expected at least one photo stack in testdata");
+
+        unsafe { photostax_repository_free(repo) };
+    }
+
+    #[test]
+    fn test_version_returns_valid_string() {
+        let version_ptr = photostax_version();
+        assert!(!version_ptr.is_null());
+        let version_str = unsafe { CStr::from_ptr(version_ptr) };
+        let version = version_str.to_str().unwrap();
+        assert!(!version.is_empty());
+        assert!(version.contains('.'), "Version should be semver: {version}");
+    }
+
+    #[test]
+    fn test_version_matches_cargo_pkg() {
+        let version_ptr = photostax_version();
+        let version_str = unsafe { CStr::from_ptr(version_ptr) };
+        let version = version_str.to_str().unwrap();
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn test_repository_new_invalid_utf8() {
+        // Create a pointer to invalid UTF-8 bytes (null-terminated)
+        let invalid: &[u8] = &[0xff, 0xfe, 0x00]; // invalid UTF-8 + null terminator
+        let result = unsafe { photostax_repository_new(invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_repository_scan_count_invalid_dir() {
+        // Create a repo pointing to a non-existent directory to trigger scan error
+        let path = CString::new("/nonexistent/scan_count_test_dir").unwrap();
+        let repo = unsafe { photostax_repository_new(path.as_ptr()) };
+        assert!(!repo.is_null());
+        let count = unsafe { photostax_repository_scan_count(repo) };
+        // On some OSes this returns 0 (empty), on others -1 (error)
+        assert!(count == 0 || count == -1);
+        unsafe { photostax_repository_free(repo) };
+    }
 }

@@ -15,11 +15,14 @@ public class RepositoryTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public void Constructor_InvalidPath_ThrowsPhotostaxException()
+    public void Constructor_InvalidPath_SucceedsLazily()
     {
-        var ex = Assert.Throws<PhotostaxException>(() => 
-            new PhotostaxRepository("/nonexistent/path/that/does/not/exist"));
-        Assert.Contains("Failed to open repository", ex.Message);
+        // The FFI layer lazily opens repositories — the constructor always
+        // succeeds.  Scanning a nonexistent directory returns an empty list
+        // because the FFI swallows the underlying I/O error.
+        using var repo = new PhotostaxRepository("/nonexistent/path/that/does/not/exist");
+        var stacks = repo.Scan();
+        Assert.Empty(stacks);
     }
 
     [Fact]

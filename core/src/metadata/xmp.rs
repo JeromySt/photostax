@@ -222,8 +222,7 @@ pub fn write_xmp_to_jpeg(path: &Path, metadata: &HashMap<String, String>) -> Res
         .segments()
         .iter()
         .take_while(|seg| {
-            seg.marker() == markers::APP0
-                || (seg.marker() == markers::APP1 && !is_xmp_segment(seg))
+            seg.marker() == markers::APP0 || (seg.marker() == markers::APP1 && !is_xmp_segment(seg))
         })
         .count();
 
@@ -275,8 +274,8 @@ pub fn read_xmp_from_jpeg(path: &Path) -> Result<HashMap<String, String>, XmpErr
             // Skip the XMP header
             if contents.len() > XMP_APP1_HEADER.len() {
                 let xmp_data = &contents[XMP_APP1_HEADER.len()..];
-                let xmp_str = std::str::from_utf8(xmp_data)
-                    .map_err(|e| XmpError::XmpParse(e.to_string()))?;
+                let xmp_str =
+                    std::str::from_utf8(xmp_data).map_err(|e| XmpError::XmpParse(e.to_string()))?;
                 return parse_xmp_xml(xmp_str);
             }
         }
@@ -325,19 +324,13 @@ fn build_xmp_segment_data(xmp_xml: &str) -> Vec<u8> {
 ///
 /// Uses Dublin Core namespace for standard fields (dc:description, dc:creator, etc.)
 /// and a custom photostax namespace for application-specific fields.
-fn build_xmp_xml(metadata: &HashMap<String, String>) -> String {
+pub(crate) fn build_xmp_xml(metadata: &HashMap<String, String>) -> String {
     let mut xml = String::new();
 
     // XMP packet header (required for compatibility)
     xml.push_str("<?xpacket begin=\"\u{FEFF}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
-    xml.push_str(&format!(
-        "<x:xmpmeta xmlns:x=\"{}\">\n",
-        XMP_NS_X
-    ));
-    xml.push_str(&format!(
-        "  <rdf:RDF xmlns:rdf=\"{}\">\n",
-        XMP_NS_RDF
-    ));
+    xml.push_str(&format!("<x:xmpmeta xmlns:x=\"{}\">\n", XMP_NS_X));
+    xml.push_str(&format!("  <rdf:RDF xmlns:rdf=\"{}\">\n", XMP_NS_RDF));
     xml.push_str(&format!(
         "    <rdf:Description rdf:about=\"\"\n      xmlns:dc=\"{}\"\n      xmlns:photostax=\"{}\">\n",
         XMP_NS_DC, XMP_NS_PHOTOSTAX
@@ -382,7 +375,7 @@ fn map_key_to_namespace(key: &str) -> (&'static str, &str) {
 }
 
 /// Parse XMP XML and extract metadata as key-value pairs.
-fn parse_xmp_xml(xml: &str) -> Result<HashMap<String, String>, XmpError> {
+pub(crate) fn parse_xmp_xml(xml: &str) -> Result<HashMap<String, String>, XmpError> {
     let mut metadata = HashMap::new();
 
     // Simple XML parsing - find tags and extract content
@@ -499,8 +492,13 @@ mod tests {
         jpeg.extend_from_slice(&[0xFF, 0xC4]);
         jpeg.extend_from_slice(&[0x00, 0x1F]); // Length
         jpeg.push(0x00); // DC table 0
-        jpeg.extend_from_slice(&[0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        jpeg.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B]);
+        jpeg.extend_from_slice(&[
+            0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ]);
+        jpeg.extend_from_slice(&[
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        ]);
 
         // SOS (Start of Scan)
         jpeg.extend_from_slice(&[0xFF, 0xDA]);
@@ -536,7 +534,10 @@ mod tests {
     #[test]
     fn test_build_xmp_xml_escaping() {
         let mut metadata = HashMap::new();
-        metadata.insert("description".to_string(), "Tom & Jerry <friends>".to_string());
+        metadata.insert(
+            "description".to_string(),
+            "Tom & Jerry <friends>".to_string(),
+        );
 
         let xml = build_xmp_xml(&metadata);
 
@@ -553,7 +554,10 @@ mod tests {
         let xml = build_xmp_xml(&original);
         let parsed = parse_xmp_xml(&xml).unwrap();
 
-        assert_eq!(parsed.get("description"), Some(&"A lovely sunset".to_string()));
+        assert_eq!(
+            parsed.get("description"),
+            Some(&"A lovely sunset".to_string())
+        );
         assert_eq!(parsed.get("creator"), Some(&"John Doe".to_string()));
         assert_eq!(parsed.get("customField"), Some(&"custom value".to_string()));
     }
@@ -561,7 +565,10 @@ mod tests {
     #[test]
     fn test_parse_xmp_xml_with_special_chars() {
         let mut original = HashMap::new();
-        original.insert("description".to_string(), "Photo with <special> & \"chars\"".to_string());
+        original.insert(
+            "description".to_string(),
+            "Photo with <special> & \"chars\"".to_string(),
+        );
 
         let xml = build_xmp_xml(&original);
         let parsed = parse_xmp_xml(&xml).unwrap();
@@ -681,17 +688,26 @@ mod tests {
         write_xmp(tmp.path(), &metadata).unwrap();
         let read_metadata = read_xmp(tmp.path()).unwrap();
 
-        assert_eq!(read_metadata.get("title"), Some(&"Generic test".to_string()));
+        assert_eq!(
+            read_metadata.get("title"),
+            Some(&"Generic test".to_string())
+        );
     }
 
     #[test]
     fn test_map_key_to_namespace() {
         assert_eq!(map_key_to_namespace("description"), ("dc", "description"));
         assert_eq!(map_key_to_namespace("Description"), ("dc", "description"));
-        assert_eq!(map_key_to_namespace("ImageDescription"), ("dc", "description"));
+        assert_eq!(
+            map_key_to_namespace("ImageDescription"),
+            ("dc", "description")
+        );
         assert_eq!(map_key_to_namespace("creator"), ("dc", "creator"));
         assert_eq!(map_key_to_namespace("Artist"), ("dc", "creator"));
-        assert_eq!(map_key_to_namespace("customTag"), ("photostax", "customTag"));
+        assert_eq!(
+            map_key_to_namespace("customTag"),
+            ("photostax", "customTag")
+        );
     }
 
     #[test]
@@ -744,7 +760,10 @@ mod tests {
 
     #[test]
     fn test_xmp_error_display() {
-        let io_err = XmpError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let io_err = XmpError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         assert!(format!("{}", io_err).contains("I/O error"));
 
         let parse_err = XmpError::ImageParse("invalid".to_string());

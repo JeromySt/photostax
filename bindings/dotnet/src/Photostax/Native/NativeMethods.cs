@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace Photostax.Native;
@@ -5,9 +7,82 @@ namespace Photostax.Native;
 /// <summary>
 /// P/Invoke declarations for the photostax_ffi native library.
 /// </summary>
+[ExcludeFromCodeCoverage]
 internal static partial class NativeMethods
 {
     private const string LibName = "photostax_ffi";
+
+    /// <summary>
+    /// Registers a custom native library resolver that probes
+    /// <c>runtimes/{rid}/native/</c> next to the assembly, matching the
+    /// NuGet package layout.  This ensures the library is found both when
+    /// consumed via NuGet and when referenced as a project.
+    /// </summary>
+    static NativeMethods()
+    {
+        NativeLibrary.SetDllImportResolver(
+            typeof(NativeMethods).Assembly,
+            ResolveDllImport);
+    }
+
+    private static IntPtr ResolveDllImport(
+        string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (libraryName != LibName)
+            return IntPtr.Zero;
+
+        // 1. Let the default resolver try first (handles PATH, LD_LIBRARY_PATH, etc.)
+        if (NativeLibrary.TryLoad(libraryName, assembly, searchPath, out var handle))
+            return handle;
+
+        // 2. Probe runtimes/<rid>/native/ next to the managed assembly
+        var assemblyDir = Path.GetDirectoryName(assembly.Location) ?? ".";
+        var rid = RuntimeInformation.RuntimeIdentifier;
+
+        var candidate = Path.Combine(assemblyDir, "runtimes", rid, "native", MapLibraryName(libraryName));
+        if (NativeLibrary.TryLoad(candidate, out handle))
+            return handle;
+
+        // 3. Try the base RID (e.g. win-x64 when running as win10-x64)
+        var baseRid = SimplifyRid(rid);
+        if (baseRid != rid)
+        {
+            candidate = Path.Combine(assemblyDir, "runtimes", baseRid, "native", MapLibraryName(libraryName));
+            if (NativeLibrary.TryLoad(candidate, out handle))
+                return handle;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Maps a logical library name to the platform-specific filename.
+    /// </summary>
+    private static string MapLibraryName(string name)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return name + ".dll";
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return "lib" + name + ".dylib";
+        return "lib" + name + ".so";
+    }
+
+    /// <summary>
+    /// Strips version qualifiers from a RID (e.g. "win10-x64" → "win-x64").
+    /// </summary>
+    private static string SimplifyRid(string rid)
+    {
+        // RIDs like "win10-x64", "ubuntu.22.04-x64" etc.  Strip to base.
+        var dash = rid.IndexOf('-');
+        if (dash < 0) return rid;
+
+        var os = rid[..dash];
+        var arch = rid[(dash + 1)..];
+
+        // Remove trailing digits/dots from the OS part
+        var baseOs = new string(os.TakeWhile(c => char.IsLetter(c)).ToArray());
+        return baseOs.Length > 0 ? $"{baseOs}-{arch}" : rid;
+    }
 
     /// <summary>
     /// Create a new repository from a directory path.

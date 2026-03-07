@@ -37,7 +37,7 @@ The core library is the single source of truth for all business logic:
 | `repository` | `Repository` trait for storage backend abstraction |
 | `scanner` | Directory scanning and FastFoto file grouping logic |
 | `search` | Query builder for filtering stacks by metadata |
-| `metadata` | EXIF reading, XMP read/write, sidecar database support |
+| `metadata` | EXIF reading, XMP read/write, XMP sidecar file support |
 | `backends` | Storage backend implementations (local filesystem) |
 
 ### photostax-ffi (C FFI)
@@ -75,8 +75,8 @@ Each binding provides idiomatic wrappers:
 
 3. ENRICH
    ├─ Read EXIF tags from original/enhanced files
-   ├─ Read XMP tags (embedded or sidecar)
-   ├─ Load custom tags from sidecar database
+   ├─ Read XMP tags (embedded or sidecar .xmp files)
+   ├─ Load custom tags from XMP sidecar files
    └─ Merge into unified Metadata
 
 4. SEARCH
@@ -88,12 +88,12 @@ Each binding provides idiomatic wrappers:
 ### Metadata Flow
 
 ```
-Image Files                    Sidecar Database
+Image Files                    XMP Sidecar Files
 ┌─────────────┐                ┌─────────────────┐
 │ EXIF Tags   │──┐             │ Custom Tags     │
-│ (read-only) │  │             │ (read/write)    │
-├─────────────┤  │             └────────┬────────┘
-│ XMP Tags    │  │                      │
+│ (read-only) │  │             │ EXIF Overrides  │
+├─────────────┤  │             │ (read/write)    │
+│ XMP Tags    │  │             └────────┬────────┘
 │ (read/write)│  │                      │
 └──────┬──────┘  │                      │
        │         │                      │

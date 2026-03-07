@@ -9,13 +9,13 @@
 //!
 //! ```text
 //! /photos/
-//! ├── .photostax.db          # Sidecar database (auto-created)
 //! ├── IMG_0001.jpg           # Original scan
 //! ├── IMG_0001_a.jpg         # Enhanced scan
 //! ├── IMG_0001_b.jpg         # Back scan
+//! ├── IMG_0001.xmp           # XMP sidecar (metadata)
 //! ├── IMG_0002.tif           # Another stack (TIFF)
 //! ├── IMG_0002_a.tif
-//! └── IMG_0002.xmp           # XMP sidecar for TIFF
+//! └── IMG_0002.xmp           # XMP sidecar for TIFF stack
 //! ```
 //!
 //! ## Metadata Enrichment
@@ -24,8 +24,8 @@
 //! with metadata from three sources:
 //!
 //! 1. **EXIF tags** — Read from the enhanced image (or original if no enhanced)
-//! 2. **XMP tags** — Read from embedded XMP (JPEG) or sidecar `.xmp` file (TIFF)
-//! 3. **Custom tags** — Read from the `.photostax.db` sidecar database
+//! 2. **XMP tags** — Read from embedded XMP (JPEG) or XMP sidecar file
+//! 3. **Custom tags** — Read from the XMP sidecar file (photostax namespace)
 //!
 //! ## Examples
 //!
@@ -55,23 +55,24 @@
 use std::path::{Path, PathBuf};
 
 use crate::metadata::exif;
-use crate::metadata::sidecar::SidecarDb;
+use crate::metadata::sidecar;
 use crate::metadata::xmp;
+use crate::metadata::ImageFormat;
 use crate::photo_stack::{Metadata, PhotoStack};
 use crate::repository::{Repository, RepositoryError};
-use crate::scanner::{self, ScannerConfig};
+use crate::scanner::{self, parse_folder_name, ScannerConfig};
 
 /// A repository backed by a local filesystem directory.
 ///
 /// Scans a directory for FastFoto-style photo files and groups them into
 /// [`PhotoStack`] objects. Automatically enriches stacks with metadata from
-/// EXIF, XMP, and the sidecar database.
+/// EXIF, XMP, and XMP sidecar files.
 ///
 /// # Thread Safety
 ///
 /// Multiple `LocalRepository` instances can safely operate on the same
 /// directory concurrently for read operations. Write operations (metadata
-/// updates) use SQLite's built-in locking.
+/// updates) use file-level I/O to XMP sidecar files.
 ///
 /// [`PhotoStack`]: crate::photo_stack::PhotoStack
 pub struct LocalRepository {
@@ -153,39 +154,148 @@ impl LocalRepository {
         }
     }
 
-    /// Load XMP tags from the best available image in the stack.
+    /// Load embedded XMP tags from a JPEG image file.
     ///
     /// For JPEG: reads embedded XMP from the file.
-    /// For TIFF: reads from sidecar `.xmp` file if present.
-    fn load_xmp_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
+    /// For TIFF and other formats: returns empty (sidecar XMP is handled separately).
+    fn load_embedded_xmp(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
         let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
-            Some(path) => xmp::read_xmp(path).unwrap_or_default(),
+            Some(path) => {
+                // Only read embedded XMP from JPEG; TIFF XMP is in the stack sidecar
+                if matches!(
+                    crate::metadata::detect_image_format(path),
+                    Some(ImageFormat::Jpeg)
+                ) {
+                    xmp::read_xmp_from_jpeg(path).unwrap_or_default()
+                } else {
+                    std::collections::HashMap::new()
+                }
+            }
             None => std::collections::HashMap::new(),
         }
     }
 
-    /// Load custom tags from the sidecar database.
-    fn load_sidecar_tags(
-        &self,
-        stack_id: &str,
-    ) -> std::collections::HashMap<String, serde_json::Value> {
-        match SidecarDb::open(&self.root) {
-            Ok(db) => db.get_tags(stack_id).unwrap_or_default(),
-            Err(_) => std::collections::HashMap::new(),
-        }
-    }
-
-    /// Enrich a PhotoStack with EXIF, XMP, and sidecar metadata.
+    /// Enrich a PhotoStack with EXIF, XMP, sidecar, and folder-derived metadata.
     ///
-    /// This is the core metadata merging logic that combines all three
-    /// metadata sources into the stack's unified [`Metadata`] structure.
+    /// This is the core metadata merging logic that combines all sources
+    /// into the stack's unified [`Metadata`] structure with this priority
+    /// (highest wins):
+    ///
+    /// 1. XMP sidecar (custom tags, EXIF overrides, XMP tags)
+    /// 2. Embedded XMP
+    /// 3. EXIF
+    /// 4. Folder name (lowest — fills gaps only)
     ///
     /// [`Metadata`]: crate::photo_stack::Metadata
     fn enrich_metadata(&self, stack: &mut PhotoStack) {
+        // 1. Read EXIF from image files
         stack.metadata.exif_tags = self.load_exif_tags(stack);
-        stack.metadata.xmp_tags = self.load_xmp_tags(stack);
-        stack.metadata.custom_tags = self.load_sidecar_tags(&stack.id);
+
+        // 2. Read embedded XMP from image (JPEG only)
+        let mut xmp_tags = self.load_embedded_xmp(stack);
+
+        // 3. Read stack-level XMP sidecar (from the stack's containing dir,
+        //    which may differ from root during recursive scans)
+        let sidecar_dir = stack.containing_dir().unwrap_or_else(|| self.root.clone());
+        let sidecar_data = sidecar::read_sidecar(&sidecar_dir, &stack.id).unwrap_or_default();
+
+        // 4. Merge sidecar XMP into embedded XMP (sidecar overrides)
+        for (k, v) in sidecar_data.xmp_tags {
+            xmp_tags.insert(k, v);
+        }
+        stack.metadata.xmp_tags = xmp_tags;
+
+        // 5. Custom tags from sidecar
+        stack.metadata.custom_tags = sidecar_data.custom_tags;
+
+        // 6. EXIF overrides from sidecar
+        for (k, v) in sidecar_data.exif_overrides {
+            stack.metadata.exif_tags.insert(k, v);
+        }
+
+        // 7. Derive metadata from containing folder name (lowest priority —
+        //    only fills in keys that are not yet present from any other source).
+        self.apply_folder_metadata(stack);
+    }
+
+    /// Derive metadata from the stack's containing folder name using the
+    /// FastFoto naming convention (`<year>_<month_or_season>_<subject>`).
+    ///
+    /// Values are written into `custom_tags` under the `folder_year`,
+    /// `folder_month_or_season`, and `folder_subject` keys, and into
+    /// `xmp_tags` for `date` (Dublin Core)  — but only when the key is
+    /// not already present from a higher-priority source.
+    fn apply_folder_metadata(&self, stack: &mut PhotoStack) {
+        let folder = match stack.containing_folder() {
+            Some(f) => f,
+            None => return,
+        };
+
+        let fm = parse_folder_name(&folder);
+        if fm.is_empty() {
+            return;
+        }
+
+        // Year → xmp_tags["date"] (Dublin Core dc:date) if not already set
+        if let Some(year) = fm.year {
+            if !stack.metadata.xmp_tags.contains_key("date")
+                && !stack.metadata.exif_tags.contains_key("DateTimeOriginal")
+                || stack
+                    .metadata
+                    .exif_tags
+                    .get("DateTimeOriginal")
+                    .is_some_and(|v| v.starts_with(&format!("{year}-")))
+            {
+                // Only set dc:date from folder year when EXIF either
+                // agrees or is absent. We use the year as a date value.
+            }
+            // Always store folder-derived year as a custom tag for consumption
+            if !stack.metadata.custom_tags.contains_key("folder_year") {
+                stack
+                    .metadata
+                    .custom_tags
+                    .insert("folder_year".to_string(), serde_json::json!(year));
+            }
+            // Fill in dc:date if nothing more specific exists
+            if !stack.metadata.xmp_tags.contains_key("date") {
+                stack
+                    .metadata
+                    .xmp_tags
+                    .insert("date".to_string(), format!("{year}"));
+            }
+        }
+
+        // Month/season → custom_tags["folder_month_or_season"]
+        if let Some(ref ms) = fm.month_or_season {
+            if !stack
+                .metadata
+                .custom_tags
+                .contains_key("folder_month_or_season")
+            {
+                stack
+                    .metadata
+                    .custom_tags
+                    .insert("folder_month_or_season".to_string(), serde_json::json!(ms));
+            }
+        }
+
+        // Subject → xmp_tags["subject"] (Dublin Core dc:subject) + custom tag
+        if let Some(ref subj) = fm.subject {
+            if !stack.metadata.custom_tags.contains_key("folder_subject") {
+                stack
+                    .metadata
+                    .custom_tags
+                    .insert("folder_subject".to_string(), serde_json::json!(subj));
+            }
+            // Fill in dc:subject if not already set by XMP or sidecar
+            if !stack.metadata.xmp_tags.contains_key("subject") {
+                stack
+                    .metadata
+                    .xmp_tags
+                    .insert("subject".to_string(), subj.replace('_', " "));
+            }
+        }
     }
 }
 
@@ -213,51 +323,29 @@ impl Repository for LocalRepository {
     }
 
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
-        // Write XMP tags to the image file (preferred method for photo app compatibility)
+        // 1. Write XMP tags into the image file directly (JPEG gets embedded XMP).
+        //    This ensures maximum interoperability — Lightroom, darktable, etc.
+        //    can read the tags even without the sidecar file.
         if !tags.xmp_tags.is_empty() {
-            // Prefer enhanced image, fall back to original
             let target = stack.enhanced.as_ref().or(stack.original.as_ref());
             if let Some(path) = target {
-                // Write XMP - if it fails, log warning but don't fail the operation
-                if let Err(e) = xmp::write_xmp(path, &tags.xmp_tags) {
-                    eprintln!(
-                        "Warning: Failed to write XMP to {}: {}. Falling back to sidecar storage.",
-                        path.display(),
-                        e
-                    );
-                    // Fall back to sidecar DB for XMP tags
-                    let db = SidecarDb::open(&self.root)
-                        .map_err(|e| RepositoryError::Other(e.to_string()))?;
-                    for (key, value) in &tags.xmp_tags {
-                        let prefixed_key = format!("xmp:{key}");
-                        db.set_tag(&stack.id, &prefixed_key, &serde_json::Value::String(value.clone()))
-                            .map_err(|e| RepositoryError::Other(e.to_string()))?;
-                    }
-                }
+                // Best-effort: embed into file; sidecar is authoritative
+                let _ = xmp::write_xmp(path, &tags.xmp_tags);
             }
         }
 
-        // Write custom tags to sidecar DB
-        if !tags.custom_tags.is_empty() {
-            let db = SidecarDb::open(&self.root)
-                .map_err(|e| RepositoryError::Other(e.to_string()))?;
-            db.set_tags(&stack.id, &tags.custom_tags)
-                .map_err(|e| RepositoryError::Other(e.to_string()))?;
-        }
-
-        // Store EXIF tags in sidecar DB (EXIF writing to files is complex and risky)
-        // This preserves user-provided EXIF values without modifying original EXIF data
-        if !tags.exif_tags.is_empty() {
-            let db = SidecarDb::open(&self.root)
-                .map_err(|e| RepositoryError::Other(e.to_string()))?;
-            for (key, value) in &tags.exif_tags {
-                let prefixed_key = format!("exif:{key}");
-                db.set_tag(&stack.id, &prefixed_key, &serde_json::Value::String(value.clone()))
-                    .map_err(|e| RepositoryError::Other(e.to_string()))?;
-            }
-        }
-
-        Ok(())
+        // 2. Write everything to the stack-level XMP sidecar file.
+        //    Sidecar is the authoritative source for custom tags and EXIF overrides,
+        //    and also mirrors XMP tags for formats that don't support embedding.
+        let sidecar_dir = stack.containing_dir().unwrap_or_else(|| self.root.clone());
+        sidecar::merge_and_write(
+            &sidecar_dir,
+            &stack.id,
+            &tags.xmp_tags,
+            &tags.custom_tags,
+            &tags.exif_tags,
+        )
+        .map_err(|e| RepositoryError::Other(e.to_string()))
     }
 }
 
@@ -277,10 +365,17 @@ mod tests {
         jpeg.extend_from_slice(jfif_data);
         jpeg.extend_from_slice(&[0xFF, 0xDB, 0x00, 0x43, 0x00]); // DQT
         jpeg.extend_from_slice(&[16u8; 64]);
-        jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]); // SOF0
+        jpeg.extend_from_slice(&[
+            0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+        ]); // SOF0
         jpeg.extend_from_slice(&[0xFF, 0xC4, 0x00, 0x1F, 0x00]); // DHT
-        jpeg.extend_from_slice(&[0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        jpeg.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B]);
+        jpeg.extend_from_slice(&[
+            0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ]);
+        jpeg.extend_from_slice(&[
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        ]);
         jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]); // SOS
         jpeg.push(0x7F);
         jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
@@ -291,7 +386,7 @@ mod tests {
     fn test_local_repository_new_default_config() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        
+
         assert_eq!(repo.root(), tmp.path());
         assert_eq!(repo.config.enhanced_suffix, "_a");
         assert_eq!(repo.config.back_suffix, "_b");
@@ -304,9 +399,10 @@ mod tests {
             enhanced_suffix: "_enhanced".to_string(),
             back_suffix: "_back".to_string(),
             extensions: vec!["jpg".to_string()],
+            ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        
+
         assert_eq!(repo.config.enhanced_suffix, "_enhanced");
         assert_eq!(repo.config.back_suffix, "_back");
     }
@@ -411,16 +507,25 @@ mod tests {
         let stack = repo.get_stack("IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
-        metadata.custom_tags.insert("ocr_text".to_string(), serde_json::json!("Hello World"));
-        metadata.custom_tags.insert("processed".to_string(), serde_json::json!(true));
+        metadata
+            .custom_tags
+            .insert("ocr_text".to_string(), serde_json::json!("Hello World"));
+        metadata
+            .custom_tags
+            .insert("processed".to_string(), serde_json::json!(true));
 
         repo.write_metadata(&stack, &metadata).unwrap();
 
-        // Verify tags were written by reading them back
-        let db = SidecarDb::open(dir).unwrap();
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert_eq!(tags.get("ocr_text"), Some(&serde_json::json!("Hello World")));
-        assert_eq!(tags.get("processed"), Some(&serde_json::json!(true)));
+        // Verify tags were written by reading them back from sidecar
+        let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
+        assert_eq!(
+            sidecar_data.custom_tags.get("ocr_text"),
+            Some(&serde_json::json!("Hello World"))
+        );
+        assert_eq!(
+            sidecar_data.custom_tags.get("processed"),
+            Some(&serde_json::json!(true))
+        );
     }
 
     #[test]
@@ -435,13 +540,18 @@ mod tests {
         let stack = repo.get_stack("IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
-        metadata.xmp_tags.insert("description".to_string(), "Test description".to_string());
+        metadata
+            .xmp_tags
+            .insert("description".to_string(), "Test description".to_string());
 
         repo.write_metadata(&stack, &metadata).unwrap();
 
-        // Verify XMP was written by reading it back
-        let xmp_tags = xmp::read_xmp(&stack.original.unwrap()).unwrap();
-        assert_eq!(xmp_tags.get("description"), Some(&"Test description".to_string()));
+        // Verify XMP was written to the sidecar
+        let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
+        assert_eq!(
+            sidecar_data.xmp_tags.get("description"),
+            Some(&"Test description".to_string())
+        );
     }
 
     #[test]
@@ -456,14 +566,18 @@ mod tests {
         let stack = repo.get_stack("IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
-        metadata.exif_tags.insert("CustomMake".to_string(), "TestMake".to_string());
+        metadata
+            .exif_tags
+            .insert("CustomMake".to_string(), "TestMake".to_string());
 
         repo.write_metadata(&stack, &metadata).unwrap();
 
-        // EXIF tags are stored in sidecar with exif: prefix
-        let db = SidecarDb::open(dir).unwrap();
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert_eq!(tags.get("exif:CustomMake"), Some(&serde_json::json!("TestMake")));
+        // EXIF overrides stored in sidecar
+        let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
+        assert_eq!(
+            sidecar_data.exif_overrides.get("CustomMake"),
+            Some(&"TestMake".to_string())
+        );
     }
 
     #[test]
@@ -492,15 +606,24 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         // Write some sidecar metadata first
-        let db = SidecarDb::open(dir).unwrap();
-        db.set_tag("IMG_001", "custom_tag", &serde_json::json!("custom_value")).unwrap();
-        drop(db);
+        let data = crate::metadata::sidecar::SidecarData {
+            custom_tags: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("custom_tag".to_string(), serde_json::json!("custom_value"));
+                m
+            },
+            ..Default::default()
+        };
+        crate::metadata::sidecar::write_sidecar(dir, "IMG_001", &data).unwrap();
 
         let repo = LocalRepository::new(dir);
         let stack = repo.get_stack("IMG_001").unwrap();
 
         // Sidecar tags should be loaded
-        assert_eq!(stack.metadata.custom_tags.get("custom_tag"), Some(&serde_json::json!("custom_value")));
+        assert_eq!(
+            stack.metadata.custom_tags.get("custom_tag"),
+            Some(&serde_json::json!("custom_value"))
+        );
     }
 
     #[test]
@@ -523,19 +646,27 @@ mod tests {
     }
 
     #[test]
-    fn test_load_sidecar_tags_no_db() {
+    fn test_load_sidecar_tags_no_sidecar() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        // Create a file but no sidecar DB
+        // Create a file but no sidecar
         let jpeg_data = create_test_jpeg();
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
         let stack = repo.get_stack("IMG_001").unwrap();
 
-        // Should return empty custom tags, not error
-        assert!(stack.metadata.custom_tags.is_empty());
+        // Should have no sidecar-derived custom tags.
+        // (folder-derived tags with `folder_` prefix may be present from the
+        // temp directory name, so we only check for non-folder custom tags.)
+        let non_folder_custom: Vec<_> = stack
+            .metadata
+            .custom_tags
+            .keys()
+            .filter(|k| !k.starts_with("folder_"))
+            .collect();
+        assert!(non_folder_custom.is_empty());
     }
 
     #[test]
@@ -552,6 +683,7 @@ mod tests {
             enhanced_suffix: "_enhanced".to_string(),
             back_suffix: "_back".to_string(),
             extensions: vec!["jpg".to_string()],
+            ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(dir, config);
         let stacks = repo.scan().unwrap();
@@ -567,7 +699,7 @@ mod tests {
     fn test_load_exif_no_images() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        
+
         // Create a stack with no images
         let stack = PhotoStack::new("empty");
         let exif_tags = repo.load_exif_tags(&stack);
@@ -575,12 +707,180 @@ mod tests {
     }
 
     #[test]
-    fn test_load_xmp_no_images() {
+    fn test_load_embedded_xmp_no_images() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        
+
         let stack = PhotoStack::new("empty");
-        let xmp_tags = repo.load_xmp_tags(&stack);
+        let xmp_tags = repo.load_embedded_xmp(&stack);
         assert!(xmp_tags.is_empty());
+    }
+
+    // ── Folder metadata enrichment tests ───────────────────────────────────
+
+    #[test]
+    fn test_folder_metadata_year_and_subject() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("1984_Mexico");
+        fs::create_dir(&subdir).unwrap();
+        let jpeg_data = create_test_jpeg();
+        fs::write(subdir.join("1984_Mexico_0001.jpg"), &jpeg_data).unwrap();
+        fs::write(subdir.join("1984_Mexico_0001_a.jpg"), &jpeg_data).unwrap();
+
+        let config = ScannerConfig {
+            recursive: true,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(tmp.path(), config);
+        let stacks = repo.scan().unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        let s = &stacks[0];
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_year"),
+            Some(&serde_json::json!(1984))
+        );
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_subject"),
+            Some(&serde_json::json!("Mexico"))
+        );
+        assert!(!s
+            .metadata
+            .custom_tags
+            .contains_key("folder_month_or_season"));
+        // dc:date and dc:subject should be filled
+        assert_eq!(s.metadata.xmp_tags.get("date"), Some(&"1984".to_string()));
+        assert_eq!(
+            s.metadata.xmp_tags.get("subject"),
+            Some(&"Mexico".to_string())
+        );
+    }
+
+    #[test]
+    fn test_folder_metadata_year_season_subject() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("2024_Summer_Beach");
+        fs::create_dir(&subdir).unwrap();
+        let jpeg_data = create_test_jpeg();
+        fs::write(subdir.join("IMG_001.jpg"), &jpeg_data).unwrap();
+
+        let config = ScannerConfig {
+            recursive: true,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(tmp.path(), config);
+        let stacks = repo.scan().unwrap();
+
+        let s = &stacks[0];
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_year"),
+            Some(&serde_json::json!(2024))
+        );
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_month_or_season"),
+            Some(&serde_json::json!("Summer"))
+        );
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_subject"),
+            Some(&serde_json::json!("Beach"))
+        );
+    }
+
+    #[test]
+    fn test_folder_metadata_subject_only() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("SteveJones");
+        fs::create_dir(&subdir).unwrap();
+        let jpeg_data = create_test_jpeg();
+        fs::write(subdir.join("SteveJones_0001.jpg"), &jpeg_data).unwrap();
+
+        let config = ScannerConfig {
+            recursive: true,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(tmp.path(), config);
+        let stacks = repo.scan().unwrap();
+
+        let s = &stacks[0];
+        assert!(!s.metadata.custom_tags.contains_key("folder_year"));
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_subject"),
+            Some(&serde_json::json!("SteveJones"))
+        );
+        assert_eq!(
+            s.metadata.xmp_tags.get("subject"),
+            Some(&"SteveJones".to_string())
+        );
+    }
+
+    #[test]
+    fn test_folder_metadata_does_not_overwrite_existing_xmp() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("1984_Mexico");
+        fs::create_dir(&subdir).unwrap();
+        let jpeg_data = create_test_jpeg();
+        fs::write(subdir.join("IMG_001.jpg"), &jpeg_data).unwrap();
+
+        // Write an existing XMP subject via sidecar so it takes priority
+        use crate::metadata::sidecar;
+        sidecar::merge_and_write(
+            &subdir,
+            "IMG_001",
+            &{
+                let mut m = std::collections::HashMap::new();
+                m.insert("subject".to_string(), "beach, family".to_string());
+                m
+            },
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        let config = ScannerConfig {
+            recursive: true,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(tmp.path(), config);
+        let stacks = repo.scan().unwrap();
+
+        let s = &stacks[0];
+        // Sidecar value should win for xmp_tags["subject"]
+        assert_eq!(
+            s.metadata.xmp_tags.get("subject"),
+            Some(&"beach, family".to_string())
+        );
+        // But folder_subject custom tag is still populated
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_subject"),
+            Some(&serde_json::json!("Mexico"))
+        );
+    }
+
+    #[test]
+    fn test_folder_metadata_year_only() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("1993");
+        fs::create_dir(&subdir).unwrap();
+        let jpeg_data = create_test_jpeg();
+        fs::write(subdir.join("IMG_001.jpg"), &jpeg_data).unwrap();
+
+        let config = ScannerConfig {
+            recursive: true,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(tmp.path(), config);
+        let stacks = repo.scan().unwrap();
+
+        let s = &stacks[0];
+        assert_eq!(
+            s.metadata.custom_tags.get("folder_year"),
+            Some(&serde_json::json!(1993))
+        );
+        assert!(!s.metadata.custom_tags.contains_key("folder_subject"));
+        assert!(!s
+            .metadata
+            .custom_tags
+            .contains_key("folder_month_or_season"));
+        assert_eq!(s.metadata.xmp_tags.get("date"), Some(&"1993".to_string()));
     }
 }

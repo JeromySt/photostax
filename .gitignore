@@ -67,6 +67,7 @@ x86/
 [Bb]uild[Ll]og.*
 *.VisualState.xml
 TestResult.xml
+**/TestResults/
 [Dd]ebugPS/
 [Rr]eleasePS/
 BenchmarkDotNet.Artifacts/

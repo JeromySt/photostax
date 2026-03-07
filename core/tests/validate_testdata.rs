@@ -22,6 +22,8 @@ const EXPECTED_FILES: &[&str] = &[
     "FamilyPhotos_0003_a.tif",
     "FamilyPhotos_0003_b.tif",
     "FamilyPhotos_0004.jpg",
+    "FamilyPhotos_0005.jpg",
+    "FamilyPhotos_0005_b.jpg",
     "MixedBatch_0001.jpg",
     "MixedBatch_0001_a.jpg",
     "MixedBatch_0001_b.tif",
@@ -57,28 +59,20 @@ fn test_jpeg_files_have_valid_exif() {
 
     for filename in jpeg_files {
         let path = dir.join(filename);
-        let file = fs::File::open(&path).expect(&format!("Failed to open {}", filename));
+        let file = fs::File::open(&path).unwrap_or_else(|_| panic!("Failed to open {}", filename));
         let mut reader = BufReader::new(file);
 
         let exif = Reader::new()
             .read_from_container(&mut reader)
-            .expect(&format!("Failed to parse EXIF from {}", filename));
+            .unwrap_or_else(|_| panic!("Failed to parse EXIF from {}", filename));
 
         // Verify Make tag exists
         let make = exif.get_field(Tag::Make, In::PRIMARY);
-        assert!(
-            make.is_some(),
-            "Missing Make tag in {}",
-            filename
-        );
+        assert!(make.is_some(), "Missing Make tag in {}", filename);
 
         // Verify Model tag exists
         let model = exif.get_field(Tag::Model, In::PRIMARY);
-        assert!(
-            model.is_some(),
-            "Missing Model tag in {}",
-            filename
-        );
+        assert!(model.is_some(), "Missing Model tag in {}", filename);
     }
 }
 
@@ -93,28 +87,20 @@ fn test_tiff_files_have_valid_exif() {
 
     for filename in tiff_files {
         let path = dir.join(filename);
-        let file = fs::File::open(&path).expect(&format!("Failed to open {}", filename));
+        let file = fs::File::open(&path).unwrap_or_else(|_| panic!("Failed to open {}", filename));
         let mut reader = BufReader::new(file);
 
         let exif = Reader::new()
             .read_from_container(&mut reader)
-            .expect(&format!("Failed to parse EXIF from {}", filename));
+            .unwrap_or_else(|_| panic!("Failed to parse EXIF from {}", filename));
 
         // Verify Make tag exists
         let make = exif.get_field(Tag::Make, In::PRIMARY);
-        assert!(
-            make.is_some(),
-            "Missing Make tag in {}",
-            filename
-        );
+        assert!(make.is_some(), "Missing Make tag in {}", filename);
 
         // Verify Model tag exists
         let model = exif.get_field(Tag::Model, In::PRIMARY);
-        assert!(
-            model.is_some(),
-            "Missing Model tag in {}",
-            filename
-        );
+        assert!(model.is_some(), "Missing Model tag in {}", filename);
     }
 }
 
@@ -125,7 +111,7 @@ fn test_all_files_under_5kb() {
     for filename in EXPECTED_FILES {
         let path = dir.join(filename);
         let metadata = fs::metadata(&path)
-            .expect(&format!("Failed to get metadata for {}", filename));
+            .unwrap_or_else(|_| panic!("Failed to get metadata for {}", filename));
 
         assert!(
             metadata.len() < 5 * 1024,

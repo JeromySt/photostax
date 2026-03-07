@@ -243,10 +243,7 @@ mod tests {
         // Next IFD offset: 0 (no more IFDs)
         tiff_data.extend_from_slice(&0u32.to_le_bytes());
 
-        let tmp = tempfile::Builder::new()
-            .suffix(".tif")
-            .tempfile()
-            .unwrap();
+        let tmp = tempfile::Builder::new().suffix(".tif").tempfile().unwrap();
         std::fs::write(tmp.path(), &tiff_data).unwrap();
 
         let result = read_exif_tags(tmp.path());
@@ -272,7 +269,10 @@ mod tests {
 
     #[test]
     fn test_exif_error_display() {
-        let io_err = ExifError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let io_err = ExifError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         let display = format!("{}", io_err);
         assert!(display.contains("I/O error"));
 

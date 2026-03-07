@@ -120,6 +120,21 @@ public class SearchTests
     }
 
     [Fact]
+    public void MultipleCustomFilters_ToJson_IncludesAllFilters()
+    {
+        var query = new SearchQuery()
+            .WithCustomFilter("album", "Family")
+            .WithCustomFilter("location", "Beach");
+
+        var json = query.ToJson();
+
+        Assert.Contains("album", json);
+        Assert.Contains("Family", json);
+        Assert.Contains("location", json);
+        Assert.Contains("Beach", json);
+    }
+
+    [Fact]
     public void WithText_Fluent_ReturnsSameInstance()
     {
         var query = new SearchQuery();

@@ -4,8 +4,8 @@
 
 mod test_helpers;
 
-use test_helpers::{create_jpeg_with_exif, create_tiff_with_exif};
 use std::fs;
+use test_helpers::{create_jpeg_with_exif, create_tiff_with_exif};
 
 /// Generate all static test data files for the testdata directory.
 /// This is an ignored test that should be run manually when test data needs regeneration.
@@ -31,7 +31,7 @@ fn generate_testdata() {
     let create_jpg = |name: &str| {
         let path = testdata_dir.join(name);
         let data = create_jpeg_with_exif(&default_tags);
-        fs::write(&path, &data).expect(&format!("Failed to write {}", name));
+        fs::write(&path, &data).unwrap_or_else(|_| panic!("Failed to write {}", name));
         println!("  Created: {} ({} bytes)", name, data.len());
     };
 
@@ -39,7 +39,7 @@ fn generate_testdata() {
     let create_tif = |name: &str| {
         let path = testdata_dir.join(name);
         let data = create_tiff_with_exif(&default_tags);
-        fs::write(&path, &data).expect(&format!("Failed to write {}", name));
+        fs::write(&path, &data).unwrap_or_else(|_| panic!("Failed to write {}", name));
         println!("  Created: {} ({} bytes)", name, data.len());
     };
 
@@ -59,6 +59,10 @@ fn generate_testdata() {
 
     // FamilyPhotos_0004 - Lonely original
     create_jpg("FamilyPhotos_0004.jpg");
+
+    // FamilyPhotos_0005 - Original + back (no enhanced)
+    create_jpg("FamilyPhotos_0005.jpg");
+    create_jpg("FamilyPhotos_0005_b.jpg");
 
     // MixedBatch_0001 - Mixed formats
     create_jpg("MixedBatch_0001.jpg");

@@ -150,8 +150,8 @@ pub trait Repository {
     /// The behavior depends on the metadata type:
     ///
     /// - **XMP tags**: Written directly to image files (JPEG) or sidecar `.xmp` files (TIFF)
-    /// - **Custom tags**: Stored in the sidecar SQLite database
-    /// - **EXIF tags**: Stored in sidecar database (direct EXIF writing is avoided for safety)
+    /// - **Custom tags**: Stored in the XMP sidecar file (`.xmp`)
+    /// - **EXIF tags**: Stored as overrides in the XMP sidecar file (direct EXIF writing is avoided for safety)
     ///
     /// # Errors
     ///
@@ -191,7 +191,7 @@ mod tests {
     fn test_repository_error_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let repo_err: RepositoryError = io_err.into();
-        
+
         match repo_err {
             RepositoryError::Io(e) => {
                 assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);

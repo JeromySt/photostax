@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Photostax.Native;
@@ -18,6 +19,7 @@ internal sealed class RepoSafeHandle : SafeHandle
     public override bool IsInvalid => handle == IntPtr.Zero;
 
     /// <inheritdoc/>
+    [ExcludeFromCodeCoverage]
     protected override bool ReleaseHandle()
     {
         NativeMethods.photostax_repo_free(handle);
@@ -51,6 +53,7 @@ internal sealed class StackSafeHandle : SafeHandle
     public override bool IsInvalid => handle == IntPtr.Zero;
 
     /// <inheritdoc/>
+    [ExcludeFromCodeCoverage]
     protected override bool ReleaseHandle()
     {
         NativeMethods.photostax_stack_free(handle);
@@ -84,6 +87,7 @@ internal sealed class StringSafeHandle : SafeHandle
     public override bool IsInvalid => handle == IntPtr.Zero;
 
     /// <inheritdoc/>
+    [ExcludeFromCodeCoverage]
     protected override bool ReleaseHandle()
     {
         NativeMethods.photostax_string_free(handle);
@@ -134,6 +138,7 @@ internal sealed class BytesSafeHandle : SafeHandle
     public nuint Length => _length;
 
     /// <inheritdoc/>
+    [ExcludeFromCodeCoverage]
     protected override bool ReleaseHandle()
     {
         NativeMethods.photostax_bytes_free(handle, _length);

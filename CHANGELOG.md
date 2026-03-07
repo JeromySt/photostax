@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `PhotoStack` abstraction for grouping front, enhanced, and back scans
   - `Repository` trait with `LocalRepository` implementation
   - EXIF metadata reading support
-  - SQLite-backed caching for indexed lookups
+  - XMP sidecar files for custom metadata and EXIF overrides
 
 - Initial release of `photostax-cli` tool
   - Directory scanning for photo stacks

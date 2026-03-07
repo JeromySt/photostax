@@ -135,7 +135,7 @@ See [cli/README.md](cli/README.md) for complete CLI documentation.
 - **Client bindings** — idiomatic libraries for C# (.NET), TypeScript (Node.js), and more
 - **Storage backends** — pluggable `Repository` trait (local filesystem now; OneDrive, Google Drive planned)
 
-**Metadata strategy**: EXIF tags are read from images, XMP tags are read/written for interoperability with other photo apps, and a sidecar SQLite database stores custom metadata. See [docs/metadata-strategy.md](docs/metadata-strategy.md) for details.
+**Metadata strategy**: EXIF tags are read from images, XMP tags are read/written for interoperability with other photo apps, and XMP sidecar files (`.xmp`) store custom tags and EXIF overrides alongside your images. See [docs/metadata-strategy.md](docs/metadata-strategy.md) for details.
 
 ## Building from Source
 

@@ -1,0 +1,11 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Auto-imported by consuming projects that reference the Photostax NuGet
+    package.  Ensures the photostax_ffi native library (shipped under
+    runtimes/<rid>/native/ in the package) is resolved correctly at
+    runtime for self-contained publish and single-file scenarios.
+  -->
+  <ItemGroup>
+    <NativeLibrary Include="photostax_ffi" />
+  </ItemGroup>
+</Project>

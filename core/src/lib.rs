@@ -63,9 +63,9 @@
 
 #![warn(missing_docs)]
 
+pub mod backends;
+pub mod metadata;
 pub mod photo_stack;
 pub mod repository;
 pub mod scanner;
-pub mod backends;
-pub mod metadata;
 pub mod search;

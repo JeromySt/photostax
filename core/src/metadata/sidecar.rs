@@ -1,422 +1,306 @@
-//! SQLite sidecar database for custom metadata storage.
+//! XMP sidecar file-based metadata storage.
 //!
-//! This module provides a SQLite-based sidecar database for storing extended
-//! metadata that doesn't fit in EXIF or XMP. The database is stored alongside
-//! photo files as `.photostax.db`.
+//! This module provides per-image XMP sidecar files (`.xmp`) for storing
+//! extended metadata alongside photo files. Uses a portable, industry-standard
+//! format compatible with Adobe Lightroom, darktable, and other photo
+//! applications.
 //!
-//! ## Database Schema
+//! ## Sidecar File Layout
 //!
-//! ```sql
-//! CREATE TABLE stack_metadata (
-//!     stack_id TEXT NOT NULL,    -- PhotoStack ID (e.g., "IMG_001")
-//!     key      TEXT NOT NULL,    -- Tag name (e.g., "ocr_text")
-//!     value    TEXT NOT NULL,    -- JSON-serialized value
-//!     PRIMARY KEY (stack_id, key)
-//! );
+//! Each photo stack gets a single `.xmp` file named after the stack ID:
 //!
-//! CREATE INDEX idx_stack_metadata_key ON stack_metadata (key);
+//! ```text
+//! /photos/
+//! ├── IMG_001.jpg
+//! ├── IMG_001_a.jpg
+//! ├── IMG_001_b.jpg
+//! ├── IMG_001.xmp           ← XMP sidecar for the stack
+//! ├── IMG_002.tif
+//! └── IMG_002.xmp
 //! ```
 //!
-//! ## Use Cases
+//! ## Data Stored in Sidecar
 //!
-//! - **OCR results**: Store extracted text from back-of-photo scans
-//! - **Albums/collections**: Organize photos into logical groups
-//! - **People tags**: Tag people identified in photos
-//! - **Processing status**: Track which photos have been processed
+//! The XMP sidecar stores three categories of metadata:
+//!
+//! | Category | Namespace | Example |
+//! |----------|-----------|---------|
+//! | Standard XMP | `dc:` | `dc:description`, `dc:creator` |
+//! | Custom tags | `photostax:customTags` | JSON blob of key-value pairs |
+//! | EXIF overrides | `photostax:exifOverrides` | JSON blob of key-value pairs |
 //!
 //! ## Examples
 //!
 //! ```rust,no_run
-//! use photostax_core::metadata::sidecar::SidecarDb;
+//! use photostax_core::metadata::sidecar;
 //! use std::path::Path;
 //!
-//! let db = SidecarDb::open(Path::new("/photos"))?;
+//! // Read all metadata from a stack's sidecar
+//! let data = sidecar::read_sidecar(Path::new("/photos"), "IMG_001")?;
 //!
-//! // Store OCR result
-//! db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Happy Birthday!"))?;
-//!
-//! // Retrieve all tags for a stack
-//! let tags = db.get_tags("IMG_001")?;
+//! // Remove a custom tag
+//! sidecar::remove_custom_tag(Path::new("/photos"), "IMG_001", "ocr_text")?;
 //! # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
 //! ```
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use super::xmp::{self, XmpError};
 
-/// Name of the sidecar database file placed alongside photo directories.
-///
-/// The database is created automatically when first accessed.
-pub const SIDECAR_DB_NAME: &str = ".photostax.db";
+/// Reserved XMP key for serialized custom tags (JSON object).
+pub const CUSTOM_TAGS_KEY: &str = "customTags";
 
-/// A sidecar SQLite database for storing extended metadata per [`PhotoStack`].
+/// Reserved XMP key for serialized EXIF overrides (JSON object).
+pub const EXIF_OVERRIDES_KEY: &str = "exifOverrides";
+
+/// XMP sidecar file extension.
+pub const SIDECAR_EXT: &str = "xmp";
+
+/// Structured metadata read from or written to an XMP sidecar file.
 ///
-/// The database provides key-value storage for arbitrary JSON metadata,
-/// indexed by stack ID. It's designed for data that doesn't fit in standard
-/// EXIF/XMP fields, such as OCR results, custom tags, and processing status.
+/// Mirrors the three categories in [`Metadata`] but represents
+/// what is stored in a single `.xmp` sidecar:
 ///
-/// # Schema
+/// - `xmp_tags` — Standard XMP/Dublin Core key-value pairs
+/// - `custom_tags` — Application-specific tags (JSON values)
+/// - `exif_overrides` — User-supplied EXIF overrides (string values)
 ///
-/// The database uses a simple key-value schema with composite primary key:
+/// [`Metadata`]: crate::photo_stack::Metadata
+#[derive(Debug, Clone, Default)]
+pub struct SidecarData {
+    /// Standard XMP tags (dc:description, dc:creator, photostax:stackId, etc.).
+    pub xmp_tags: HashMap<String, String>,
+
+    /// Custom application tags stored as JSON values.
+    pub custom_tags: HashMap<String, serde_json::Value>,
+
+    /// EXIF override values provided by the user.
+    pub exif_overrides: HashMap<String, String>,
+}
+
+/// Returns the sidecar file path for a given stack in a directory.
 ///
-/// - `stack_id`: The [`PhotoStack`] ID (e.g., `"IMG_001"`)
-/// - `key`: Tag name (e.g., `"ocr_text"`, `"album"`)
-/// - `value`: JSON-serialized value
+/// # Examples
 ///
-/// # Thread Safety
+/// ```
+/// use photostax_core::metadata::sidecar::sidecar_path;
+/// use std::path::Path;
 ///
-/// Each `SidecarDb` instance owns its own connection. For multi-threaded access,
-/// create separate instances or use connection pooling.
+/// let path = sidecar_path(Path::new("/photos"), "IMG_001");
+/// assert!(path.ends_with("IMG_001.xmp"));
+/// ```
+pub fn sidecar_path(directory: &Path, stack_id: &str) -> PathBuf {
+    directory.join(format!("{stack_id}.{SIDECAR_EXT}"))
+}
+
+/// Read metadata from a stack's XMP sidecar file.
+///
+/// Returns [`SidecarData::default()`] if no sidecar file exists.
+/// Parses the `customTags` and `exifOverrides` reserved keys from the
+/// photostax namespace and returns them separately from standard XMP tags.
+///
+/// # Arguments
+///
+/// * `directory` - Directory containing photo files and sidecar
+/// * `stack_id`  - The [`PhotoStack`] ID (e.g., `"IMG_001"`)
+///
+/// # Errors
+///
+/// Returns [`SidecarError`] if the file exists but cannot be read or parsed.
 ///
 /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-pub struct SidecarDb {
-    conn: Connection,
+pub fn read_sidecar(directory: &Path, stack_id: &str) -> Result<SidecarData, SidecarError> {
+    let path = sidecar_path(directory, stack_id);
+    if !path.exists() {
+        return Ok(SidecarData::default());
+    }
+
+    let xml = std::fs::read_to_string(&path)?;
+    let mut flat = xmp::parse_xmp_xml(&xml).map_err(SidecarError::Xmp)?;
+
+    // Extract reserved keys
+    let custom_tags: HashMap<String, serde_json::Value> = flat
+        .remove(CUSTOM_TAGS_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let exif_overrides: HashMap<String, String> = flat
+        .remove(EXIF_OVERRIDES_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    Ok(SidecarData {
+        xmp_tags: flat,
+        custom_tags,
+        exif_overrides,
+    })
 }
 
-impl SidecarDb {
-    /// Open (or create) the sidecar database in the given directory.
-    ///
-    /// Creates the database file and schema if they don't exist.
-    ///
-    /// # Arguments
-    ///
-    /// * `directory` - Directory containing photo files (database is created here)
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SidecarError::Sqlite`] if the database cannot be opened or created.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    pub fn open(directory: &Path) -> Result<Self, SidecarError> {
-        let db_path = directory.join(SIDECAR_DB_NAME);
-        Self::open_path(&db_path)
+/// Write metadata to a stack's XMP sidecar file.
+///
+/// Serializes all three metadata categories into a single XMP file.
+/// Custom tags and EXIF overrides are stored as JSON blobs in reserved
+/// photostax namespace fields. Any existing sidecar is overwritten.
+///
+/// # Arguments
+///
+/// * `directory` - Directory containing photo files
+/// * `stack_id`  - The [`PhotoStack`] ID
+/// * `data`      - Structured metadata to write
+///
+/// [`PhotoStack`]: crate::photo_stack::PhotoStack
+pub fn write_sidecar(
+    directory: &Path,
+    stack_id: &str,
+    data: &SidecarData,
+) -> Result<(), SidecarError> {
+    let mut flat: HashMap<String, String> = HashMap::new();
+
+    // Add standard XMP tags
+    for (k, v) in &data.xmp_tags {
+        flat.insert(k.clone(), v.clone());
     }
 
-    /// Open (or create) the sidecar database at an explicit path.
-    ///
-    /// Use this when you need control over the database file location.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Full path to the database file
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SidecarError::Sqlite`] if the database cannot be opened.
-    pub fn open_path(path: &PathBuf) -> Result<Self, SidecarError> {
-        let conn = Connection::open(path)?;
-        let db = Self { conn };
-        db.migrate()?;
-        Ok(db)
-    }
-
-    /// Run schema migrations to ensure tables exist.
-    fn migrate(&self) -> Result<(), SidecarError> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS stack_metadata (
-                stack_id TEXT NOT NULL,
-                key      TEXT NOT NULL,
-                value    TEXT NOT NULL,
-                PRIMARY KEY (stack_id, key)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_stack_metadata_key
-                ON stack_metadata (key);
-            ",
-        )?;
-        Ok(())
-    }
-
-    /// Get all custom tags for a photo stack.
-    ///
-    /// # Arguments
-    ///
-    /// * `stack_id` - The [`PhotoStack`] ID
-    ///
-    /// # Returns
-    ///
-    /// A map of tag names to JSON values. Returns empty map if stack has no tags.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    /// let tags = db.get_tags("IMG_001")?;
-    ///
-    /// if let Some(ocr) = tags.get("ocr_text") {
-    ///     println!("OCR result: {}", ocr);
-    /// }
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    ///
-    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-    pub fn get_tags(
-        &self,
-        stack_id: &str,
-    ) -> Result<HashMap<String, serde_json::Value>, SidecarError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT key, value FROM stack_metadata WHERE stack_id = ?1")?;
-
-        let rows = stmt.query_map(params![stack_id], |row| {
-            let key: String = row.get(0)?;
-            let value_str: String = row.get(1)?;
-            Ok((key, value_str))
-        })?;
-
-        let mut tags = HashMap::new();
-        for row in rows {
-            let (key, value_str) = row?;
-            let value: serde_json::Value =
-                serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
-            tags.insert(key, value);
-        }
-        Ok(tags)
-    }
-
-    /// Set a single custom tag for a photo stack (upsert).
-    ///
-    /// If the tag already exists, its value is updated.
-    ///
-    /// # Arguments
-    ///
-    /// * `stack_id` - The [`PhotoStack`] ID
-    /// * `key` - Tag name
-    /// * `value` - Tag value (any JSON-serializable value)
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    ///
-    /// // String value
-    /// db.set_tag("IMG_001", "album", &serde_json::json!("Family Reunion"))?;
-    ///
-    /// // Array value
-    /// db.set_tag("IMG_001", "people", &serde_json::json!(["John", "Jane"]))?;
-    ///
-    /// // Boolean value
-    /// db.set_tag("IMG_001", "processed", &serde_json::json!(true))?;
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    ///
-    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-    pub fn set_tag(
-        &self,
-        stack_id: &str,
-        key: &str,
-        value: &serde_json::Value,
-    ) -> Result<(), SidecarError> {
-        let value_str = serde_json::to_string(value)
+    // Serialize custom tags as a JSON blob
+    if !data.custom_tags.is_empty() {
+        let json = serde_json::to_string(&data.custom_tags)
             .map_err(|e| SidecarError::Serialization(e.to_string()))?;
-
-        self.conn.execute(
-            "INSERT INTO stack_metadata (stack_id, key, value)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(stack_id, key) DO UPDATE SET value = excluded.value",
-            params![stack_id, key, value_str],
-        )?;
-        Ok(())
+        flat.insert(CUSTOM_TAGS_KEY.to_string(), json);
     }
 
-    /// Set multiple custom tags for a photo stack at once.
-    ///
-    /// Uses a single transaction for efficiency.
-    ///
-    /// # Arguments
-    ///
-    /// * `stack_id` - The [`PhotoStack`] ID
-    /// * `tags` - Map of tag names to values
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::collections::HashMap;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    ///
-    /// let mut tags = HashMap::new();
-    /// tags.insert("album".to_string(), serde_json::json!("Vacation 2024"));
-    /// tags.insert("location".to_string(), serde_json::json!("Hawaii"));
-    ///
-    /// db.set_tags("IMG_001", &tags)?;
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    ///
-    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-    pub fn set_tags(
-        &self,
-        stack_id: &str,
-        tags: &HashMap<String, serde_json::Value>,
-    ) -> Result<(), SidecarError> {
-        let tx = self.conn.unchecked_transaction()?;
-        for (key, value) in tags {
-            let value_str = serde_json::to_string(value)
-                .map_err(|e| SidecarError::Serialization(e.to_string()))?;
-
-            tx.execute(
-                "INSERT INTO stack_metadata (stack_id, key, value)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(stack_id, key) DO UPDATE SET value = excluded.value",
-                params![stack_id, key, value_str],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+    // Serialize EXIF overrides as a JSON blob
+    if !data.exif_overrides.is_empty() {
+        let json = serde_json::to_string(&data.exif_overrides)
+            .map_err(|e| SidecarError::Serialization(e.to_string()))?;
+        flat.insert(EXIF_OVERRIDES_KEY.to_string(), json);
     }
 
-    /// Remove a single custom tag.
-    ///
-    /// # Arguments
-    ///
-    /// * `stack_id` - The [`PhotoStack`] ID
-    /// * `key` - Tag name to remove
-    ///
-    /// # Returns
-    ///
-    /// `true` if the tag existed and was removed, `false` if it didn't exist.
-    ///
-    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-    pub fn remove_tag(&self, stack_id: &str, key: &str) -> Result<bool, SidecarError> {
-        let count = self.conn.execute(
-            "DELETE FROM stack_metadata WHERE stack_id = ?1 AND key = ?2",
-            params![stack_id, key],
-        )?;
-        Ok(count > 0)
-    }
+    let path = sidecar_path(directory, stack_id);
+    let xml = xmp::build_xmp_xml(&flat);
+    std::fs::write(path, xml)?;
 
-    /// Remove all custom tags for a photo stack.
-    ///
-    /// # Arguments
-    ///
-    /// * `stack_id` - The [`PhotoStack`] ID
-    ///
-    /// # Returns
-    ///
-    /// The number of tags that were removed.
-    ///
-    /// [`PhotoStack`]: crate::photo_stack::PhotoStack
-    pub fn remove_all_tags(&self, stack_id: &str) -> Result<usize, SidecarError> {
-        let count = self.conn.execute(
-            "DELETE FROM stack_metadata WHERE stack_id = ?1",
-            params![stack_id],
-        )?;
-        Ok(count)
-    }
-
-    /// Find all stack IDs that have a specific tag key.
-    ///
-    /// Useful for finding all photos with OCR text, all tagged photos, etc.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - Tag name to search for
-    ///
-    /// # Returns
-    ///
-    /// List of stack IDs that have the specified tag.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    ///
-    /// // Find all photos with OCR text
-    /// let ocr_stacks = db.find_stacks_by_key("ocr_text")?;
-    /// println!("{} photos have OCR text", ocr_stacks.len());
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    pub fn find_stacks_by_key(&self, key: &str) -> Result<Vec<String>, SidecarError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT stack_id FROM stack_metadata WHERE key = ?1")?;
-
-        let rows = stmt.query_map(params![key], |row| row.get(0))?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row?);
-        }
-        Ok(ids)
-    }
-
-    /// Search for stacks where a tag value contains the given text.
-    ///
-    /// Performs a case-sensitive substring search across all tag values.
-    ///
-    /// # Arguments
-    ///
-    /// * `query` - Text to search for in tag values
-    ///
-    /// # Returns
-    ///
-    /// List of (stack_id, key, value) tuples for matching tags.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use photostax_core::metadata::sidecar::SidecarDb;
-    /// use std::path::Path;
-    ///
-    /// let db = SidecarDb::open(Path::new("/photos"))?;
-    ///
-    /// // Search for "birthday" in any tag value
-    /// let matches = db.search_tags("birthday")?;
-    /// for (stack_id, key, value) in matches {
-    ///     println!("{} has '{}' in tag '{}'", stack_id, value, key);
-    /// }
-    /// # Ok::<(), photostax_core::metadata::sidecar::SidecarError>(())
-    /// ```
-    pub fn search_tags(&self, query: &str) -> Result<Vec<(String, String, String)>, SidecarError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT stack_id, key, value FROM stack_metadata WHERE value LIKE '%' || ?1 || '%'",
-        )?;
-
-        let pattern = query;
-        let rows = stmt.query_map(params![pattern], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
+    Ok(())
 }
 
-/// Errors from sidecar database operations.
+/// Read-modify-write: merge new metadata into an existing sidecar.
+///
+/// Reads the current sidecar (if any), merges in the provided metadata
+/// (new values override existing ones), and writes the result back.
+///
+/// # Arguments
+///
+/// * `directory` - Directory containing photo files
+/// * `stack_id`  - The [`PhotoStack`] ID
+/// * `metadata`  - New metadata to merge (from [`Metadata`])
+///
+/// [`PhotoStack`]: crate::photo_stack::PhotoStack
+/// [`Metadata`]: crate::photo_stack::Metadata
+pub fn merge_and_write(
+    directory: &Path,
+    stack_id: &str,
+    xmp_tags: &HashMap<String, String>,
+    custom_tags: &HashMap<String, serde_json::Value>,
+    exif_overrides: &HashMap<String, String>,
+) -> Result<(), SidecarError> {
+    let mut existing = read_sidecar(directory, stack_id)?;
+
+    // Merge XMP tags (new overrides existing)
+    for (k, v) in xmp_tags {
+        existing.xmp_tags.insert(k.clone(), v.clone());
+    }
+
+    // Merge custom tags
+    for (k, v) in custom_tags {
+        existing.custom_tags.insert(k.clone(), v.clone());
+    }
+
+    // Merge EXIF overrides
+    for (k, v) in exif_overrides {
+        existing.exif_overrides.insert(k.clone(), v.clone());
+    }
+
+    write_sidecar(directory, stack_id, &existing)
+}
+
+/// Remove a single custom tag from a sidecar file.
+///
+/// Reads the sidecar, removes the key from custom tags, and writes back.
+/// Returns `true` if the key existed and was removed.
+///
+/// # Arguments
+///
+/// * `directory` - Directory containing photo files
+/// * `stack_id`  - The [`PhotoStack`] ID
+/// * `key`       - Custom tag key to remove
+///
+/// [`PhotoStack`]: crate::photo_stack::PhotoStack
+pub fn remove_custom_tag(
+    directory: &Path,
+    stack_id: &str,
+    key: &str,
+) -> Result<bool, SidecarError> {
+    let mut data = read_sidecar(directory, stack_id)?;
+    let existed = data.custom_tags.remove(key).is_some();
+    if existed {
+        write_sidecar(directory, stack_id, &data)?;
+    }
+    Ok(existed)
+}
+
+/// Remove all custom tags for a photo stack.
+///
+/// Preserves XMP tags and EXIF overrides; only clears custom tags.
+///
+/// # Returns
+///
+/// The number of custom tags that were removed.
+pub fn remove_all_custom_tags(directory: &Path, stack_id: &str) -> Result<usize, SidecarError> {
+    let mut data = read_sidecar(directory, stack_id)?;
+    let count = data.custom_tags.len();
+    if count > 0 {
+        data.custom_tags.clear();
+        write_sidecar(directory, stack_id, &data)?;
+    }
+    Ok(count)
+}
+
+/// List all stack IDs that have XMP sidecar files in a directory.
+///
+/// Scans the directory for `*.xmp` files and extracts stack IDs.
+pub fn list_sidecar_stacks(directory: &Path) -> Result<Vec<String>, SidecarError> {
+    let mut ids = Vec::new();
+    let entries = std::fs::read_dir(directory)?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some(SIDECAR_EXT) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                ids.push(stem.to_string());
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Errors from sidecar file operations.
 ///
 /// # Variants
 ///
 /// | Variant | When It Occurs |
 /// |---------|----------------|
-/// | [`Sqlite`](Self::Sqlite) | Database operation failed (open, query, write) |
+/// | [`Io`](Self::Io) | File cannot be read or written |
+/// | [`Xmp`](Self::Xmp) | XMP XML is malformed |
 /// | [`Serialization`](Self::Serialization) | JSON serialization/deserialization failed |
 #[derive(Debug, thiserror::Error)]
 pub enum SidecarError {
-    /// A SQLite database error occurred.
-    #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    /// An I/O error occurred reading or writing the sidecar file.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// The XMP content could not be parsed.
+    #[error("XMP error: {0}")]
+    Xmp(XmpError),
 
     /// JSON serialization failed.
     #[error("Serialization error: {0}")]
@@ -428,184 +312,295 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn test_db() -> (TempDir, SidecarDb) {
+    #[test]
+    fn test_sidecar_path() {
+        let path = sidecar_path(Path::new("/photos"), "IMG_001");
+        assert_eq!(path, PathBuf::from("/photos/IMG_001.xmp"));
+    }
+
+    #[test]
+    fn test_read_sidecar_nonexistent() {
         let tmp = TempDir::new().unwrap();
-        let db = SidecarDb::open(tmp.path()).unwrap();
-        (tmp, db)
+        let data = read_sidecar(tmp.path(), "NONEXISTENT").unwrap();
+        assert!(data.xmp_tags.is_empty());
+        assert!(data.custom_tags.is_empty());
+        assert!(data.exif_overrides.is_empty());
     }
 
     #[test]
-    fn test_set_and_get_tags() {
-        let (_tmp, db) = test_db();
+    fn test_write_and_read_xmp_tags() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            xmp_tags: {
+                let mut m = HashMap::new();
+                m.insert("description".to_string(), "Family photo".to_string());
+                m.insert("creator".to_string(), "John".to_string());
+                m
+            },
+            ..Default::default()
+        };
 
-        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Hello World"))
-            .unwrap();
-        db.set_tag("IMG_001", "processed", &serde_json::json!(true))
-            .unwrap();
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
 
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert_eq!(tags.len(), 2);
-        assert_eq!(tags["ocr_text"], serde_json::json!("Hello World"));
-        assert_eq!(tags["processed"], serde_json::json!(true));
+        assert_eq!(
+            read.xmp_tags.get("description"),
+            Some(&"Family photo".to_string())
+        );
+        assert_eq!(read.xmp_tags.get("creator"), Some(&"John".to_string()));
+        assert!(read.custom_tags.is_empty());
+        assert!(read.exif_overrides.is_empty());
     }
 
     #[test]
-    fn test_upsert_tag() {
-        let (_tmp, db) = test_db();
+    fn test_write_and_read_custom_tags() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("ocr_text".to_string(), serde_json::json!("Happy Birthday!"));
+                m.insert("processed".to_string(), serde_json::json!(true));
+                m.insert("people".to_string(), serde_json::json!(["John", "Jane"]));
+                m
+            },
+            ..Default::default()
+        };
 
-        db.set_tag("IMG_001", "status", &serde_json::json!("pending"))
-            .unwrap();
-        db.set_tag("IMG_001", "status", &serde_json::json!("done"))
-            .unwrap();
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
 
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert_eq!(tags["status"], serde_json::json!("done"));
+        assert_eq!(
+            read.custom_tags.get("ocr_text"),
+            Some(&serde_json::json!("Happy Birthday!"))
+        );
+        assert_eq!(
+            read.custom_tags.get("processed"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            read.custom_tags.get("people"),
+            Some(&serde_json::json!(["John", "Jane"]))
+        );
     }
 
     #[test]
-    fn test_remove_tag() {
-        let (_tmp, db) = test_db();
+    fn test_write_and_read_exif_overrides() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            exif_overrides: {
+                let mut m = HashMap::new();
+                m.insert("Make".to_string(), "EPSON".to_string());
+                m.insert("Model".to_string(), "FastFoto FF-680W".to_string());
+                m
+            },
+            ..Default::default()
+        };
 
-        db.set_tag("IMG_001", "tag1", &serde_json::json!("value1"))
-            .unwrap();
-        db.set_tag("IMG_001", "tag2", &serde_json::json!("value2"))
-            .unwrap();
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
 
-        assert!(db.remove_tag("IMG_001", "tag1").unwrap());
-        assert!(!db.remove_tag("IMG_001", "nonexistent").unwrap());
-
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert_eq!(tags.len(), 1);
-        assert!(tags.contains_key("tag2"));
+        assert_eq!(read.exif_overrides.get("Make"), Some(&"EPSON".to_string()));
+        assert_eq!(
+            read.exif_overrides.get("Model"),
+            Some(&"FastFoto FF-680W".to_string())
+        );
     }
 
     #[test]
-    fn test_batch_set_tags() {
-        let (_tmp, db) = test_db();
+    fn test_write_and_read_all_categories() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            xmp_tags: {
+                let mut m = HashMap::new();
+                m.insert("description".to_string(), "Test".to_string());
+                m
+            },
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("album".to_string(), serde_json::json!("Vacation"));
+                m
+            },
+            exif_overrides: {
+                let mut m = HashMap::new();
+                m.insert("Make".to_string(), "EPSON".to_string());
+                m
+            },
+        };
 
-        let mut tags = HashMap::new();
-        tags.insert("key1".to_string(), serde_json::json!("val1"));
-        tags.insert("key2".to_string(), serde_json::json!(42));
-        tags.insert("key3".to_string(), serde_json::json!(["a", "b"]));
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
 
-        db.set_tags("IMG_002", &tags).unwrap();
-
-        let result = db.get_tags("IMG_002").unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result["key2"], serde_json::json!(42));
+        assert_eq!(read.xmp_tags.get("description"), Some(&"Test".to_string()));
+        assert_eq!(
+            read.custom_tags.get("album"),
+            Some(&serde_json::json!("Vacation"))
+        );
+        assert_eq!(read.exif_overrides.get("Make"), Some(&"EPSON".to_string()));
     }
 
     #[test]
-    fn test_find_stacks_by_key() {
-        let (_tmp, db) = test_db();
+    fn test_merge_and_write() {
+        let tmp = TempDir::new().unwrap();
 
-        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("text1"))
-            .unwrap();
-        db.set_tag("IMG_002", "ocr_text", &serde_json::json!("text2"))
-            .unwrap();
-        db.set_tag("IMG_003", "other_key", &serde_json::json!("val"))
-            .unwrap();
+        // Write initial data
+        let initial = SidecarData {
+            xmp_tags: {
+                let mut m = HashMap::new();
+                m.insert("description".to_string(), "Original".to_string());
+                m.insert("creator".to_string(), "Alice".to_string());
+                m
+            },
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("tag1".to_string(), serde_json::json!("val1"));
+                m
+            },
+            ..Default::default()
+        };
+        write_sidecar(tmp.path(), "IMG_001", &initial).unwrap();
 
-        let ids = db.find_stacks_by_key("ocr_text").unwrap();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"IMG_001".to_string()));
-        assert!(ids.contains(&"IMG_002".to_string()));
+        // Merge new data
+        let mut new_xmp = HashMap::new();
+        new_xmp.insert("description".to_string(), "Updated".to_string());
+        let mut new_custom = HashMap::new();
+        new_custom.insert("tag2".to_string(), serde_json::json!("val2"));
+
+        merge_and_write(
+            tmp.path(),
+            "IMG_001",
+            &new_xmp,
+            &new_custom,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
+        assert_eq!(
+            read.xmp_tags.get("description"),
+            Some(&"Updated".to_string())
+        );
+        assert_eq!(read.xmp_tags.get("creator"), Some(&"Alice".to_string()));
+        assert_eq!(
+            read.custom_tags.get("tag1"),
+            Some(&serde_json::json!("val1"))
+        );
+        assert_eq!(
+            read.custom_tags.get("tag2"),
+            Some(&serde_json::json!("val2"))
+        );
     }
 
     #[test]
-    fn test_search_tags() {
-        let (_tmp, db) = test_db();
+    fn test_remove_custom_tag() {
+        let tmp = TempDir::new().unwrap();
 
-        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Happy Birthday John"))
-            .unwrap();
-        db.set_tag("IMG_002", "ocr_text", &serde_json::json!("Merry Christmas"))
-            .unwrap();
+        let data = SidecarData {
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("tag1".to_string(), serde_json::json!("val1"));
+                m.insert("tag2".to_string(), serde_json::json!("val2"));
+                m
+            },
+            ..Default::default()
+        };
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
 
-        let results = db.search_tags("Birthday").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "IMG_001");
+        assert!(remove_custom_tag(tmp.path(), "IMG_001", "tag1").unwrap());
+        assert!(!remove_custom_tag(tmp.path(), "IMG_001", "nonexistent").unwrap());
+
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
+        assert_eq!(read.custom_tags.len(), 1);
+        assert!(read.custom_tags.contains_key("tag2"));
     }
 
     #[test]
-    fn test_remove_all_tags() {
-        let (_tmp, db) = test_db();
+    fn test_remove_all_custom_tags() {
+        let tmp = TempDir::new().unwrap();
 
-        db.set_tag("IMG_001", "tag1", &serde_json::json!("value1")).unwrap();
-        db.set_tag("IMG_001", "tag2", &serde_json::json!("value2")).unwrap();
-        db.set_tag("IMG_001", "tag3", &serde_json::json!("value3")).unwrap();
+        let data = SidecarData {
+            xmp_tags: {
+                let mut m = HashMap::new();
+                m.insert("description".to_string(), "Keep me".to_string());
+                m
+            },
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("a".to_string(), serde_json::json!(1));
+                m.insert("b".to_string(), serde_json::json!(2));
+                m.insert("c".to_string(), serde_json::json!(3));
+                m
+            },
+            ..Default::default()
+        };
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
 
-        let count = db.remove_all_tags("IMG_001").unwrap();
+        let count = remove_all_custom_tags(tmp.path(), "IMG_001").unwrap();
         assert_eq!(count, 3);
 
-        let tags = db.get_tags("IMG_001").unwrap();
-        assert!(tags.is_empty());
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
+        assert!(read.custom_tags.is_empty());
+        // XMP tags preserved
+        assert_eq!(
+            read.xmp_tags.get("description"),
+            Some(&"Keep me".to_string())
+        );
     }
 
     #[test]
-    fn test_remove_all_tags_empty() {
-        let (_tmp, db) = test_db();
-
-        let count = db.remove_all_tags("NONEXISTENT").unwrap();
+    fn test_remove_all_custom_tags_empty() {
+        let tmp = TempDir::new().unwrap();
+        let count = remove_all_custom_tags(tmp.path(), "NONEXISTENT").unwrap();
         assert_eq!(count, 0);
     }
 
     #[test]
-    fn test_search_tags_no_results() {
-        let (_tmp, db) = test_db();
-
-        db.set_tag("IMG_001", "ocr_text", &serde_json::json!("Hello World")).unwrap();
-
-        let results = db.search_tags("Nonexistent").unwrap();
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_search_tags_special_sql_characters() {
-        let (_tmp, db) = test_db();
-
-        // Store values with special SQL characters
-        db.set_tag("IMG_001", "text", &serde_json::json!("100% complete")).unwrap();
-        db.set_tag("IMG_002", "text", &serde_json::json!("file_name_here")).unwrap();
-        db.set_tag("IMG_003", "text", &serde_json::json!("normal text")).unwrap();
-
-        // Note: The current implementation uses LIKE '%' || ?1 || '%' which means
-        // special SQL LIKE characters (% and _) in the search term still act as wildcards.
-        // This test documents the current behavior:
-        
-        // Search for "complete" - should find IMG_001
-        let results = db.search_tags("complete").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "IMG_001");
-
-        // Search for "file" - should find IMG_002
-        let results_file = db.search_tags("file").unwrap();
-        assert_eq!(results_file.len(), 1);
-        assert_eq!(results_file[0].0, "IMG_002");
-
-        // Searching for "100" should find IMG_001
-        let results_num = db.search_tags("100").unwrap();
-        assert_eq!(results_num.len(), 1);
-        assert_eq!(results_num[0].0, "IMG_001");
-    }
-
-    #[test]
-    fn test_get_tags_empty_stack() {
-        let (_tmp, db) = test_db();
-
-        let tags = db.get_tags("NONEXISTENT").unwrap();
-        assert!(tags.is_empty());
-    }
-
-    #[test]
-    fn test_open_path_explicit() {
+    fn test_remove_custom_tag_no_sidecar() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("custom.db");
+        let result = remove_custom_tag(tmp.path(), "NONEXISTENT", "key").unwrap();
+        assert!(!result);
+    }
 
-        let db = SidecarDb::open_path(&db_path).unwrap();
-        db.set_tag("IMG_001", "key", &serde_json::json!("value")).unwrap();
+    #[test]
+    fn test_list_sidecar_stacks() {
+        let tmp = TempDir::new().unwrap();
 
-        // Verify file was created
-        assert!(db_path.exists());
+        // Create some sidecar files
+        let data = SidecarData::default();
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        write_sidecar(tmp.path(), "IMG_002", &data).unwrap();
+
+        // Create a non-sidecar file
+        std::fs::write(tmp.path().join("IMG_003.jpg"), b"jpeg").unwrap();
+
+        let mut ids = list_sidecar_stacks(tmp.path()).unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["IMG_001", "IMG_002"]);
+    }
+
+    #[test]
+    fn test_sidecar_file_is_valid_xmp() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            xmp_tags: {
+                let mut m = HashMap::new();
+                m.insert("description".to_string(), "Test photo".to_string());
+                m
+            },
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("album".to_string(), serde_json::json!("Family"));
+                m
+            },
+            ..Default::default()
+        };
+
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("IMG_001.xmp")).unwrap();
+        assert!(content.contains("<?xpacket begin="));
+        assert!(content.contains("<dc:description>Test photo</dc:description>"));
+        assert!(content.contains("photostax:customTags"));
+        assert!(content.contains("<?xpacket end="));
     }
 
     #[test]
@@ -614,6 +609,15 @@ mod tests {
         let display = format!("{}", err);
         assert!(display.contains("Serialization error"));
         assert!(display.contains("test error"));
+
+        let io_err = SidecarError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
+        assert!(format!("{}", io_err).contains("I/O error"));
+
+        let xmp_err = SidecarError::Xmp(XmpError::XmpParse("bad xml".to_string()));
+        assert!(format!("{}", xmp_err).contains("XMP error"));
     }
 
     #[test]
@@ -624,12 +628,86 @@ mod tests {
     }
 
     #[test]
-    fn test_find_stacks_by_key_no_results() {
-        let (_tmp, db) = test_db();
+    fn test_write_sidecar_creates_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = sidecar_path(tmp.path(), "IMG_001");
+        assert!(!path.exists());
 
-        db.set_tag("IMG_001", "tag1", &serde_json::json!("value")).unwrap();
+        write_sidecar(tmp.path(), "IMG_001", &SidecarData::default()).unwrap();
+        assert!(path.exists());
+    }
 
-        let ids = db.find_stacks_by_key("nonexistent_key").unwrap();
-        assert!(ids.is_empty());
+    #[test]
+    fn test_upsert_custom_tag() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut custom = HashMap::new();
+        custom.insert("status".to_string(), serde_json::json!("pending"));
+        merge_and_write(
+            tmp.path(),
+            "IMG_001",
+            &HashMap::new(),
+            &custom,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let mut custom2 = HashMap::new();
+        custom2.insert("status".to_string(), serde_json::json!("done"));
+        merge_and_write(
+            tmp.path(),
+            "IMG_001",
+            &HashMap::new(),
+            &custom2,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
+        assert_eq!(
+            read.custom_tags.get("status"),
+            Some(&serde_json::json!("done"))
+        );
+    }
+
+    #[test]
+    fn test_custom_tags_preserve_json_types() {
+        let tmp = TempDir::new().unwrap();
+        let data = SidecarData {
+            custom_tags: {
+                let mut m = HashMap::new();
+                m.insert("string_val".to_string(), serde_json::json!("hello"));
+                m.insert("int_val".to_string(), serde_json::json!(42));
+                m.insert("bool_val".to_string(), serde_json::json!(true));
+                m.insert("array_val".to_string(), serde_json::json!(["a", "b"]));
+                m.insert("null_val".to_string(), serde_json::json!(null));
+                m
+            },
+            ..Default::default()
+        };
+
+        write_sidecar(tmp.path(), "IMG_001", &data).unwrap();
+        let read = read_sidecar(tmp.path(), "IMG_001").unwrap();
+
+        assert_eq!(
+            read.custom_tags.get("string_val"),
+            Some(&serde_json::json!("hello"))
+        );
+        assert_eq!(
+            read.custom_tags.get("int_val"),
+            Some(&serde_json::json!(42))
+        );
+        assert_eq!(
+            read.custom_tags.get("bool_val"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            read.custom_tags.get("array_val"),
+            Some(&serde_json::json!(["a", "b"]))
+        );
+        assert_eq!(
+            read.custom_tags.get("null_val"),
+            Some(&serde_json::json!(null))
+        );
     }
 }

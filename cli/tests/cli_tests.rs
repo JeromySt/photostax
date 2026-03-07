@@ -416,7 +416,12 @@ fn test_metadata_delete() {
 #[test]
 fn test_metadata_not_found() {
     let tmp = create_test_fixtures();
-    let output = run_cli(&["metadata", "read", tmp.path().to_str().unwrap(), "NONEXISTENT"]);
+    let output = run_cli(&[
+        "metadata",
+        "read",
+        tmp.path().to_str().unwrap(),
+        "NONEXISTENT",
+    ]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());

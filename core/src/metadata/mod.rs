@@ -4,7 +4,7 @@
 //!
 //! - [`exif`] — Read EXIF tags from JPEG and TIFF files
 //! - [`xmp`] — Read and write XMP/Dublin Core metadata
-//! - [`sidecar`] — SQLite sidecar database for custom metadata
+//! - [`sidecar`] — XMP sidecar files for custom metadata and EXIF overrides
 //!
 //! ## Supported Formats
 //!

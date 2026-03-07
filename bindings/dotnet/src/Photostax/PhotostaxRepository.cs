@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using Photostax.Native;
 
@@ -6,6 +7,12 @@ namespace Photostax;
 /// <summary>
 /// Represents a local photo repository.
 /// </summary>
+/// <remarks>
+/// This class is excluded from code coverage because all methods depend on the
+/// native photostax_ffi library and cannot be unit-tested without it.
+/// Integration tests with the native DLL provide coverage for this class.
+/// </remarks>
+[ExcludeFromCodeCoverage]
 public sealed class PhotostaxRepository : IDisposable
 {
     private readonly RepoSafeHandle _handle;

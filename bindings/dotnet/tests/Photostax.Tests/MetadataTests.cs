@@ -182,6 +182,49 @@ public class MetadataTests
     }
 
     [Fact]
+    public void FromJson_WithCustomTags_ParsesDoubleValues()
+    {
+        var json = """{"custom_tags":{"score":3.14}}""";
+        var metadata = Metadata.FromJson(json);
+
+        Assert.Equal(3.14, (double)metadata.CustomTags["score"]!);
+    }
+
+    [Fact]
+    public void FromJson_WithCustomTags_ParsesArrayValues()
+    {
+        var json = """{"custom_tags":{"tags":["a","b","c"]}}""";
+        var metadata = Metadata.FromJson(json);
+
+        var list = Assert.IsType<List<object?>>(metadata.CustomTags["tags"]);
+        Assert.Equal(3, list.Count);
+        Assert.Equal("a", list[0]);
+        Assert.Equal("b", list[1]);
+        Assert.Equal("c", list[2]);
+    }
+
+    [Fact]
+    public void FromJson_WithCustomTags_ParsesNestedObjectValues()
+    {
+        var json = """{"custom_tags":{"geo":{"lat":40.7,"lon":-74.0}}}""";
+        var metadata = Metadata.FromJson(json);
+
+        var nested = Assert.IsType<Dictionary<string, object?>>(metadata.CustomTags["geo"]);
+        Assert.Equal(40.7, (double)nested["lat"]!);
+        Assert.Equal(-74.0, (double)nested["lon"]!);
+    }
+
+    [Fact]
+    public void WithCustomTag_NullValue_AddsNullEntry()
+    {
+        var metadata = new Metadata();
+        var updated = metadata.WithCustomTag("notes", null);
+
+        Assert.True(updated.CustomTags.ContainsKey("notes"));
+        Assert.Null(updated.CustomTags["notes"]);
+    }
+
+    [Fact]
     public void FromJson_InvalidJson_ThrowsPhotostaxException()
     {
         Assert.Throws<PhotostaxException>(() => Metadata.FromJson("not valid json"));

@@ -51,8 +51,11 @@ pub unsafe extern "C" fn photostax_get_metadata(
             "custom_tags": stack.metadata.custom_tags,
         });
 
-        let json_str = serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-        CString::new(json_str).map(|s| s.into_raw()).unwrap_or(ptr::null_mut())
+        let json_str =
+            serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+        CString::new(json_str)
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut())
     });
 
     result.unwrap_or(ptr::null_mut())
@@ -96,7 +99,9 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
         };
 
         match stack.metadata.exif_tags.get(tag_name_str) {
-            Some(value) => CString::new(value.as_str()).map(|s| s.into_raw()).unwrap_or(ptr::null_mut()),
+            Some(value) => CString::new(value.as_str())
+                .map(|s| s.into_raw())
+                .unwrap_or(ptr::null_mut()),
             None => ptr::null_mut(),
         }
     });
@@ -144,7 +149,9 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
         match stack.metadata.custom_tags.get(tag_name_str) {
             Some(value) => {
                 let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-                CString::new(json_str).map(|s| s.into_raw()).unwrap_or(ptr::null_mut())
+                CString::new(json_str)
+                    .map(|s| s.into_raw())
+                    .unwrap_or(ptr::null_mut())
             }
             None => ptr::null_mut(),
         }
@@ -231,8 +238,24 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::ptr;
+
+    fn testdata_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("core")
+            .join("tests")
+            .join("testdata")
+    }
+
+    fn open_testdata_repo() -> *mut crate::types::PhotostaxRepo {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+        repo
+    }
 
     #[test]
     fn test_get_metadata_null_pointers() {
@@ -253,9 +276,74 @@ mod tests {
     }
 
     #[test]
+    fn test_get_metadata_happy_path() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let result = unsafe { photostax_get_metadata(repo, id.as_ptr()) };
+        assert!(
+            !result.is_null(),
+            "Should get metadata for FamilyPhotos_0001"
+        );
+
+        let meta_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        assert!(meta_str.contains("exif_tags"));
+        assert!(meta_str.contains("xmp_tags"));
+        assert!(meta_str.contains("custom_tags"));
+
+        unsafe { crate::repository::photostax_string_free(result) };
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_metadata_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent_stack").unwrap();
+        let result = unsafe { photostax_get_metadata(repo, id.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
     fn test_get_exif_tag_null_pointers() {
         let result = unsafe { photostax_get_exif_tag(ptr::null(), ptr::null(), ptr::null()) };
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_get_exif_tag_happy_path() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let tag = CString::new("Make").unwrap();
+        let result = unsafe { photostax_get_exif_tag(repo, id.as_ptr(), tag.as_ptr()) };
+
+        // Testdata JPEG files have Make=EPSON
+        if !result.is_null() {
+            let tag_val = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+            assert!(tag_val.contains("EPSON"));
+            unsafe { crate::repository::photostax_string_free(result) };
+        }
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_exif_tag_nonexistent_tag() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let tag = CString::new("NonexistentTag").unwrap();
+        let result = unsafe { photostax_get_exif_tag(repo, id.as_ptr(), tag.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_exif_tag_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent").unwrap();
+        let tag = CString::new("Make").unwrap();
+        let result = unsafe { photostax_get_exif_tag(repo, id.as_ptr(), tag.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { crate::repository::photostax_repo_free(repo) };
     }
 
     #[test]
@@ -265,11 +353,68 @@ mod tests {
     }
 
     #[test]
+    fn test_get_custom_tag_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent").unwrap();
+        let tag = CString::new("album").unwrap();
+        let result = unsafe { photostax_get_custom_tag(repo, id.as_ptr(), tag.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_custom_tag_nonexistent_tag() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let tag = CString::new("nonexistent_tag").unwrap();
+        let result = unsafe { photostax_get_custom_tag(repo, id.as_ptr(), tag.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
     fn test_set_custom_tag_null_pointers() {
-        let result = unsafe { photostax_set_custom_tag(ptr::null(), ptr::null(), ptr::null(), ptr::null()) };
+        let result =
+            unsafe { photostax_set_custom_tag(ptr::null(), ptr::null(), ptr::null(), ptr::null()) };
         assert!(!result.success);
         assert!(!result.error_message.is_null());
         unsafe { crate::repository::photostax_string_free(result.error_message) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_null_stack_id() {
+        let repo = open_testdata_repo();
+        let tag = CString::new("album").unwrap();
+        let value = CString::new(r#""Family""#).unwrap();
+        let result =
+            unsafe { photostax_set_custom_tag(repo, ptr::null(), tag.as_ptr(), value.as_ptr()) };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_null_tag_name() {
+        let repo = open_testdata_repo();
+        let id = CString::new("test").unwrap();
+        let value = CString::new(r#""test""#).unwrap();
+        let result =
+            unsafe { photostax_set_custom_tag(repo, id.as_ptr(), ptr::null(), value.as_ptr()) };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_null_value() {
+        let repo = open_testdata_repo();
+        let id = CString::new("test").unwrap();
+        let tag = CString::new("album").unwrap();
+        let result =
+            unsafe { photostax_set_custom_tag(repo, id.as_ptr(), tag.as_ptr(), ptr::null()) };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+        unsafe { crate::repository::photostax_repo_free(repo) };
     }
 
     #[test]
@@ -282,9 +427,204 @@ mod tests {
         let tag_name = CString::new("test_tag").unwrap();
         let value = CString::new("not valid json").unwrap();
 
-        let result = unsafe { photostax_set_custom_tag(repo, stack_id.as_ptr(), tag_name.as_ptr(), value.as_ptr()) };
+        let result = unsafe {
+            photostax_set_custom_tag(repo, stack_id.as_ptr(), tag_name.as_ptr(), value.as_ptr())
+        };
         assert!(!result.success);
         assert!(!result.error_message.is_null());
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent_stack").unwrap();
+        let tag = CString::new("album").unwrap();
+        let value = CString::new(r#""Family""#).unwrap();
+        let result =
+            unsafe { photostax_set_custom_tag(repo, id.as_ptr(), tag.as_ptr(), value.as_ptr()) };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_happy_path() {
+        // Copy testdata to temp dir
+        let dir = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+        }
+
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let tag = CString::new("album").unwrap();
+        let value = CString::new(r#""Family Vacation""#).unwrap();
+        let result =
+            unsafe { photostax_set_custom_tag(repo, id.as_ptr(), tag.as_ptr(), value.as_ptr()) };
+        assert!(result.success, "set_custom_tag should succeed");
+
+        // Verify the tag was set by reading it back
+        let read_result = unsafe { photostax_get_custom_tag(repo, id.as_ptr(), tag.as_ptr()) };
+        assert!(
+            !read_result.is_null(),
+            "Should be able to read back the tag"
+        );
+        let tag_val = unsafe { CStr::from_ptr(read_result) }.to_str().unwrap();
+        assert!(tag_val.contains("Family Vacation"));
+        unsafe { crate::repository::photostax_string_free(read_result) };
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    // ======================== Invalid UTF-8 tests ========================
+
+    #[test]
+    fn test_get_metadata_invalid_utf8_stack_id() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let invalid: &[u8] = &[0xff, 0xfe, 0x00];
+        let result = unsafe { photostax_get_metadata(repo, invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_exif_tag_invalid_utf8_stack_id() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let invalid: &[u8] = &[0xff, 0x00];
+        let tag = CString::new("Make").unwrap();
+        let result = unsafe {
+            photostax_get_exif_tag(repo, invalid.as_ptr() as *const c_char, tag.as_ptr())
+        };
+        assert!(result.is_null());
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_exif_tag_invalid_utf8_tag_name() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result =
+            unsafe { photostax_get_exif_tag(repo, id.as_ptr(), invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_custom_tag_invalid_utf8_stack_id() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let invalid: &[u8] = &[0xff, 0x00];
+        let tag = CString::new("album").unwrap();
+        let result = unsafe {
+            photostax_get_custom_tag(repo, invalid.as_ptr() as *const c_char, tag.as_ptr())
+        };
+        assert!(result.is_null());
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_get_custom_tag_invalid_utf8_tag_name() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result = unsafe {
+            photostax_get_custom_tag(repo, id.as_ptr(), invalid.as_ptr() as *const c_char)
+        };
+        assert!(result.is_null());
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_invalid_utf8_stack_id() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let invalid: &[u8] = &[0xff, 0x00];
+        let tag = CString::new("key").unwrap();
+        let val = CString::new(r#""val""#).unwrap();
+        let result = unsafe {
+            photostax_set_custom_tag(
+                repo,
+                invalid.as_ptr() as *const c_char,
+                tag.as_ptr(),
+                val.as_ptr(),
+            )
+        };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_invalid_utf8_tag_name() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let val = CString::new(r#""val""#).unwrap();
+        let result = unsafe {
+            photostax_set_custom_tag(
+                repo,
+                id.as_ptr(),
+                invalid.as_ptr() as *const c_char,
+                val.as_ptr(),
+            )
+        };
+        assert!(!result.success);
+        unsafe { crate::repository::photostax_string_free(result.error_message) };
+
+        unsafe { crate::repository::photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_set_custom_tag_invalid_utf8_value() {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let tag = CString::new("key").unwrap();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result = unsafe {
+            photostax_set_custom_tag(
+                repo,
+                id.as_ptr(),
+                tag.as_ptr(),
+                invalid.as_ptr() as *const c_char,
+            )
+        };
+        assert!(!result.success);
         unsafe { crate::repository::photostax_string_free(result.error_message) };
 
         unsafe { crate::repository::photostax_repo_free(repo) };

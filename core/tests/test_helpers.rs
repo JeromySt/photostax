@@ -47,7 +47,7 @@ pub fn create_jpeg_with_exif(tags: &[(&str, &str)]) -> Vec<u8> {
 
     // DQT (Define Quantization Table) - minimal
     buf.extend_from_slice(&[0xFF, 0xDB, 0x00, 0x43, 0x00]); // DQT marker + length + table ID
-    // Simple quantization table (64 bytes)
+                                                            // Simple quantization table (64 bytes)
     for i in 0..64u8 {
         buf.push(16 + (i / 8));
     }
@@ -65,17 +65,19 @@ pub fn create_jpeg_with_exif(tags: &[(&str, &str)]) -> Vec<u8> {
     buf.extend_from_slice(&[0xFF, 0xC4]); // DHT marker
     buf.extend_from_slice(&[0x00, 0x1F]); // Length
     buf.push(0x00); // DC table, ID 0
-    // Huffman code lengths (16 bytes) - simple table
+                    // Huffman code lengths (16 bytes) - simple table
     buf.extend_from_slice(&[0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01]);
     buf.extend_from_slice(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     // Huffman values (12 bytes)
-    buf.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B]);
+    buf.extend_from_slice(&[
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+    ]);
 
     // DHT - AC table
     buf.extend_from_slice(&[0xFF, 0xC4]); // DHT marker
     buf.extend_from_slice(&[0x00, 0xB5]); // Length
     buf.push(0x10); // AC table, ID 0
-    // Standard AC Huffman table lengths
+                    // Standard AC Huffman table lengths
     buf.extend_from_slice(&[0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03]);
     buf.extend_from_slice(&[0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D]);
     // AC Huffman values (162 bytes) - fill with standard values
@@ -231,8 +233,20 @@ pub fn create_tiff_with_exif(tags: &[(&str, &str)]) -> Vec<u8> {
     write_ifd_entry(&mut buf, TAG_BITS_PER_SAMPLE, TYPE_SHORT, 1, 8); // 8 bits
     write_ifd_entry(&mut buf, TAG_COMPRESSION, TYPE_SHORT, 1, 1); // No compression
     write_ifd_entry(&mut buf, TAG_PHOTOMETRIC, TYPE_SHORT, 1, 1); // BlackIsZero
-    write_ifd_entry(&mut buf, TAG_MAKE, TYPE_ASCII, make_bytes.len() as u32, make_offset);
-    write_ifd_entry(&mut buf, TAG_MODEL, TYPE_ASCII, model_bytes.len() as u32, model_offset);
+    write_ifd_entry(
+        &mut buf,
+        TAG_MAKE,
+        TYPE_ASCII,
+        make_bytes.len() as u32,
+        make_offset,
+    );
+    write_ifd_entry(
+        &mut buf,
+        TAG_MODEL,
+        TYPE_ASCII,
+        model_bytes.len() as u32,
+        model_offset,
+    );
     write_ifd_entry(&mut buf, TAG_STRIP_OFFSETS, TYPE_LONG, 1, strip_offset);
     write_ifd_entry(&mut buf, TAG_SAMPLES_PER_PIXEL, TYPE_SHORT, 1, 1);
     write_ifd_entry(&mut buf, TAG_ROWS_PER_STRIP, TYPE_LONG, 1, height);
@@ -294,7 +308,13 @@ pub fn create_tiff_with_exif(tags: &[(&str, &str)]) -> Vec<u8> {
     write_ifd_entry(&mut buf, 259, TYPE_SHORT, 1, 1); // Compression (none)
     write_ifd_entry(&mut buf, 262, TYPE_SHORT, 1, 1); // PhotometricInterpretation
     write_ifd_entry(&mut buf, 271, TYPE_ASCII, make_bytes.len() as u32, make_off); // Make
-    write_ifd_entry(&mut buf, 272, TYPE_ASCII, model_bytes.len() as u32, model_off); // Model
+    write_ifd_entry(
+        &mut buf,
+        272,
+        TYPE_ASCII,
+        model_bytes.len() as u32,
+        model_off,
+    ); // Model
     write_ifd_entry(&mut buf, 273, TYPE_LONG, 1, strip_off); // StripOffsets
     write_ifd_entry(&mut buf, 277, TYPE_SHORT, 1, 1); // SamplesPerPixel
     write_ifd_entry(&mut buf, 278, TYPE_LONG, 1, height); // RowsPerStrip
@@ -302,7 +322,13 @@ pub fn create_tiff_with_exif(tags: &[(&str, &str)]) -> Vec<u8> {
     write_ifd_entry(&mut buf, 282, TYPE_RATIONAL, 1, xres_off); // XResolution
     write_ifd_entry(&mut buf, 283, TYPE_RATIONAL, 1, yres_off); // YResolution
     write_ifd_entry(&mut buf, 296, TYPE_SHORT, 1, 2); // ResolutionUnit (inch)
-    write_ifd_entry(&mut buf, 305, TYPE_ASCII, software_bytes.len() as u32, software_off); // Software
+    write_ifd_entry(
+        &mut buf,
+        305,
+        TYPE_ASCII,
+        software_bytes.len() as u32,
+        software_off,
+    ); // Software
 
     // Next IFD pointer (0 = no more IFDs)
     buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
@@ -413,6 +439,9 @@ pub fn create_test_repository(dir: &Path) {
     // FamilyPhotos_0004 - lonely original
     create_fastfoto_stack(dir, "FamilyPhotos", 4, false, false, "jpg");
 
+    // FamilyPhotos_0005 - original + back (no enhanced)
+    create_fastfoto_stack(dir, "FamilyPhotos", 5, false, true, "jpg");
+
     // MixedBatch_0001 - mixed formats (jpg original/enhanced, tif back)
     create_fastfoto_stack(dir, "MixedBatch", 1, true, false, "jpg");
     // Create TIFF back separately
@@ -428,9 +457,7 @@ pub fn create_test_repository(dir: &Path) {
 
 // Helper function to find a tag value
 fn find_tag<'a>(tags: &'a [(&str, &str)], name: &str) -> Option<&'a str> {
-    tags.iter()
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| *v)
+    tags.iter().find(|(k, _)| *k == name).map(|(_, v)| *v)
 }
 
 // Helper to create null-terminated string bytes
@@ -440,7 +467,7 @@ fn null_terminated(s: &str) -> Vec<u8> {
     bytes
 }
 
-// Build EXIF data for JPEG APP1 segment
+#[allow(clippy::too_many_arguments)]
 fn build_exif_ifd(
     make: &str,
     model: &str,
@@ -518,13 +545,31 @@ fn build_exif_ifd(
     write_entry(&mut buf, 256, TYPE_LONG, 1, width); // ImageWidth
     write_entry(&mut buf, 257, TYPE_LONG, 1, height); // ImageLength
     write_entry(&mut buf, 271, TYPE_ASCII, make_bytes.len() as u32, make_off); // Make
-    write_entry(&mut buf, 272, TYPE_ASCII, model_bytes.len() as u32, model_off); // Model
+    write_entry(
+        &mut buf,
+        272,
+        TYPE_ASCII,
+        model_bytes.len() as u32,
+        model_off,
+    ); // Model
     write_entry(&mut buf, 274, TYPE_SHORT, 1, 1); // Orientation (normal)
     write_entry(&mut buf, 282, TYPE_RATIONAL, 1, xres_off); // XResolution
     write_entry(&mut buf, 283, TYPE_RATIONAL, 1, yres_off); // YResolution
     write_entry(&mut buf, 296, TYPE_SHORT, 1, 2); // ResolutionUnit (inch)
-    write_entry(&mut buf, 305, TYPE_ASCII, software_bytes.len() as u32, software_off); // Software
-    write_entry(&mut buf, 306, TYPE_ASCII, datetime_bytes.len() as u32, datetime_off); // DateTime
+    write_entry(
+        &mut buf,
+        305,
+        TYPE_ASCII,
+        software_bytes.len() as u32,
+        software_off,
+    ); // Software
+    write_entry(
+        &mut buf,
+        306,
+        TYPE_ASCII,
+        datetime_bytes.len() as u32,
+        datetime_off,
+    ); // DateTime
 
     // Next IFD pointer (0 = none)
     buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
@@ -584,9 +629,24 @@ mod tests {
         assert!(paths[2].exists());
 
         // Verify naming
-        assert!(paths[0].file_name().unwrap().to_str().unwrap().contains("Test_0001.jpg"));
-        assert!(paths[1].file_name().unwrap().to_str().unwrap().contains("Test_0001_a.jpg"));
-        assert!(paths[2].file_name().unwrap().to_str().unwrap().contains("Test_0001_b.jpg"));
+        assert!(paths[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Test_0001.jpg"));
+        assert!(paths[1]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Test_0001_a.jpg"));
+        assert!(paths[2]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Test_0001_b.jpg"));
     }
 
     #[test]
@@ -602,6 +662,8 @@ mod tests {
         assert!(tmp.path().join("FamilyPhotos_0002_a.jpg").exists());
         assert!(tmp.path().join("FamilyPhotos_0003.tif").exists());
         assert!(tmp.path().join("FamilyPhotos_0004.jpg").exists());
+        assert!(tmp.path().join("FamilyPhotos_0005.jpg").exists());
+        assert!(tmp.path().join("FamilyPhotos_0005_b.jpg").exists());
         assert!(tmp.path().join("MixedBatch_0001.jpg").exists());
         assert!(tmp.path().join("MixedBatch_0001_b.tif").exists());
     }

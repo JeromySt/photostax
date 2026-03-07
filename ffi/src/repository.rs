@@ -314,7 +314,8 @@ pub unsafe extern "C" fn photostax_stack_array_free(array: FfiPhotoStackArray) {
                 free_stack_strings(stack);
             }
             // Then free the array itself
-            let _ = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(array.data, array.len)) };
+            let _ =
+                unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(array.data, array.len)) };
         }
     });
 }
@@ -382,7 +383,7 @@ pub unsafe extern "C" fn photostax_string_free(s: *mut c_char) {
 pub unsafe extern "C" fn photostax_bytes_free(data: *mut u8, len: usize) {
     let _ = panic::catch_unwind(|| {
         if !data.is_null() && len > 0 {
-            let _ = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(data, len)) };
+            let _ = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len)) };
         }
     });
 }
@@ -391,6 +392,24 @@ pub unsafe extern "C" fn photostax_bytes_free(data: *mut u8, len: usize) {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    /// Helper: path to core/tests/testdata
+    fn testdata_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("core")
+            .join("tests")
+            .join("testdata")
+    }
+
+    /// Helper: open repo at testdata
+    fn open_testdata_repo() -> *mut PhotostaxRepo {
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+        repo
+    }
 
     #[test]
     fn test_repo_open_null_path() {
@@ -420,6 +439,45 @@ mod tests {
     }
 
     #[test]
+    fn test_repo_scan_with_testdata() {
+        let repo = open_testdata_repo();
+        let array = unsafe { photostax_repo_scan(repo) };
+        assert!(!array.data.is_null());
+        assert!(array.len > 0, "Expected stacks from testdata");
+
+        // Verify first stack has valid id
+        let first = unsafe { &*array.data };
+        assert!(!first.id.is_null());
+        let id_str = unsafe { CStr::from_ptr(first.id) }.to_str().unwrap();
+        assert!(!id_str.is_empty());
+
+        // Verify metadata_json is valid
+        assert!(!first.metadata_json.is_null());
+        let meta_str = unsafe { CStr::from_ptr(first.metadata_json) }
+            .to_str()
+            .unwrap();
+        assert!(meta_str.contains("exif_tags"));
+
+        unsafe { photostax_stack_array_free(array) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_repo_scan_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let array = unsafe { photostax_repo_scan(repo) };
+        assert!(array.data.is_null());
+        assert_eq!(array.len, 0);
+
+        unsafe { photostax_stack_array_free(array) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
     fn test_repo_get_stack_null_repo() {
         let id = CString::new("test").unwrap();
         let stack = unsafe { photostax_repo_get_stack(ptr::null(), id.as_ptr()) };
@@ -439,11 +497,121 @@ mod tests {
     }
 
     #[test]
+    fn test_repo_get_stack_happy_path() {
+        let repo = open_testdata_repo();
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let stack_ptr = unsafe { photostax_repo_get_stack(repo, id.as_ptr()) };
+        assert!(!stack_ptr.is_null(), "Stack FamilyPhotos_0001 should exist");
+
+        let stack = unsafe { &*stack_ptr };
+        let id_str = unsafe { CStr::from_ptr(stack.id) }.to_str().unwrap();
+        assert_eq!(id_str, "FamilyPhotos_0001");
+
+        // Should have original path
+        assert!(!stack.original.is_null());
+        let orig_str = unsafe { CStr::from_ptr(stack.original) }.to_str().unwrap();
+        assert!(orig_str.contains("FamilyPhotos_0001"));
+
+        unsafe { photostax_stack_free(stack_ptr) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_repo_get_stack_not_found() {
+        let repo = open_testdata_repo();
+
+        let id = CString::new("nonexistent_stack").unwrap();
+        let stack_ptr = unsafe { photostax_repo_get_stack(repo, id.as_ptr()) };
+        assert!(stack_ptr.is_null());
+
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
     fn test_read_image_null_pointers() {
-        let result = unsafe { photostax_read_image(ptr::null(), ptr::null(), ptr::null_mut(), ptr::null_mut()) };
+        let result = unsafe {
+            photostax_read_image(ptr::null(), ptr::null(), ptr::null_mut(), ptr::null_mut())
+        };
         assert!(!result.success);
         assert!(!result.error_message.is_null());
         unsafe { photostax_string_free(result.error_message) };
+    }
+
+    #[test]
+    fn test_read_image_null_path() {
+        let repo = open_testdata_repo();
+        let mut out_data: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+        let result =
+            unsafe { photostax_read_image(repo, ptr::null(), &mut out_data, &mut out_len) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_read_image_null_out_data() {
+        let repo = open_testdata_repo();
+        let path = CString::new("test.jpg").unwrap();
+        let mut out_len: usize = 0;
+        let result =
+            unsafe { photostax_read_image(repo, path.as_ptr(), ptr::null_mut(), &mut out_len) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_read_image_null_out_len() {
+        let repo = open_testdata_repo();
+        let path = CString::new("test.jpg").unwrap();
+        let mut out_data: *mut u8 = ptr::null_mut();
+        let result =
+            unsafe { photostax_read_image(repo, path.as_ptr(), &mut out_data, ptr::null_mut()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_read_image_happy_path() {
+        let repo = open_testdata_repo();
+        let image_path = testdata_path().join("FamilyPhotos_0001.jpg");
+        let path = CString::new(image_path.to_str().unwrap()).unwrap();
+        let mut out_data: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let result =
+            unsafe { photostax_read_image(repo, path.as_ptr(), &mut out_data, &mut out_len) };
+        assert!(
+            result.success,
+            "read_image should succeed for existing file"
+        );
+        assert!(!out_data.is_null());
+        assert!(out_len > 0);
+
+        // JPEG magic bytes
+        let first_two = unsafe { std::slice::from_raw_parts(out_data, 2) };
+        assert_eq!(first_two, &[0xFF, 0xD8], "Should be JPEG data");
+
+        unsafe { photostax_bytes_free(out_data, out_len) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_read_image_nonexistent_file() {
+        let repo = open_testdata_repo();
+        let path = CString::new("/nonexistent/file.jpg").unwrap();
+        let mut out_data: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let result =
+            unsafe { photostax_read_image(repo, path.as_ptr(), &mut out_data, &mut out_len) };
+        assert!(!result.success);
+        assert!(!result.error_message.is_null());
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
     }
 
     #[test]
@@ -452,6 +620,69 @@ mod tests {
         assert!(!result.success);
         assert!(!result.error_message.is_null());
         unsafe { photostax_string_free(result.error_message) };
+    }
+
+    #[test]
+    fn test_write_metadata_null_stack_id() {
+        let repo = open_testdata_repo();
+        let json = CString::new("{}").unwrap();
+        let result = unsafe { photostax_write_metadata(repo, ptr::null(), json.as_ptr()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_null_json() {
+        let repo = open_testdata_repo();
+        let id = CString::new("test").unwrap();
+        let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), ptr::null()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_invalid_json() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let json = CString::new("not valid json").unwrap();
+        let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), json.as_ptr()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent_stack").unwrap();
+        let json = CString::new(r#"{"custom_tags":{"album":"test"}}"#).unwrap();
+        let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), json.as_ptr()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_happy_path() {
+        // Copy testdata to temp dir so we don't pollute the real testdata
+        let dir = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+        }
+
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let json = CString::new(r#"{"custom_tags":{"album":"Family"}}"#).unwrap();
+        let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), json.as_ptr()) };
+        assert!(result.success, "write_metadata should succeed");
+
+        unsafe { photostax_repo_free(repo) };
     }
 
     #[test]
@@ -471,8 +702,24 @@ mod tests {
     }
 
     #[test]
+    fn test_string_free_valid() {
+        let s = CString::new("hello").unwrap();
+        let ptr = s.into_raw();
+        unsafe { photostax_string_free(ptr) };
+    }
+
+    #[test]
     fn test_bytes_free_null() {
         unsafe { photostax_bytes_free(ptr::null_mut(), 0) };
+    }
+
+    #[test]
+    fn test_bytes_free_valid() {
+        let data = vec![1u8, 2, 3, 4];
+        let len = data.len();
+        let boxed = data.into_boxed_slice();
+        let ptr = Box::into_raw(boxed) as *mut u8;
+        unsafe { photostax_bytes_free(ptr, len) };
     }
 
     #[test]
@@ -502,5 +749,169 @@ mod tests {
         // Should succeed even if directory doesn't exist (just creates handle)
         assert!(!repo.is_null());
         unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_path_to_c_string_none() {
+        let result = path_to_c_string(&None);
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_path_to_c_string_some() {
+        let path = Some(PathBuf::from("/test/path.jpg"));
+        let result = path_to_c_string(&path);
+        assert!(!result.is_null());
+        let s = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        assert!(s.contains("path.jpg"));
+        unsafe { photostax_string_free(result) };
+    }
+
+    #[test]
+    fn test_photo_stack_to_ffi_basic() {
+        let stack = PhotoStack {
+            id: "test_stack".to_string(),
+            original: Some(PathBuf::from("/test/original.jpg")),
+            enhanced: Some(PathBuf::from("/test/enhanced.jpg")),
+            back: None,
+            metadata: Default::default(),
+        };
+        let ffi = photo_stack_to_ffi(&stack);
+        assert!(!ffi.id.is_null());
+        let id_str = unsafe { CStr::from_ptr(ffi.id) }.to_str().unwrap();
+        assert_eq!(id_str, "test_stack");
+        assert!(!ffi.original.is_null());
+        assert!(!ffi.enhanced.is_null());
+        assert!(ffi.back.is_null());
+        assert!(!ffi.metadata_json.is_null());
+
+        // Clean up
+        unsafe {
+            drop(CString::from_raw(ffi.id));
+            drop(CString::from_raw(ffi.original));
+            drop(CString::from_raw(ffi.enhanced));
+            drop(CString::from_raw(ffi.metadata_json));
+        }
+    }
+
+    #[test]
+    fn test_photo_stack_to_ffi_with_metadata() {
+        let mut metadata = photostax_core::photo_stack::Metadata::default();
+        metadata
+            .exif_tags
+            .insert("Make".to_string(), "EPSON".to_string());
+        metadata
+            .custom_tags
+            .insert("album".to_string(), serde_json::json!("Family"));
+
+        let stack = PhotoStack {
+            id: "meta_test".to_string(),
+            original: None,
+            enhanced: None,
+            back: None,
+            metadata,
+        };
+        let ffi = photo_stack_to_ffi(&stack);
+        let meta_str = unsafe { CStr::from_ptr(ffi.metadata_json) }
+            .to_str()
+            .unwrap();
+        assert!(meta_str.contains("EPSON"));
+        assert!(meta_str.contains("Family"));
+
+        // Clean up
+        unsafe {
+            drop(CString::from_raw(ffi.id));
+            drop(CString::from_raw(ffi.metadata_json));
+        }
+    }
+
+    // ======================== Invalid UTF-8 tests ========================
+
+    #[test]
+    fn test_repo_open_invalid_utf8() {
+        let invalid: &[u8] = &[0xff, 0xfe, 0x00];
+        let result = unsafe { photostax_repo_open(invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_get_stack_invalid_utf8_id() {
+        let repo = open_testdata_repo();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result = unsafe { photostax_repo_get_stack(repo, invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_read_image_invalid_utf8_path() {
+        let repo = open_testdata_repo();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let mut data: *mut u8 = ptr::null_mut();
+        let mut len: usize = 0;
+        let result = unsafe {
+            photostax_read_image(repo, invalid.as_ptr() as *const c_char, &mut data, &mut len)
+        };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_invalid_utf8_stack_id() {
+        let repo = open_testdata_repo();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let json = CString::new("{}").unwrap();
+        let result = unsafe {
+            photostax_write_metadata(repo, invalid.as_ptr() as *const c_char, json.as_ptr())
+        };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_invalid_utf8_json() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result = unsafe {
+            photostax_write_metadata(repo, id.as_ptr(), invalid.as_ptr() as *const c_char)
+        };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_write_metadata_nonexistent_stack_utf8() {
+        let repo = open_testdata_repo();
+        let id = CString::new("NONEXISTENT_UTF8").unwrap();
+        let json = CString::new(r#"{"custom_tags":{"k":"v"}}"#).unwrap();
+        let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), json.as_ptr()) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_scan_error_on_invalid_repo() {
+        // Repo pointing to nonexistent directory
+        let path = CString::new("/nonexistent/ffi/repo/dir").unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        assert!(!repo.is_null());
+        let result = unsafe { photostax_repo_scan(repo) };
+        // On some OSes returns empty, on others returns empty (scan may succeed with 0)
+        // Either way the function should not panic
+        unsafe { crate::repository::photostax_stack_array_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_path_to_c_string_with_null_byte() {
+        // A path containing a null byte should cause CString::new to fail
+        let path_with_null = PathBuf::from("path\0with_null.jpg");
+        let result = path_to_c_string(&Some(path_with_null));
+        assert!(result.is_null());
     }
 }

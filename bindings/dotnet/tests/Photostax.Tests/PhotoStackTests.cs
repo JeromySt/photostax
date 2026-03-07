@@ -8,6 +8,20 @@ namespace Photostax.Tests;
 public class PhotoStackTests
 {
     [Fact]
+    public void Constructor_NullId_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new PhotoStack(null!, null, null, null, new Metadata()));
+    }
+
+    [Fact]
+    public void Constructor_NullMetadata_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new PhotoStack("id", null, null, null, null!));
+    }
+
+    [Fact]
     public void Constructor_SetsIdCorrectly()
     {
         var stack = CreateStack("test-id");
