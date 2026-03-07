@@ -22,13 +22,16 @@ public sealed class PhotostaxRepository : IDisposable
     /// Initializes a new instance of the <see cref="PhotostaxRepository"/> class.
     /// </summary>
     /// <param name="directoryPath">The path to the repository directory.</param>
+    /// <param name="recursive">When <c>true</c>, subdirectories are scanned recursively.
+    /// Required when the photo library uses FastFoto's folder-based organisation
+    /// (e.g. <c>1984_Mexico/</c>, <c>Mexico/</c>).</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="directoryPath"/> is null.</exception>
     /// <exception cref="PhotostaxException">Thrown when the repository cannot be opened.</exception>
-    public PhotostaxRepository(string directoryPath)
+    public PhotostaxRepository(string directoryPath, bool recursive = false)
     {
         ArgumentNullException.ThrowIfNull(directoryPath);
 
-        var ptr = NativeMethods.photostax_repo_open(directoryPath);
+        var ptr = NativeMethods.photostax_repo_open_recursive(directoryPath, recursive);
         if (ptr == IntPtr.Zero)
         {
             throw new PhotostaxException($"Failed to open repository at '{directoryPath}'");

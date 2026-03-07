@@ -138,6 +138,16 @@ impl From<JsSearchQuery> for CoreSearchQuery {
     }
 }
 
+/// Options for creating a PhotostaxRepository.
+#[napi(object)]
+pub struct RepositoryOptions {
+    /// Whether to recurse into subdirectories (default: false).
+    ///
+    /// Set to `true` when the photo library uses FastFoto's folder-based
+    /// organisation (e.g. `1984_Mexico/`, `SteveJones/`).
+    pub recursive: Option<bool>,
+}
+
 /// A repository for accessing Epson FastFoto photo stacks from a local directory.
 ///
 /// Provides methods to scan, retrieve, and modify photo stacks and their metadata.
@@ -151,11 +161,17 @@ impl PhotostaxRepository {
     /// Create a new repository rooted at the given directory path.
     ///
     /// @param directoryPath - Path to the directory containing FastFoto photo files
+    /// @param options - Optional configuration (e.g. `{ recursive: true }`)
     /// @throws Error if the path is invalid
     #[napi(constructor)]
-    pub fn new(directory_path: String) -> Self {
+    pub fn new(directory_path: String, options: Option<RepositoryOptions>) -> Self {
+        let recursive = options.as_ref().and_then(|o| o.recursive).unwrap_or(false);
+        let config = photostax_core::scanner::ScannerConfig {
+            recursive,
+            ..photostax_core::scanner::ScannerConfig::default()
+        };
         Self {
-            inner: LocalRepository::new(PathBuf::from(directory_path)),
+            inner: LocalRepository::with_config(PathBuf::from(directory_path), config),
         }
     }
 

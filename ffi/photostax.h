@@ -211,6 +211,21 @@ struct FfiResult photostax_set_custom_tag(const struct PhotostaxRepo *repo,
 struct PhotostaxRepo *photostax_repo_open(const char *path);
 
 /**
+ * Create a new repository with recursive subdirectory scanning.
+ *
+ * When `recursive` is true, the scanner will descend into all subdirectories.
+ * This is required when the photo library uses FastFoto's folder-based
+ * organisation (e.g. `1984_Mexico/`, `SteveJones/`).
+ *
+ * # Safety
+ *
+ * - `path` must be a valid null-terminated UTF-8 string
+ * - Returns null if `path` is null or invalid
+ * - Caller owns the returned pointer and must call [`photostax_repo_free`]
+ */
+struct PhotostaxRepo *photostax_repo_open_recursive(const char *path, bool recursive);
+
+/**
  * Free a repository handle.
  *
  * # Safety

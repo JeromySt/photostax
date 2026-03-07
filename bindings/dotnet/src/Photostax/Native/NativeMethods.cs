@@ -92,6 +92,14 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
 
     /// <summary>
+    /// Create a new repository with recursive subdirectory scanning.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_repo_open_recursive(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.U1)] bool recursive);
+
+    /// <summary>
     /// Free a repository handle.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

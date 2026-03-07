@@ -159,6 +159,14 @@ function toNativeSearchQuery(query: SearchQuery): {
 }
 
 /**
+ * Options for creating a PhotostaxRepository.
+ */
+export interface RepositoryOptions {
+  /** Whether to recurse into subdirectories (default: false) */
+  recursive?: boolean;
+}
+
+/**
  * A repository for accessing Epson FastFoto photo stacks.
  *
  * Provides methods to scan, retrieve, and modify photo stacks
@@ -168,7 +176,7 @@ function toNativeSearchQuery(query: SearchQuery): {
  * ```typescript
  * import { PhotostaxRepository } from '@photostax/core';
  *
- * const repo = new PhotostaxRepository('/path/to/photos');
+ * const repo = new PhotostaxRepository('/path/to/photos', { recursive: true });
  * const stacks = repo.scan();
  *
  * for (const stack of stacks) {
@@ -183,16 +191,20 @@ export class PhotostaxRepository {
    * Create a new repository rooted at the given directory.
    *
    * @param directoryPath - Path to the directory containing photo files
+   * @param options - Optional configuration (e.g. `{ recursive: true }`)
    * @throws Error if the native addon is not available
    */
-  constructor(directoryPath: string) {
+  constructor(directoryPath: string, options?: RepositoryOptions) {
     if (!nativeBinding) {
       throw new Error(
         `Native addon not loaded. Build it first with 'npm run build'. ` +
           `Original error: ${loadError?.message ?? 'unknown'}`
       );
     }
-    this._native = new nativeBinding.PhotostaxRepository(directoryPath);
+    this._native = new nativeBinding.PhotostaxRepository(
+      directoryPath,
+      options ? { recursive: options.recursive ?? false } : undefined
+    );
   }
 
   /**

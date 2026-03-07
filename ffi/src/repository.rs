@@ -12,6 +12,7 @@ use std::ptr;
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::photo_stack::PhotoStack;
 use photostax_core::repository::Repository;
+use photostax_core::scanner::ScannerConfig;
 use serde::Deserialize;
 
 use crate::types::{FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo};
@@ -76,6 +77,45 @@ pub unsafe extern "C" fn photostax_repo_open(path: *const c_char) -> *mut Photos
         };
 
         let repo = LocalRepository::new(PathBuf::from(path_str));
+        let boxed = Box::new(PhotostaxRepo { inner: repo });
+        Box::into_raw(boxed)
+    });
+
+    result.unwrap_or(ptr::null_mut())
+}
+
+/// Create a new repository with recursive subdirectory scanning.
+///
+/// When `recursive` is true, the scanner will descend into all subdirectories.
+/// This is required when the photo library uses FastFoto's folder-based
+/// organisation (e.g. `1984_Mexico/`, `SteveJones/`).
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated UTF-8 string
+/// - Returns null if `path` is null or invalid
+/// - Caller owns the returned pointer and must call [`photostax_repo_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repo_open_recursive(
+    path: *const c_char,
+    recursive: bool,
+) -> *mut PhotostaxRepo {
+    let result = panic::catch_unwind(|| {
+        if path.is_null() {
+            return ptr::null_mut();
+        }
+
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let config = ScannerConfig {
+            recursive,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(PathBuf::from(path_str), config);
         let boxed = Box::new(PhotostaxRepo { inner: repo });
         Box::into_raw(boxed)
     });
@@ -913,5 +953,52 @@ mod tests {
         let path_with_null = PathBuf::from("path\0with_null.jpg");
         let result = path_to_c_string(&Some(path_with_null));
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_open_recursive_null_returns_null() {
+        let result = unsafe { photostax_repo_open_recursive(ptr::null(), true) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_open_recursive_false_is_equivalent_to_open() {
+        let path = CString::new(testdata_path().to_string_lossy().as_ref()).unwrap();
+        let repo = unsafe { photostax_repo_open_recursive(path.as_ptr(), false) };
+        assert!(!repo.is_null());
+
+        let result = unsafe { photostax_repo_scan(repo) };
+        assert!(result.len > 0, "testdata should have stacks");
+        unsafe { crate::repository::photostax_stack_array_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_open_recursive_scans_subdirectories() {
+        // Create a temp dir with a subdirectory and files
+        let tmp = tempfile::TempDir::new().unwrap();
+        let subdir = tmp.path().join("2024_Summer");
+        std::fs::create_dir(&subdir).unwrap();
+
+        // Minimal JPEG (SOI + EOI)
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xD9];
+        std::fs::write(subdir.join("IMG_001.jpg"), &jpeg).unwrap();
+
+        // Non-recursive should find nothing at the top level
+        let path = CString::new(tmp.path().to_string_lossy().as_ref()).unwrap();
+        let repo_flat = unsafe { photostax_repo_open_recursive(path.as_ptr(), false) };
+        assert!(!repo_flat.is_null());
+        let result_flat = unsafe { photostax_repo_scan(repo_flat) };
+        assert_eq!(result_flat.len, 0, "flat scan should find nothing at root");
+        unsafe { crate::repository::photostax_stack_array_free(result_flat) };
+        unsafe { photostax_repo_free(repo_flat) };
+
+        // Recursive should find the file in the subdirectory
+        let repo_rec = unsafe { photostax_repo_open_recursive(path.as_ptr(), true) };
+        assert!(!repo_rec.is_null());
+        let result_rec = unsafe { photostax_repo_scan(repo_rec) };
+        assert_eq!(result_rec.len, 1, "recursive scan should find 1 stack");
+        unsafe { crate::repository::photostax_stack_array_free(result_rec) };
+        unsafe { photostax_repo_free(repo_rec) };
     }
 }
