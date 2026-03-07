@@ -24,6 +24,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
       with:
+        toolchain: stable
         components: clippy, rustfmt
 
     - name: Cache cargo registry & build
@@ -59,6 +60,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
       with:
+        toolchain: stable
         components: llvm-tools-preview
 
     - name: Install cargo-llvm-cov
@@ -106,6 +108,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
     - name: Install cargo-audit
       run: cargo install cargo-audit
@@ -125,6 +129,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
     - name: Build native FFI library
       run: cargo build --package photostax-ffi --release
@@ -156,6 +162,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -186,6 +194,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
     - name: Build documentation
       run: cargo doc --no-deps --workspace
@@ -213,6 +223,8 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
     - name: Build release binaries
       run: cargo build --workspace --release
