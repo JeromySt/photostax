@@ -197,7 +197,7 @@ jobs:
 
     - name: Update package version
       working-directory: bindings/typescript
-      run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+      run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version --allow-same-version
 
     - name: Publish to npm
       working-directory: bindings/typescript
