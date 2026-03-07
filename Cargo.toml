@@ -4,7 +4,9 @@ members = [
     "core",
     "cli",
     "ffi",
-
+]
+exclude = [
+    "bindings/typescript",
 ]
 
 [workspace.package]

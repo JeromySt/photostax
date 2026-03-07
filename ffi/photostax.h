@@ -16,6 +16,29 @@
 typedef struct PhotostaxRepo PhotostaxRepo;
 
 /**
+ * Result type for FFI calls.
+ *
+ * On success, `success` is true and `error_message` is null.
+ * On failure, `success` is false and `error_message` contains the error.
+ *
+ * # Memory Ownership
+ *
+ * - If `error_message` is non-null, caller must free it with [`photostax_string_free`]
+ *
+ * [`photostax_string_free`]: crate::repository::photostax_string_free
+ */
+typedef struct FfiResult {
+  /**
+   * True if the operation succeeded.
+   */
+  bool success;
+  /**
+   * Error message (null on success, must be freed on failure).
+   */
+  char *error_message;
+} FfiResult;
+
+/**
  * A photo stack returned across FFI.
  *
  * All string pointers are owned by this struct and must be freed by calling
@@ -75,29 +98,6 @@ typedef struct FfiPhotoStackArray {
 } FfiPhotoStackArray;
 
 /**
- * Result type for FFI calls.
- *
- * On success, `success` is true and `error_message` is null.
- * On failure, `success` is false and `error_message` contains the error.
- *
- * # Memory Ownership
- *
- * - If `error_message` is non-null, caller must free it with [`photostax_string_free`]
- *
- * [`photostax_string_free`]: crate::repository::photostax_string_free
- */
-typedef struct FfiResult {
-  /**
-   * True if the operation succeeded.
-   */
-  bool success;
-  /**
-   * Error message (null on success, must be freed on failure).
-   */
-  char *error_message;
-} FfiResult;
-
-/**
  * Create a new local repository handle.
  *
  * # Safety
@@ -131,6 +131,73 @@ int32_t photostax_repository_scan_count(const LocalRepository *repo);
  * The returned string is statically allocated and must not be freed.
  */
 const char *photostax_version(void);
+
+/**
+ * Get metadata for a stack as a JSON string.
+ *
+ * Returns a JSON object with `exif_tags`, `xmp_tags`, and `custom_tags` fields.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` must be a valid null-terminated UTF-8 string
+ * - Returns null on error
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ * [`photostax_string_free`]: crate::repository::photostax_string_free
+ */
+char *photostax_get_metadata(const struct PhotostaxRepo *repo, const char *stack_id);
+
+/**
+ * Get a specific EXIF tag value.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
+ * - Returns null if tag not found or on error
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ * [`photostax_string_free`]: crate::repository::photostax_string_free
+ */
+char *photostax_get_exif_tag(const struct PhotostaxRepo *repo,
+                             const char *stack_id,
+                             const char *tag_name);
+
+/**
+ * Get a specific custom tag value as JSON.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
+ * - Returns null if tag not found or on error
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ * [`photostax_string_free`]: crate::repository::photostax_string_free
+ */
+char *photostax_get_custom_tag(const struct PhotostaxRepo *repo,
+                               const char *stack_id,
+                               const char *tag_name);
+
+/**
+ * Set a custom tag value.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id`, `tag_name`, and `value_json` must be valid null-terminated UTF-8 strings
+ * - `value_json` must be valid JSON
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ */
+struct FfiResult photostax_set_custom_tag(const struct PhotostaxRepo *repo,
+                                          const char *stack_id,
+                                          const char *tag_name,
+                                          const char *value_json);
 
 /**
  * Create a new repository from a directory path.
@@ -274,70 +341,3 @@ void photostax_bytes_free(uint8_t *data, uintptr_t len);
  */
 struct FfiPhotoStackArray photostax_search(const struct PhotostaxRepo *repo,
                                            const char *query_json);
-
-/**
- * Get metadata for a stack as a JSON string.
- *
- * Returns a JSON object with `exif_tags`, `xmp_tags`, and `custom_tags` fields.
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - Returns null on error
- * - Caller owns the returned string and must call [`photostax_string_free`]
- *
- * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- * [`photostax_string_free`]: crate::repository::photostax_string_free
- */
-char *photostax_get_metadata(const struct PhotostaxRepo *repo, const char *stack_id);
-
-/**
- * Get a specific EXIF tag value.
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
- * - Returns null if tag not found or on error
- * - Caller owns the returned string and must call [`photostax_string_free`]
- *
- * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- * [`photostax_string_free`]: crate::repository::photostax_string_free
- */
-char *photostax_get_exif_tag(const struct PhotostaxRepo *repo,
-                             const char *stack_id,
-                             const char *tag_name);
-
-/**
- * Get a specific custom tag value as JSON.
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
- * - Returns null if tag not found or on error
- * - Caller owns the returned string and must call [`photostax_string_free`]
- *
- * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- * [`photostax_string_free`]: crate::repository::photostax_string_free
- */
-char *photostax_get_custom_tag(const struct PhotostaxRepo *repo,
-                               const char *stack_id,
-                               const char *tag_name);
-
-/**
- * Set a custom tag value.
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id`, `tag_name`, and `value_json` must be valid null-terminated UTF-8 strings
- * - `value_json` must be valid JSON
- *
- * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- */
-struct FfiResult photostax_set_custom_tag(const struct PhotostaxRepo *repo,
-                                          const char *stack_id,
-                                          const char *tag_name,
-                                          const char *value_json);
