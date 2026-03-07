@@ -42,7 +42,9 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.artifact }}
-        path: target/${{ matrix.target }}/release/photostax-cli*
+        path: |
+          target/${{ matrix.target }}/release/photostax-cli*
+          !target/${{ matrix.target }}/release/*.d
         retention-days: 5
 
     - name: Upload FFI artifact
@@ -68,6 +70,16 @@ jobs:
       with:
         path: artifacts
 
+    - name: Package platform archives
+      run: |
+        cd artifacts
+        for dir in */; do
+          name="${dir%/}"
+          tar czf "../${name}.tar.gz" -C "$dir" .
+        done
+        cd ..
+        ls -la *.tar.gz
+
     - name: Get version from tag
       id: version
       run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
@@ -75,7 +87,7 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: artifacts/**/*
+        files: "*.tar.gz"
         generate_release_notes: true
         draft: false
         prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') || contains(github.ref, '-preview') || contains(github.ref, '-pre.') }}
