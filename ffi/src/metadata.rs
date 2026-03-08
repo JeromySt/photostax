@@ -40,10 +40,14 @@ pub unsafe extern "C" fn photostax_get_metadata(
             Err(_) => return ptr::null_mut(),
         };
 
-        let stack = match repo_ref.inner.get_stack(stack_id_str) {
+        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),
         };
+
+        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+            return ptr::null_mut();
+        }
 
         let metadata_json = serde_json::json!({
             "exif_tags": stack.metadata.exif_tags,
@@ -93,10 +97,14 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
             Err(_) => return ptr::null_mut(),
         };
 
-        let stack = match repo_ref.inner.get_stack(stack_id_str) {
+        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),
         };
+
+        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+            return ptr::null_mut();
+        }
 
         match stack.metadata.exif_tags.get(tag_name_str) {
             Some(value) => CString::new(value.as_str())
@@ -141,10 +149,14 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
             Err(_) => return ptr::null_mut(),
         };
 
-        let stack = match repo_ref.inner.get_stack(stack_id_str) {
+        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),
         };
+
+        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+            return ptr::null_mut();
+        }
 
         match stack.metadata.custom_tags.get(tag_name_str) {
             Some(value) => {

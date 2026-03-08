@@ -120,6 +120,15 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string id);
 
     /// <summary>
+    /// Load full metadata (EXIF, XMP, sidecar) for a specific stack and return
+    /// the result as a JSON string. Returns IntPtr.Zero on error.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_load_metadata(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId);
+
+    /// <summary>
     /// Read image bytes.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
@@ -153,7 +162,8 @@ internal static partial class NativeMethods
     internal static extern FfiPaginatedResult photostax_repo_scan_paginated(
         IntPtr repo,
         nuint offset,
-        nuint limit);
+        nuint limit,
+        [MarshalAs(UnmanagedType.U1)] bool loadMetadata);
 
     /// <summary>
     /// Search/filter stacks with pagination.

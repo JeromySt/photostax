@@ -263,7 +263,7 @@ impl PhotostaxRepository {
     pub fn search(&self, query: JsSearchQuery) -> napi::Result<Vec<JsPhotoStack>> {
         let stacks = self
             .inner
-            .scan()
+            .scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
 
         let core_query: CoreSearchQuery = query.into();
@@ -276,10 +276,11 @@ impl PhotostaxRepository {
     ///
     /// @param offset - Number of stacks to skip (0-based)
     /// @param limit - Maximum number of stacks to return per page
+    /// @param loadMetadata - When true, loads EXIF/XMP/sidecar metadata for each stack in the page
     /// @returns Paginated result with items and metadata
     /// @throws Error if the directory cannot be accessed
     #[napi]
-    pub fn scan_paginated(&self, offset: u32, limit: u32) -> napi::Result<JsPaginatedResult> {
+    pub fn scan_paginated(&self, offset: u32, limit: u32, load_metadata: Option<bool>) -> napi::Result<JsPaginatedResult> {
         let stacks = self
             .inner
             .scan()
@@ -293,8 +294,22 @@ impl PhotostaxRepository {
             },
         );
 
+        let items: Vec<JsPhotoStack> = if load_metadata.unwrap_or(false) {
+            paginated
+                .items
+                .into_iter()
+                .map(|s| {
+                    let mut owned = s.clone();
+                    let _ = self.inner.load_metadata(&mut owned);
+                    JsPhotoStack::from(&owned)
+                })
+                .collect()
+        } else {
+            paginated.items.into_iter().map(JsPhotoStack::from).collect()
+        };
+
         Ok(JsPaginatedResult {
-            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            items,
             total_count: paginated.total_count as u32,
             offset: paginated.offset as u32,
             limit: paginated.limit as u32,
@@ -318,7 +333,7 @@ impl PhotostaxRepository {
     ) -> napi::Result<JsPaginatedResult> {
         let stacks = self
             .inner
-            .scan()
+            .scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
 
         let core_query: CoreSearchQuery = query.into();

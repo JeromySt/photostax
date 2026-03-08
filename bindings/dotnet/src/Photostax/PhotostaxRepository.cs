@@ -168,16 +168,18 @@ public sealed class PhotostaxRepository : IDisposable
     /// </summary>
     /// <param name="offset">Number of stacks to skip (0-based).</param>
     /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <param name="loadMetadata">When true, loads EXIF/XMP/sidecar metadata for each stack in the page.</param>
     /// <returns>A paginated result containing photo stacks and metadata.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit)
+    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit, bool loadMetadata = false)
     {
         ThrowIfDisposed();
 
         var result = NativeMethods.photostax_repo_scan_paginated(
             _handle.DangerousGetHandle(),
             (nuint)offset,
-            (nuint)limit);
+            (nuint)limit,
+            loadMetadata);
         try
         {
             return ConvertPaginatedResult(result);

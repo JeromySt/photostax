@@ -6,7 +6,6 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic;
 
-use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
 use serde::Deserialize;
 
@@ -131,8 +130,8 @@ pub unsafe extern "C" fn photostax_search(
             query = query.with_has_enhanced(has_enhanced);
         }
 
-        // Get all stacks first
-        let stacks = match repo_ref.inner.scan() {
+        // Get all stacks with metadata (search needs metadata to filter)
+        let stacks = match repo_ref.inner.scan_with_metadata() {
             Ok(s) => s,
             Err(_) => return FfiPhotoStackArray::empty(),
         };
@@ -224,7 +223,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
             query = query.with_has_enhanced(has_enhanced);
         }
 
-        let stacks = match repo_ref.inner.scan() {
+        let stacks = match repo_ref.inner.scan_with_metadata() {
             Ok(s) => s,
             Err(_) => return FfiPaginatedResult::empty(offset, limit),
         };

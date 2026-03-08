@@ -342,6 +342,10 @@ pub unsafe extern "C" fn photostax_write_metadata(
 
 /// Scan the repository and return a paginated result.
 ///
+/// When `load_metadata` is true, EXIF/XMP/sidecar metadata is loaded for each
+/// stack in the returned page. When false, stacks contain only paths and
+/// folder-derived metadata (faster for large repositories).
+///
 /// # Safety
 ///
 /// - `repo` must be a valid pointer from [`photostax_repo_open`]
@@ -352,6 +356,7 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
     repo: *const PhotostaxRepo,
     offset: usize,
     limit: usize,
+    load_metadata: bool,
 ) -> FfiPaginatedResult {
     let result = panic::catch_unwind(|| {
         if repo.is_null() {
@@ -377,8 +382,21 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
                     };
                 }
 
+                let items: Vec<PhotoStack> = if load_metadata {
+                    paginated
+                        .items
+                        .into_iter()
+                        .map(|mut s| {
+                            let _ = repo_ref.inner.load_metadata(&mut s);
+                            s
+                        })
+                        .collect()
+                } else {
+                    paginated.items
+                };
+
                 let ffi_stacks: Vec<FfiPhotoStack> =
-                    paginated.items.iter().map(photo_stack_to_ffi).collect();
+                    items.iter().map(photo_stack_to_ffi).collect();
                 let len = ffi_stacks.len();
                 let boxed_slice = ffi_stacks.into_boxed_slice();
                 let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -397,6 +415,60 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
     });
 
     result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
+}
+
+/// Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it
+/// as a JSON string.
+///
+/// This is the lazy-loading counterpart: call after [`photostax_repo_scan`] to
+/// retrieve a single stack's metadata on demand.
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `stack_id` must be a valid null-terminated UTF-8 string
+/// - Returns null on error or if the stack is not found
+/// - Caller owns the returned string and must call [`photostax_string_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_stack_load_metadata(
+    repo: *const PhotostaxRepo,
+    stack_id: *const c_char,
+) -> *mut c_char {
+    let result = panic::catch_unwind(|| {
+        if repo.is_null() || stack_id.is_null() {
+            return ptr::null_mut();
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let c_str = unsafe { CStr::from_ptr(stack_id) };
+        let id_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let mut stack = match repo_ref.inner.get_stack(id_str) {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+            return ptr::null_mut();
+        }
+
+        let metadata_json = serde_json::json!({
+            "exif_tags": stack.metadata.exif_tags,
+            "xmp_tags": stack.metadata.xmp_tags,
+            "custom_tags": stack.metadata.custom_tags,
+        });
+
+        let json_str =
+            serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+        CString::new(json_str)
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut())
+    });
+
+    result.unwrap_or(ptr::null_mut())
 }
 
 /// Free a paginated result.
@@ -573,12 +645,19 @@ mod tests {
         let id_str = unsafe { CStr::from_ptr(first.id) }.to_str().unwrap();
         assert!(!id_str.is_empty());
 
-        // Verify metadata_json is valid
+        // After lazy scan, metadata_json has structure but no file-based EXIF data
         assert!(!first.metadata_json.is_null());
         let meta_str = unsafe { CStr::from_ptr(first.metadata_json) }
             .to_str()
             .unwrap();
-        assert!(meta_str.contains("exif_tags"));
+        let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap();
+        assert!(meta["exif_tags"].is_object(), "exif_tags key should exist");
+        // Bare scan does NOT load file-based EXIF — map should be empty
+        assert!(
+            meta["exif_tags"].as_object().unwrap().is_empty()
+                || !meta["exif_tags"].as_object().unwrap().contains_key("Make"),
+            "Bare scan should not contain file-based EXIF like Make"
+        );
 
         unsafe { photostax_stack_array_free(array) };
         unsafe { photostax_repo_free(repo) };
@@ -1082,5 +1161,139 @@ mod tests {
         assert_eq!(result_rec.len, 1, "recursive scan should find 1 stack");
         unsafe { crate::repository::photostax_stack_array_free(result_rec) };
         unsafe { photostax_repo_free(repo_rec) };
+    }
+
+    // ======================== photostax_stack_load_metadata tests ========================
+
+    #[test]
+    fn test_stack_load_metadata_null_repo() {
+        let id = CString::new("test").unwrap();
+        let result = unsafe { photostax_stack_load_metadata(ptr::null(), id.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_stack_load_metadata_null_id() {
+        let repo = open_testdata_repo();
+        let result = unsafe { photostax_stack_load_metadata(repo, ptr::null()) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_stack_load_metadata_nonexistent_stack() {
+        let repo = open_testdata_repo();
+        let id = CString::new("nonexistent_stack").unwrap();
+        let result = unsafe { photostax_stack_load_metadata(repo, id.as_ptr()) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_stack_load_metadata_invalid_utf8() {
+        let repo = open_testdata_repo();
+        let invalid: &[u8] = &[0xff, 0x00];
+        let result =
+            unsafe { photostax_stack_load_metadata(repo, invalid.as_ptr() as *const c_char) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_stack_load_metadata_happy_path() {
+        let repo = open_testdata_repo();
+        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let result = unsafe { photostax_stack_load_metadata(repo, id.as_ptr()) };
+        assert!(
+            !result.is_null(),
+            "Should load metadata for FamilyPhotos_0001"
+        );
+
+        let meta_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap();
+        assert!(meta["exif_tags"].is_object());
+        // After load_metadata, EXIF data should be present
+        assert!(
+            meta["exif_tags"].as_object().unwrap().contains_key("Make"),
+            "load_metadata should populate file-based EXIF tags"
+        );
+
+        unsafe { photostax_string_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_scan_then_load_metadata_roundtrip() {
+        let repo = open_testdata_repo();
+
+        // Bare scan returns lightweight stacks
+        let array = unsafe { photostax_repo_scan(repo) };
+        assert!(array.len > 0);
+        let first = unsafe { &*array.data };
+        let id_str = unsafe { CStr::from_ptr(first.id) }.to_str().unwrap();
+
+        // Load metadata for that stack
+        let id = CString::new(id_str).unwrap();
+        let meta_ptr = unsafe { photostax_stack_load_metadata(repo, id.as_ptr()) };
+        assert!(!meta_ptr.is_null(), "Should load metadata by scan'd ID");
+
+        let meta_str = unsafe { CStr::from_ptr(meta_ptr) }.to_str().unwrap();
+        let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap();
+        assert!(meta["exif_tags"].is_object());
+        assert!(meta["xmp_tags"].is_object());
+        assert!(meta["custom_tags"].is_object());
+
+        unsafe { photostax_string_free(meta_ptr) };
+        unsafe { photostax_stack_array_free(array) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    // ======================== scan_paginated with load_metadata tests ========================
+
+    #[test]
+    fn test_scan_paginated_with_metadata() {
+        let repo = open_testdata_repo();
+        let page = unsafe { photostax_repo_scan_paginated(repo, 0, 2, true) };
+        assert!(page.total_count > 0, "Expected stacks from testdata");
+        assert!(page.len > 0);
+
+        // With load_metadata=true, metadata should be populated
+        let first = unsafe { &*page.data };
+        assert!(!first.metadata_json.is_null());
+        let meta_str = unsafe { CStr::from_ptr(first.metadata_json) }
+            .to_str()
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap();
+        assert!(
+            meta["exif_tags"].as_object().unwrap().contains_key("Make"),
+            "With load_metadata=true, EXIF should be populated"
+        );
+
+        unsafe { photostax_paginated_result_free(page) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_scan_paginated_without_metadata() {
+        let repo = open_testdata_repo();
+        let page = unsafe { photostax_repo_scan_paginated(repo, 0, 2, false) };
+        assert!(page.total_count > 0, "Expected stacks from testdata");
+        assert!(page.len > 0);
+
+        // With load_metadata=false, metadata should be empty/minimal
+        let first = unsafe { &*page.data };
+        assert!(!first.metadata_json.is_null());
+        let meta_str = unsafe { CStr::from_ptr(first.metadata_json) }
+            .to_str()
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap();
+        assert!(
+            meta["exif_tags"].as_object().unwrap().is_empty()
+                || !meta["exif_tags"].as_object().unwrap().contains_key("Make"),
+            "With load_metadata=false, EXIF should not be populated"
+        );
+
+        unsafe { photostax_paginated_result_free(page) };
+        unsafe { photostax_repo_free(repo) };
     }
 }
