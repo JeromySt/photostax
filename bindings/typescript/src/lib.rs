@@ -12,7 +12,7 @@ use napi_derive::napi;
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack};
 use photostax_core::repository::Repository;
-use photostax_core::search::{filter_stacks, SearchQuery as CoreSearchQuery};
+use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
 
 /// Metadata associated with a photo stack.
 ///
@@ -138,6 +138,22 @@ impl From<JsSearchQuery> for CoreSearchQuery {
     }
 }
 
+/// A paginated result containing a page of photo stacks and pagination metadata.
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsPaginatedResult {
+    /// The photo stacks in this page.
+    pub items: Vec<JsPhotoStack>,
+    /// Total number of stacks across all pages.
+    pub total_count: u32,
+    /// The offset used for this page.
+    pub offset: u32,
+    /// The page size limit used for this page.
+    pub limit: u32,
+    /// Whether there are more items beyond this page.
+    pub has_more: bool,
+}
+
 /// Options for creating a PhotostaxRepository.
 #[napi(object)]
 pub struct RepositoryOptions {
@@ -254,5 +270,74 @@ impl PhotostaxRepository {
         let results = filter_stacks(&stacks, &core_query);
 
         Ok(results.into_iter().map(JsPhotoStack::from).collect())
+    }
+
+    /// Scan the repository and return a paginated page of photo stacks.
+    ///
+    /// @param offset - Number of stacks to skip (0-based)
+    /// @param limit - Maximum number of stacks to return per page
+    /// @returns Paginated result with items and metadata
+    /// @throws Error if the directory cannot be accessed
+    #[napi]
+    pub fn scan_paginated(&self, offset: u32, limit: u32) -> napi::Result<JsPaginatedResult> {
+        let stacks = self
+            .inner
+            .scan()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        let paginated = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: offset as usize,
+                limit: limit as usize,
+            },
+        );
+
+        Ok(JsPaginatedResult {
+            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            total_count: paginated.total_count as u32,
+            offset: paginated.offset as u32,
+            limit: paginated.limit as u32,
+            has_more: paginated.has_more,
+        })
+    }
+
+    /// Search for photo stacks with pagination.
+    ///
+    /// @param query - Search criteria (all filters are AND'd together)
+    /// @param offset - Number of stacks to skip (0-based)
+    /// @param limit - Maximum number of stacks to return per page
+    /// @returns Paginated result with matching items and metadata
+    /// @throws Error if the repository cannot be scanned
+    #[napi]
+    pub fn search_paginated(
+        &self,
+        query: JsSearchQuery,
+        offset: u32,
+        limit: u32,
+    ) -> napi::Result<JsPaginatedResult> {
+        let stacks = self
+            .inner
+            .scan()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        let core_query: CoreSearchQuery = query.into();
+        let filtered = filter_stacks(&stacks, &core_query);
+
+        let paginated = paginate_stacks(
+            &filtered,
+            &PaginationParams {
+                offset: offset as usize,
+                limit: limit as usize,
+            },
+        );
+
+        Ok(JsPaginatedResult {
+            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            total_count: paginated.total_count as u32,
+            offset: paginated.offset as u32,
+            limit: paginated.limit as u32,
+            has_more: paginated.has_more,
+        })
     }
 }

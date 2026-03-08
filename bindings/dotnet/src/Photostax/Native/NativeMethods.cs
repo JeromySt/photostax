@@ -147,6 +147,31 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string queryJson);
 
     /// <summary>
+    /// Scan the repository and return a paginated result.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiPaginatedResult photostax_repo_scan_paginated(
+        IntPtr repo,
+        nuint offset,
+        nuint limit);
+
+    /// <summary>
+    /// Search/filter stacks with pagination.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiPaginatedResult photostax_search_paginated(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string queryJson,
+        nuint offset,
+        nuint limit);
+
+    /// <summary>
+    /// Free a paginated result.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void photostax_paginated_result_free(FfiPaginatedResult result);
+
+    /// <summary>
     /// Get metadata for a stack as a JSON string.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

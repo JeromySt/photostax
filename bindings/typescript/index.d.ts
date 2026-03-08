@@ -59,6 +59,19 @@ export interface JsSearchQuery {
   /** Filter by presence of enhanced scan */
   hasEnhanced?: boolean
 }
+/** A paginated result containing a page of photo stacks and pagination metadata. */
+export interface JsPaginatedResult {
+  /** The photo stacks in this page. */
+  items: Array<JsPhotoStack>
+  /** Total number of stacks across all pages. */
+  totalCount: number
+  /** The offset used for this page. */
+  offset: number
+  /** The page size limit used for this page. */
+  limit: number
+  /** Whether there are more items beyond this page. */
+  hasMore: boolean
+}
 /** Options for creating a PhotostaxRepository. */
 export interface RepositoryOptions {
   /**
@@ -128,4 +141,23 @@ export declare class PhotostaxRepository {
    * @throws Error if the repository cannot be scanned
    */
   search(query: JsSearchQuery): Array<JsPhotoStack>
+  /**
+   * Scan the repository and return a paginated result of photo stacks.
+   *
+   * @param offset - Number of stacks to skip (0-based)
+   * @param limit - Maximum number of stacks to return
+   * @returns Paginated result with items and pagination metadata
+   * @throws Error if the directory cannot be accessed
+   */
+  scanPaginated(offset: number, limit: number): JsPaginatedResult
+  /**
+   * Search for photo stacks and return a paginated result.
+   *
+   * @param query - Search criteria (all filters are AND'd together)
+   * @param offset - Number of matching stacks to skip (0-based)
+   * @param limit - Maximum number of matching stacks to return
+   * @returns Paginated result with items and pagination metadata
+   * @throws Error if the repository cannot be scanned
+   */
+  searchPaginated(query: JsSearchQuery, offset: number, limit: number): JsPaginatedResult
 }

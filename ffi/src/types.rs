@@ -61,6 +61,33 @@ pub struct FfiPhotoStackArray {
     pub len: usize,
 }
 
+/// Paginated result of photo stacks returned across FFI.
+///
+/// Contains a page of stacks along with pagination metadata needed
+/// for rendering pagination controls in a web UI.
+///
+/// # Memory Ownership
+///
+/// - Caller receives ownership of the entire result
+/// - Call [`photostax_paginated_result_free`] to release all memory
+///
+/// [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+#[repr(C)]
+pub struct FfiPaginatedResult {
+    /// Pointer to array of stacks in this page (null if len == 0).
+    pub data: *mut FfiPhotoStack,
+    /// Number of stacks in this page.
+    pub len: usize,
+    /// Total number of stacks across all pages (before pagination).
+    pub total_count: usize,
+    /// The offset used for this page.
+    pub offset: usize,
+    /// The page size limit used for this page.
+    pub limit: usize,
+    /// Whether there are more items beyond this page.
+    pub has_more: bool,
+}
+
 /// Result type for FFI calls.
 ///
 /// On success, `success` is true and `error_message` is null.
@@ -85,6 +112,20 @@ impl FfiPhotoStackArray {
         Self {
             data: std::ptr::null_mut(),
             len: 0,
+        }
+    }
+}
+
+impl FfiPaginatedResult {
+    /// Create an empty paginated result.
+    pub(crate) fn empty(offset: usize, limit: usize) -> Self {
+        Self {
+            data: std::ptr::null_mut(),
+            len: 0,
+            total_count: 0,
+            offset,
+            limit,
+            has_more: false,
         }
     }
 }
@@ -119,6 +160,17 @@ mod tests {
         let array = FfiPhotoStackArray::empty();
         assert!(array.data.is_null());
         assert_eq!(array.len, 0);
+    }
+
+    #[test]
+    fn test_ffi_paginated_result_empty() {
+        let result = FfiPaginatedResult::empty(10, 20);
+        assert!(result.data.is_null());
+        assert_eq!(result.len, 0);
+        assert_eq!(result.total_count, 0);
+        assert_eq!(result.offset, 10);
+        assert_eq!(result.limit, 20);
+        assert!(!result.has_more);
     }
 
     #[test]

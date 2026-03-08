@@ -83,6 +83,9 @@ public static class PhotoStax
 | `photostax_repository_free(repo)` | Free a repository handle |
 | `photostax_repository_scan_count(repo)` | Scan and return photo stack count |
 | `photostax_repository_scan_json(repo)` | Scan and return JSON array of stacks |
+| `photostax_repo_scan_paginated(repo, offset, limit)` | Scan and return a paginated result |
+| `photostax_search_paginated(repo, query, offset, limit)` | Search and return a paginated result |
+| `photostax_paginated_result_free(result)` | Free a paginated result |
 
 ### Metadata Functions
 

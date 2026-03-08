@@ -102,6 +102,33 @@ char* photostax_repository_scan_json(PhotostaxRepository repo);
 char* photostax_stack_metadata_json(PhotostaxStack stack);
 ```
 
+#### 5. Pagination
+
+Paginated variants return an `FfiPaginatedResult` struct:
+
+```c
+typedef struct {
+    FfiPhotoStack* data;   // Array of photo stacks
+    size_t len;            // Number of items in this page
+    size_t total_count;    // Total matching items across all pages
+    size_t offset;         // Offset used for this page
+    size_t limit;          // Limit used for this page
+    bool has_more;         // Whether more items exist beyond this page
+} FfiPaginatedResult;
+
+// Paginated scan
+FfiPaginatedResult photostax_repo_scan_paginated(
+    const PhotostaxRepo* repo, size_t offset, size_t limit);
+
+// Paginated search
+FfiPaginatedResult photostax_search_paginated(
+    const PhotostaxRepo* repo, const char* query_json,
+    size_t offset, size_t limit);
+
+// Free paginated result memory
+void photostax_paginated_result_free(FfiPaginatedResult result);
+```
+
 ## Creating a New Binding
 
 ### Step 1: Choose Your Interop Technology

@@ -34,7 +34,121 @@
 //! let results = filter_stacks(&stacks, &query);
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::photo_stack::PhotoStack;
+
+/// Parameters for paginating a result set.
+///
+/// Used with [`paginate_stacks`] to fetch a specific page of results.
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::search::PaginationParams;
+///
+/// // First page of 20 items
+/// let page1 = PaginationParams { offset: 0, limit: 20 };
+///
+/// // Second page of 20 items
+/// let page2 = PaginationParams { offset: 20, limit: 20 };
+/// ```
+#[derive(Debug, Clone)]
+pub struct PaginationParams {
+    /// The number of items to skip (0-based offset into the full result set).
+    pub offset: usize,
+    /// The maximum number of items to return per page.
+    pub limit: usize,
+}
+
+/// A paginated result set containing a page of items and pagination metadata.
+///
+/// Returned by [`paginate_stacks`]. Contains the requested page of photo stacks
+/// along with metadata needed for rendering pagination controls in a web UI.
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::search::{paginate_stacks, PaginationParams};
+/// use photostax_core::photo_stack::PhotoStack;
+///
+/// let stacks: Vec<PhotoStack> = (0..50)
+///     .map(|i| PhotoStack::new(&format!("IMG_{i:03}")))
+///     .collect();
+///
+/// let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 10 });
+/// assert_eq!(page.items.len(), 10);
+/// assert_eq!(page.total_count, 50);
+/// assert!(page.has_more);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedResult<T> {
+    /// The items in the current page.
+    pub items: Vec<T>,
+    /// Total number of items across all pages (before pagination).
+    pub total_count: usize,
+    /// The offset used for this page.
+    pub offset: usize,
+    /// The page size limit used for this page.
+    pub limit: usize,
+    /// Whether there are more items beyond this page.
+    pub has_more: bool,
+}
+
+/// Paginate a slice of photo stacks.
+///
+/// Returns a [`PaginatedResult`] containing the requested page of stacks.
+/// If `offset` is beyond the end of the slice, an empty page is returned
+/// with the correct `total_count`.
+///
+/// # Arguments
+///
+/// * `stacks` - The full collection of photo stacks to paginate
+/// * `params` - Pagination parameters (offset and limit)
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::search::{paginate_stacks, PaginationParams};
+/// use photostax_core::photo_stack::PhotoStack;
+///
+/// let stacks: Vec<PhotoStack> = (0..5)
+///     .map(|i| PhotoStack::new(&format!("IMG_{i:03}")))
+///     .collect();
+///
+/// // Get first page of 2
+/// let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 2 });
+/// assert_eq!(page.items.len(), 2);
+/// assert_eq!(page.items[0].id, "IMG_000");
+/// assert_eq!(page.total_count, 5);
+/// assert!(page.has_more);
+///
+/// // Get last page
+/// let page = paginate_stacks(&stacks, &PaginationParams { offset: 4, limit: 2 });
+/// assert_eq!(page.items.len(), 1);
+/// assert!(!page.has_more);
+/// ```
+pub fn paginate_stacks(
+    stacks: &[PhotoStack],
+    params: &PaginationParams,
+) -> PaginatedResult<PhotoStack> {
+    let total_count = stacks.len();
+    let items: Vec<PhotoStack> = stacks
+        .iter()
+        .skip(params.offset)
+        .take(params.limit)
+        .cloned()
+        .collect();
+    let has_more = params.offset + params.limit < total_count;
+
+    PaginatedResult {
+        items,
+        total_count,
+        offset: params.offset,
+        limit: params.limit,
+        has_more,
+    }
+}
 
 /// Filter criteria for searching photo stacks.
 ///
@@ -619,5 +733,174 @@ mod tests {
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "IMG_001");
+    }
+
+    // ── Pagination tests ──────────────────────────────────────────
+
+    fn make_stacks(n: usize) -> Vec<PhotoStack> {
+        (0..n)
+            .map(|i| make_stack(&format!("IMG_{i:03}"), false, vec![], vec![]))
+            .collect()
+    }
+
+    #[test]
+    fn test_paginate_first_page() {
+        let stacks = make_stacks(10);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 0,
+                limit: 3,
+            },
+        );
+
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.items[0].id, "IMG_000");
+        assert_eq!(page.items[2].id, "IMG_002");
+        assert_eq!(page.total_count, 10);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.limit, 3);
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_middle_page() {
+        let stacks = make_stacks(10);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 3,
+                limit: 3,
+            },
+        );
+
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.items[0].id, "IMG_003");
+        assert_eq!(page.items[2].id, "IMG_005");
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_last_page_partial() {
+        let stacks = make_stacks(10);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 9,
+                limit: 3,
+            },
+        );
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "IMG_009");
+        assert_eq!(page.total_count, 10);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_exact_boundary() {
+        let stacks = make_stacks(6);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 3,
+                limit: 3,
+            },
+        );
+
+        assert_eq!(page.items.len(), 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_offset_beyond_end() {
+        let stacks = make_stacks(5);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 100,
+                limit: 10,
+            },
+        );
+
+        assert!(page.items.is_empty());
+        assert_eq!(page.total_count, 5);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_empty_collection() {
+        let stacks: Vec<PhotoStack> = vec![];
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 0,
+                limit: 10,
+            },
+        );
+
+        assert!(page.items.is_empty());
+        assert_eq!(page.total_count, 0);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_single_item_page() {
+        let stacks = make_stacks(5);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 2,
+                limit: 1,
+            },
+        );
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "IMG_002");
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_all_items_in_one_page() {
+        let stacks = make_stacks(3);
+        let page = paginate_stacks(
+            &stacks,
+            &PaginationParams {
+                offset: 0,
+                limit: 100,
+            },
+        );
+
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.total_count, 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_after_filter() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+            make_stack("IMG_003", true, vec![], vec![]),
+            make_stack("IMG_004", false, vec![], vec![]),
+            make_stack("IMG_005", true, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_has_back(true);
+        let filtered = filter_stacks(&stacks, &q);
+        assert_eq!(filtered.len(), 3);
+
+        let page = paginate_stacks(
+            &filtered,
+            &PaginationParams {
+                offset: 0,
+                limit: 2,
+            },
+        );
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].id, "IMG_001");
+        assert_eq!(page.items[1].id, "IMG_003");
+        assert_eq!(page.total_count, 3);
+        assert!(page.has_more);
     }
 }

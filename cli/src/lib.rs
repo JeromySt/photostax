@@ -14,7 +14,7 @@ use photostax_core::metadata::ImageFormat;
 use photostax_core::photo_stack::{Metadata, PhotoStack};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
-use photostax_core::search::{filter_stacks, SearchQuery};
+use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
 
 /// CLI tool for inspecting and managing Epson FastFoto photo stacks
 #[derive(Parser)]
@@ -63,6 +63,14 @@ pub enum Commands {
         /// Recurse into subdirectories
         #[arg(long, short)]
         recursive: bool,
+
+        /// Maximum number of stacks to return per page (0 = no pagination)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+
+        /// Number of stacks to skip (0-based offset)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 
     /// Search photo stacks by metadata
@@ -97,6 +105,14 @@ pub enum Commands {
         /// Output format
         #[arg(long, short, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
+
+        /// Maximum number of stacks to return per page (0 = no pagination)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+
+        /// Number of stacks to skip (0-based offset)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 
     /// Show detailed information about a specific stack
@@ -219,6 +235,8 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             jpeg_only,
             with_back,
             recursive,
+            limit,
+            offset,
         } => cmd_scan(
             out,
             err,
@@ -229,6 +247,8 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             *jpeg_only,
             *with_back,
             *recursive,
+            *limit,
+            *offset,
         ),
 
         Commands::Search {
@@ -239,6 +259,8 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             has_back,
             has_enhanced,
             format,
+            limit,
+            offset,
         } => cmd_search(
             out,
             err,
@@ -249,6 +271,8 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             *has_back,
             *has_enhanced,
             *format,
+            *limit,
+            *offset,
         ),
 
         Commands::Info {
@@ -293,6 +317,8 @@ pub fn cmd_scan(
     jpeg_only: bool,
     with_back: bool,
     recursive: bool,
+    limit: usize,
+    offset: usize,
 ) -> i32 {
     let config = ScannerConfig {
         recursive,
@@ -324,7 +350,33 @@ pub fn cmd_scan(
         })
         .collect();
 
-    output_stacks(out, &filtered, format, show_metadata, directory);
+    // Apply pagination if limit > 0
+    if limit > 0 {
+        let paginated = paginate_stacks(&filtered, &PaginationParams { offset, limit });
+        output_stacks(out, &paginated.items, format, show_metadata, directory);
+        if format == OutputFormat::Json {
+            let _ = writeln!(
+                out,
+                "{{\"pagination\": {{\"total_count\": {}, \"offset\": {}, \"limit\": {}, \"has_more\": {}}}}}",
+                paginated.total_count, paginated.offset, paginated.limit, paginated.has_more
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "\nShowing {}-{} of {} stacks{}",
+                offset + 1,
+                (offset + paginated.items.len()).min(paginated.total_count),
+                paginated.total_count,
+                if paginated.has_more {
+                    " (more available)"
+                } else {
+                    ""
+                }
+            );
+        }
+    } else {
+        output_stacks(out, &filtered, format, show_metadata, directory);
+    }
     EXIT_SUCCESS
 }
 
@@ -340,6 +392,8 @@ pub fn cmd_search(
     has_back: bool,
     has_enhanced: bool,
     format: OutputFormat,
+    limit: usize,
+    offset: usize,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
     let stacks = match repo.scan() {
@@ -367,7 +421,34 @@ pub fn cmd_search(
     }
 
     let results = filter_stacks(&stacks, &search);
-    output_stacks(out, &results, format, false, directory);
+
+    // Apply pagination if limit > 0
+    if limit > 0 {
+        let paginated = paginate_stacks(&results, &PaginationParams { offset, limit });
+        output_stacks(out, &paginated.items, format, false, directory);
+        if format == OutputFormat::Json {
+            let _ = writeln!(
+                out,
+                "{{\"pagination\": {{\"total_count\": {}, \"offset\": {}, \"limit\": {}, \"has_more\": {}}}}}",
+                paginated.total_count, paginated.offset, paginated.limit, paginated.has_more
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "\nShowing {}-{} of {} results{}",
+                offset + 1,
+                (offset + paginated.items.len()).min(paginated.total_count),
+                paginated.total_count,
+                if paginated.has_more {
+                    " (more available)"
+                } else {
+                    ""
+                }
+            );
+        }
+    } else {
+        output_stacks(out, &results, format, false, directory);
+    }
     EXIT_SUCCESS
 }
 
@@ -1366,6 +1447,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1387,6 +1470,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1410,6 +1495,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1430,6 +1517,8 @@ mod tests {
             true,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1458,6 +1547,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1476,6 +1567,8 @@ mod tests {
             false,
             true,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1494,6 +1587,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1514,6 +1609,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1534,6 +1631,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         // LocalRepository::scan may return an error for nonexistent dirs
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
@@ -1553,6 +1652,8 @@ mod tests {
             false,
             false,
             OutputFormat::Table,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1573,6 +1674,8 @@ mod tests {
             false,
             false,
             OutputFormat::Table,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1594,6 +1697,8 @@ mod tests {
             false,
             false,
             OutputFormat::Json,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1612,6 +1717,8 @@ mod tests {
             true,
             false,
             OutputFormat::Csv,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1630,6 +1737,8 @@ mod tests {
             false,
             true,
             OutputFormat::Table,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1649,6 +1758,8 @@ mod tests {
             false,
             false,
             OutputFormat::Table,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1918,6 +2029,8 @@ mod tests {
             false,
             false,
             false,
+            0,
+            0,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -2006,6 +2119,8 @@ mod tests {
                 jpeg_only: false,
                 with_back: false,
                 recursive: false,
+                limit: 0,
+                offset: 0,
             },
         };
         let mut out = Vec::new();
@@ -2025,6 +2140,8 @@ mod tests {
                 has_back: false,
                 has_enhanced: false,
                 format: OutputFormat::Table,
+                limit: 0,
+                offset: 0,
             },
         };
         let mut out = Vec::new();
@@ -2320,6 +2437,8 @@ mod tests {
             false,
             false,
             OutputFormat::Table,
+            0,
+            0,
         );
         // May succeed with 0 results or fail depending on OS
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);

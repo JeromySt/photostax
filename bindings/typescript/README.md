@@ -41,6 +41,10 @@ for (const stack of stacks) {
   console.log(`  Back: ${stack.back}`);
   console.log(`  EXIF Make: ${stack.metadata.exifTags['Make']}`);
 }
+
+// Paginate results (20 items starting at offset 0)
+const page = repo.scanPaginated(0, 20);
+console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
 ```
 
 ## API Overview
@@ -56,6 +60,8 @@ The main class for accessing photo stacks.
 | `readImage(path)` | Read raw image bytes as Buffer |
 | `writeMetadata(id, metadata)` | Write metadata to a stack |
 | `search(query)` | Find stacks matching a query |
+| `scanPaginated(offset, limit)` | Scan with pagination (offset/limit) |
+| `searchPaginated(query, offset, limit)` | Search with pagination (offset/limit) |
 
 ### PhotoStack
 
@@ -88,6 +94,18 @@ interface SearchQuery {
   customFilters?: KeyValueFilter[];    // Custom tag filters
   hasBack?: boolean;                   // Filter by back scan presence
   hasEnhanced?: boolean;               // Filter by enhanced scan presence
+}
+```
+
+### PaginatedResult
+
+```typescript
+interface PaginatedResult {
+  items: PhotoStack[];          // Items in this page
+  totalCount: number;           // Total items across all pages
+  offset: number;               // Offset used for this page
+  limit: number;                // Limit used for this page
+  hasMore: boolean;             // Whether more items exist beyond this page
 }
 ```
 

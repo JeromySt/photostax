@@ -164,6 +164,61 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Scans the repository and returns a paginated result of photo stacks.
+    /// </summary>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <returns>A paginated result containing photo stacks and metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit)
+    {
+        ThrowIfDisposed();
+
+        var result = NativeMethods.photostax_repo_scan_paginated(
+            _handle.DangerousGetHandle(),
+            (nuint)offset,
+            (nuint)limit);
+        try
+        {
+            return ConvertPaginatedResult(result);
+        }
+        finally
+        {
+            NativeMethods.photostax_paginated_result_free(result);
+        }
+    }
+
+    /// <summary>
+    /// Searches for photo stacks with pagination.
+    /// </summary>
+    /// <param name="query">The search query.</param>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <returns>A paginated result containing matching photo stacks and metadata.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> SearchPaginated(SearchQuery query, int offset, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ThrowIfDisposed();
+
+        var queryJson = query.ToJson();
+        var result = NativeMethods.photostax_search_paginated(
+            _handle.DangerousGetHandle(),
+            queryJson,
+            (nuint)offset,
+            (nuint)limit);
+        try
+        {
+            return ConvertPaginatedResult(result);
+        }
+        finally
+        {
+            NativeMethods.photostax_paginated_result_free(result);
+        }
+    }
+
+    /// <summary>
     /// Disposes the repository and releases all resources.
     /// </summary>
     public void Dispose()
@@ -218,5 +273,28 @@ public sealed class PhotostaxRepository : IDisposable
         var metadata = Metadata.FromJson(metadataJson);
 
         return new PhotoStack(id, original, enhanced, back, metadata);
+    }
+
+    private static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)
+    {
+        var items = new List<PhotoStack>();
+
+        if (result.Data != IntPtr.Zero && result.Len > 0)
+        {
+            var structSize = Marshal.SizeOf<FfiPhotoStack>();
+            for (nuint i = 0; i < result.Len; i++)
+            {
+                var stackPtr = IntPtr.Add(result.Data, (int)i * structSize);
+                var ffiStack = Marshal.PtrToStructure<FfiPhotoStack>(stackPtr);
+                items.Add(ConvertStack(ffiStack));
+            }
+        }
+
+        return new PaginatedResult<PhotoStack>(
+            items,
+            (int)result.TotalCount,
+            (int)result.Offset,
+            (int)result.Limit,
+            result.HasMore);
     }
 }

@@ -51,6 +51,11 @@ for stack in &stacks {
         println!("  Has back scan: {}", back.display());
     }
 }
+
+// Paginate results (e.g. page 2 with 20 items per page)
+use photostax_core::search::{paginate_stacks, PaginationParams};
+let page = paginate_stacks(&stacks, &PaginationParams { offset: 20, limit: 20 });
+println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
 ```
 
 ## Quick Start (.NET)
@@ -68,6 +73,10 @@ foreach (var stack in stacks)
     Console.WriteLine($"  Enhanced: {stack.EnhancedPath}");
     Console.WriteLine($"  Back: {stack.BackPath}");
 }
+
+// Paginate results (e.g. page 2 with 20 items per page)
+var page = repo.ScanPaginated(offset: 20, limit: 20);
+Console.WriteLine($"Showing {page.Items.Count} of {page.TotalCount} total");
 ```
 
 ## Quick Start (TypeScript)
@@ -83,6 +92,10 @@ for (const stack of stacks) {
   console.log(`  Original: ${stack.original}`);
   console.log(`  EXIF Make: ${stack.metadata.exifTags['Make']}`);
 }
+
+// Paginate results (e.g. page 2 with 20 items per page)
+const page = repo.scanPaginated(20, 20);
+console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
 ```
 
 ## Quick Start (CLI)
@@ -93,6 +106,10 @@ photostax-cli scan /photos
 
 # Search for stacks containing "birthday"
 photostax-cli search /photos birthday
+
+# Paginate results (20 items starting at offset 40)
+photostax-cli scan /photos --limit 20 --offset 40
+photostax-cli search /photos birthday --limit 10 --offset 0
 
 # Show detailed info about a specific stack
 photostax-cli info /photos IMG_0001
