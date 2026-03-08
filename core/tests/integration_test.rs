@@ -87,8 +87,8 @@ fn test_end_to_end_scan_search_metadata() {
 
     repo.write_metadata(&stack, &metadata).unwrap();
 
-    // Re-scan and verify metadata persists
-    let stacks_after = repo.scan().unwrap();
+    // Re-scan and verify metadata persists (use scan_with_metadata to load sidecar)
+    let stacks_after = repo.scan_with_metadata().unwrap();
     let stack_after = stacks_after
         .iter()
         .find(|s| s.id == "FamilyPhotos_0001")
@@ -205,8 +205,8 @@ fn test_search_workflow() {
         repo.write_metadata(stack, &metadata).unwrap();
     }
 
-    // Re-scan to pick up metadata
-    let stacks = repo.scan().unwrap();
+    // Re-scan with metadata to pick up sidecar data for searching
+    let stacks = repo.scan_with_metadata().unwrap();
 
     // Search for birthday
     let q = SearchQuery::new().with_text("birthday");

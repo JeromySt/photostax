@@ -61,6 +61,59 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Scans the repository and returns all photo stacks with full metadata loaded.
+    /// </summary>
+    /// <remarks>
+    /// This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
+    /// Prefer <see cref="Scan"/> + <see cref="LoadMetadata"/> for lazy-loading in large repositories.
+    /// </remarks>
+    /// <returns>A list of photo stacks with complete metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public IReadOnlyList<PhotoStack> ScanWithMetadata()
+    {
+        ThrowIfDisposed();
+
+        // Scan to get lightweight stacks, then load metadata for each one
+        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
+        try
+        {
+            var stacks = ConvertStackArray(array);
+            var result = new List<PhotoStack>(stacks.Count);
+            foreach (var stack in stacks)
+            {
+                var metadata = LoadMetadataCore(stack.Id);
+                result.Add(new PhotoStack(stack.Id, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
+            }
+            return result;
+        }
+        finally
+        {
+            NativeMethods.photostax_stack_array_free(array);
+        }
+    }
+
+    /// <summary>
+    /// Loads full metadata (EXIF, XMP, sidecar) for a specific stack.
+    /// </summary>
+    /// <remarks>
+    /// Use with <see cref="Scan"/> for lazy-loading: scan first to get lightweight
+    /// stacks, then load metadata on demand for individual stacks.
+    /// </remarks>
+    /// <param name="stackId">The stack identifier.</param>
+    /// <returns>The loaded metadata.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="stackId"/> is null.</exception>
+    /// <exception cref="PhotostaxException">Thrown when the stack is not found or metadata cannot be loaded.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public Metadata LoadMetadata(string stackId)
+    {
+        ArgumentNullException.ThrowIfNull(stackId);
+        ThrowIfDisposed();
+
+        return LoadMetadataCore(stackId)
+            ?? throw new PhotostaxException($"Failed to load metadata for stack '{stackId}'");
+    }
+
+    /// <summary>
     /// Gets a single photo stack by its identifier.
     /// </summary>
     /// <param name="id">The stack identifier.</param>
@@ -168,16 +221,18 @@ public sealed class PhotostaxRepository : IDisposable
     /// </summary>
     /// <param name="offset">Number of stacks to skip (0-based).</param>
     /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <param name="loadMetadata">When true, loads EXIF/XMP/sidecar metadata for each stack in the page.</param>
     /// <returns>A paginated result containing photo stacks and metadata.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit)
+    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit, bool loadMetadata = false)
     {
         ThrowIfDisposed();
 
         var result = NativeMethods.photostax_repo_scan_paginated(
             _handle.DangerousGetHandle(),
             (nuint)offset,
-            (nuint)limit);
+            (nuint)limit,
+            loadMetadata);
         try
         {
             return ConvertPaginatedResult(result);
@@ -233,6 +288,24 @@ public sealed class PhotostaxRepository : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private Metadata? LoadMetadataCore(string stackId)
+    {
+        var ptr = NativeMethods.photostax_stack_load_metadata(
+            _handle.DangerousGetHandle(), stackId);
+        if (ptr == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            var json = Marshal.PtrToStringUTF8(ptr) ?? "{}";
+            return Metadata.FromJson(json);
+        }
+        finally
+        {
+            NativeMethods.photostax_string_free(ptr);
+        }
     }
 
     private static string? GetErrorMessage(FfiResult result)

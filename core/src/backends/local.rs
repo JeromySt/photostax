@@ -35,17 +35,20 @@
 //!
 //! let repo = LocalRepository::new("/photos");
 //!
-//! // Scan all stacks
+//! // Fast scan — just file paths and folder metadata
 //! let stacks = repo.scan()?;
-//! for stack in &stacks {
-//!     println!("{}: {} EXIF tags, {} custom tags",
-//!         stack.id,
-//!         stack.metadata.exif_tags.len(),
-//!         stack.metadata.custom_tags.len());
-//! }
+//! println!("Found {} stacks", stacks.len());
 //!
-//! // Get a specific stack
-//! let stack = repo.get_stack("IMG_0001")?;
+//! // Load metadata only when needed
+//! let mut stack = repo.get_stack("IMG_0001")?;
+//! repo.load_metadata(&mut stack)?;
+//! println!("{}: {} EXIF tags, {} custom tags",
+//!     stack.id,
+//!     stack.metadata.exif_tags.len(),
+//!     stack.metadata.custom_tags.len());
+//!
+//! // Or scan with metadata in one call (old behavior)
+//! let full_stacks = repo.scan_with_metadata()?;
 //! # Ok::<(), photostax_core::repository::RepositoryError>(())
 //! ```
 //!
@@ -219,6 +222,28 @@ impl LocalRepository {
         self.apply_folder_metadata(stack);
     }
 
+    /// Scan and return stacks with full metadata loaded (EXIF, XMP, sidecar).
+    ///
+    /// This is a convenience method that combines [`scan()`](Repository::scan)
+    /// with [`load_metadata()`](Repository::load_metadata) for every stack.
+    /// Use this when you need all metadata up front (e.g., for export or
+    /// full-text search).
+    ///
+    /// For large repositories where you only need counts or paginated listings,
+    /// prefer [`scan()`](Repository::scan) which performs no file content I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError::Io`] if the repository or metadata files
+    /// cannot be accessed.
+    pub fn scan_with_metadata(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
+        let mut stacks = self.scan()?;
+        for stack in &mut stacks {
+            self.load_metadata(stack)?;
+        }
+        Ok(stacks)
+    }
+
     /// Derive metadata from the stack's containing folder name using the
     /// FastFoto naming convention (`<year>_<month_or_season>_<subject>`).
     ///
@@ -302,10 +327,17 @@ impl LocalRepository {
 impl Repository for LocalRepository {
     fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
         let mut stacks = scanner::scan_directory(&self.root, &self.config)?;
+        // Apply folder-derived metadata only — no file content I/O.
+        // EXIF, XMP, and sidecar data are loaded on demand via load_metadata().
         for stack in &mut stacks {
-            self.enrich_metadata(stack);
+            self.apply_folder_metadata(stack);
         }
         Ok(stacks)
+    }
+
+    fn load_metadata(&self, stack: &mut PhotoStack) -> Result<(), RepositoryError> {
+        self.enrich_metadata(stack);
+        Ok(())
     }
 
     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError> {
@@ -314,7 +346,7 @@ impl Repository for LocalRepository {
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?;
-        self.enrich_metadata(&mut stack);
+        self.apply_folder_metadata(&mut stack);
         Ok(stack)
     }
 
@@ -430,6 +462,40 @@ mod tests {
         assert_eq!(stacks.len(), 2);
         assert!(stacks.iter().any(|s| s.id == "IMG_001"));
         assert!(stacks.iter().any(|s| s.id == "IMG_002"));
+        // Scan is lazy — metadata should be empty (no EXIF in test JPEG)
+        for stack in &stacks {
+            assert!(stack.metadata.exif_tags.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_scan_with_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let jpeg_data = create_test_jpeg();
+        fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
+        fs::write(dir.join("IMG_001_a.jpg"), &jpeg_data).unwrap();
+
+        // Write some sidecar metadata
+        let data = crate::metadata::sidecar::SidecarData {
+            custom_tags: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("album".to_string(), serde_json::json!("Test Album"));
+                m
+            },
+            ..Default::default()
+        };
+        crate::metadata::sidecar::write_sidecar(dir, "IMG_001", &data).unwrap();
+
+        let repo = LocalRepository::new(dir);
+        let stacks = repo.scan_with_metadata().unwrap();
+
+        assert_eq!(stacks.len(), 1);
+        assert_eq!(
+            stacks[0].metadata.custom_tags.get("album"),
+            Some(&serde_json::json!("Test Album"))
+        );
     }
 
     #[test]
@@ -617,9 +683,13 @@ mod tests {
         crate::metadata::sidecar::write_sidecar(dir, "IMG_001", &data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let mut stack = repo.get_stack("IMG_001").unwrap();
 
-        // Sidecar tags should be loaded
+        // Before load_metadata, sidecar tags should NOT be loaded
+        assert!(!stack.metadata.custom_tags.contains_key("custom_tag"));
+
+        // After load_metadata, sidecar tags should be loaded
+        repo.load_metadata(&mut stack).unwrap();
         assert_eq!(
             stack.metadata.custom_tags.get("custom_tag"),
             Some(&serde_json::json!("custom_value"))
@@ -655,7 +725,8 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let mut stack = repo.get_stack("IMG_001").unwrap();
+        repo.load_metadata(&mut stack).unwrap();
 
         // Should have no sidecar-derived custom tags.
         // (folder-derived tags with `folder_` prefix may be present from the
@@ -732,8 +803,9 @@ mod tests {
             ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        let stacks = repo.scan().unwrap();
 
+        // Lazy scan should still have folder metadata (it's zero-cost)
+        let stacks = repo.scan().unwrap();
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
         assert_eq!(
@@ -748,7 +820,6 @@ mod tests {
             .metadata
             .custom_tags
             .contains_key("folder_month_or_season"));
-        // dc:date and dc:subject should be filled
         assert_eq!(s.metadata.xmp_tags.get("date"), Some(&"1984".to_string()));
         assert_eq!(
             s.metadata.xmp_tags.get("subject"),
@@ -841,7 +912,8 @@ mod tests {
             ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        let stacks = repo.scan().unwrap();
+        // Use scan_with_metadata since we need sidecar loaded to test priority
+        let stacks = repo.scan_with_metadata().unwrap();
 
         let s = &stacks[0];
         // Sidecar value should win for xmp_tags["subject"]

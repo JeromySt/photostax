@@ -30,6 +30,11 @@
 //!         todo!()
 //!     }
 //!
+//!     fn load_metadata(&self, _stack: &mut PhotoStack) -> Result<(), RepositoryError> {
+//!         // Fetch EXIF/XMP from cloud storage
+//!         todo!()
+//!     }
+//!
 //!     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError> {
 //!         // Fetch specific stack by ID
 //!         todo!()
@@ -104,12 +109,14 @@ pub enum RepositoryError {
 ///
 /// let repo = LocalRepository::new("/photos");
 ///
-/// // Scan all stacks
-/// for stack in repo.scan()? {
-///     println!("Found: {} ({} EXIF tags)",
-///         stack.id,
-///         stack.metadata.exif_tags.len());
-/// }
+/// // Fast scan — just file paths and folder metadata, no file I/O
+/// let stacks = repo.scan()?;
+/// println!("Found {} stacks", stacks.len());
+///
+/// // Load metadata only when needed
+/// let mut stack = repo.get_stack("IMG_0001")?;
+/// repo.load_metadata(&mut stack)?;
+/// println!("{}: {} EXIF tags", stack.id, stack.metadata.exif_tags.len());
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
@@ -117,18 +124,41 @@ pub enum RepositoryError {
 pub trait Repository {
     /// Scan the repository and return all discovered photo stacks.
     ///
-    /// Scans the repository root, groups files by the FastFoto naming convention
-    /// (`_a` for enhanced, `_b` for back), and returns enriched [`PhotoStack`] objects
-    /// with merged metadata from EXIF, XMP, and sidecar sources.
+    /// Returns lightweight [`PhotoStack`] objects with file paths and
+    /// folder-derived metadata only. **No file content I/O** is performed
+    /// beyond the directory listing — EXIF, XMP, and sidecar data are not
+    /// loaded. Call [`load_metadata`](Self::load_metadata) on individual
+    /// stacks when you need their full metadata.
+    ///
+    /// This design makes scanning O(1) per file (just `read_dir`) regardless
+    /// of how many stacks exist, which is ideal for pagination and counting.
     ///
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the repository location cannot be accessed.
     fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError>;
 
+    /// Load EXIF, XMP, and sidecar metadata into an existing photo stack.
+    ///
+    /// Populates the stack's [`Metadata`] by reading:
+    /// 1. EXIF tags from the enhanced (preferred) or original image file
+    /// 2. Embedded XMP from JPEG files
+    /// 3. XMP sidecar file (`.xmp`) — highest priority, overrides above
+    /// 4. Folder name metadata — lowest priority, fills gaps
+    ///
+    /// This is the lazy counterpart to scanning: call it only when you need
+    /// a stack's full metadata (e.g., for display, search, or export).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError::Io`] if metadata files cannot be read.
+    fn load_metadata(&self, stack: &mut PhotoStack) -> Result<(), RepositoryError>;
+
     /// Retrieve a single photo stack by its ID.
     ///
     /// The ID is the base filename without the `_a`/`_b` suffix or extension.
+    /// Returns a lightweight stack without file-based metadata loaded.
+    /// Call [`load_metadata`](Self::load_metadata) to populate EXIF/XMP/sidecar data.
     ///
     /// # Errors
     ///

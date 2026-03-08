@@ -330,6 +330,10 @@ struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
 /**
  * Scan the repository and return a paginated result.
  *
+ * When `load_metadata` is true, EXIF/XMP/sidecar metadata is loaded for each
+ * stack in the returned page. When false, stacks contain only paths and
+ * folder-derived metadata (faster for large repositories).
+ *
  * # Safety
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
@@ -338,7 +342,24 @@ struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
  */
 struct FfiPaginatedResult photostax_repo_scan_paginated(const struct PhotostaxRepo *repo,
                                                         uintptr_t offset,
-                                                        uintptr_t limit);
+                                                        uintptr_t limit,
+                                                        bool load_metadata);
+
+/**
+ * Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it
+ * as a JSON string.
+ *
+ * This is the lazy-loading counterpart: call after [`photostax_repo_scan`] to
+ * retrieve a single stack's metadata on demand.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` must be a valid null-terminated UTF-8 string
+ * - Returns null on error or if the stack is not found
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ */
+char *photostax_stack_load_metadata(const struct PhotostaxRepo *repo, const char *stack_id);
 
 /**
  * Free a paginated result.

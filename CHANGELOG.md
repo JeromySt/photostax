@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Lazy-loading architecture for efficient scanning across all layers
+  - `Repository::scan()` now returns lightweight stacks with only file paths and folder-derived metadata — no file content I/O
+  - `Repository::load_metadata()` loads EXIF, XMP, and sidecar data on demand for individual stacks
+  - `LocalRepository::scan_with_metadata()` convenience method for eager loading (old behavior)
+  - `Metadata::is_empty()` and `PhotoStack::image_count()` / `PhotoStack::is_metadata_loaded()` helpers
+  - `--metadata` / `-m` flag on CLI `scan` command to opt into metadata loading
+  - `photostax_stack_load_metadata` FFI function for per-stack metadata loading
+  - `photostax_repo_scan_paginated` accepts `load_metadata` parameter
+  - `scanWithMetadata()` and `loadMetadata()` in TypeScript binding
+  - `ScanWithMetadata()` and `LoadMetadata()` in .NET binding
+  - `scanPaginated()` accepts optional `loadMetadata` parameter in TypeScript
+  - `ScanPaginated()` accepts optional `loadMetadata` parameter in .NET
+
 ## [0.1.4] - 2026-03-08
 
 ### Added

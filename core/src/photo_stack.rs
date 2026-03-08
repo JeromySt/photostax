@@ -193,6 +193,25 @@ pub struct Metadata {
     pub custom_tags: HashMap<String, serde_json::Value>,
 }
 
+impl Metadata {
+    /// Returns `true` if all metadata maps are empty.
+    ///
+    /// This is the state of a freshly-constructed `PhotoStack` before any
+    /// metadata sources have been loaded.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::photo_stack::Metadata;
+    ///
+    /// let meta = Metadata::default();
+    /// assert!(meta.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.exif_tags.is_empty() && self.xmp_tags.is_empty() && self.custom_tags.is_empty()
+    }
+}
+
 impl PhotoStack {
     /// Creates a new `PhotoStack` with only an ID and no associated files.
     ///
@@ -306,6 +325,52 @@ impl PhotoStack {
             .or(self.back.as_ref())
             .and_then(|p| p.parent())
             .map(|p| p.to_path_buf())
+    }
+
+    /// Returns the number of image files present in this stack.
+    ///
+    /// Counts the non-`None` image paths (original, enhanced, back).
+    /// This is available immediately after scanning without loading metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::photo_stack::PhotoStack;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut stack = PhotoStack::new("test");
+    /// assert_eq!(stack.image_count(), 0);
+    ///
+    /// stack.original = Some(PathBuf::from("photo.jpg"));
+    /// stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+    /// assert_eq!(stack.image_count(), 2);
+    /// ```
+    pub fn image_count(&self) -> usize {
+        self.original.is_some() as usize
+            + self.enhanced.is_some() as usize
+            + self.back.is_some() as usize
+    }
+
+    /// Returns `true` if file-based metadata (EXIF, XMP, sidecar) has been loaded.
+    ///
+    /// After [`Repository::scan()`], stacks only contain folder-derived metadata.
+    /// Call [`Repository::load_metadata()`] to populate EXIF, XMP, and sidecar
+    /// tags. This method checks whether any EXIF tags are present as a heuristic
+    /// for whether full metadata loading has occurred.
+    ///
+    /// Note: this returns `false` for stacks whose image files genuinely contain
+    /// no EXIF data, even after `load_metadata()`. For an authoritative check,
+    /// track loading state externally.
+    ///
+    /// [`Repository::scan()`]: crate::repository::Repository::scan
+    /// [`Repository::load_metadata()`]: crate::repository::Repository::load_metadata
+    pub fn is_metadata_loaded(&self) -> bool {
+        !self.metadata.exif_tags.is_empty()
+            || self
+                .metadata
+                .custom_tags
+                .keys()
+                .any(|k| !k.starts_with("folder_"))
     }
 }
 

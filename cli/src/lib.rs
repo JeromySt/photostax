@@ -48,6 +48,10 @@ pub enum Commands {
         #[arg(long)]
         show_metadata: bool,
 
+        /// Load file-based metadata (EXIF, XMP, sidecar). Auto-enabled when --show-metadata is used.
+        #[arg(long, short = 'm')]
+        metadata: bool,
+
         /// Only show TIFF stacks
         #[arg(long, conflicts_with = "jpeg_only")]
         tiff_only: bool,
@@ -231,6 +235,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             directory,
             format,
             show_metadata,
+            metadata,
             tiff_only,
             jpeg_only,
             with_back,
@@ -243,6 +248,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             directory,
             *format,
             *show_metadata,
+            *metadata,
             *tiff_only,
             *jpeg_only,
             *with_back,
@@ -313,6 +319,7 @@ pub fn cmd_scan(
     directory: &PathBuf,
     format: OutputFormat,
     show_metadata: bool,
+    metadata: bool,
     tiff_only: bool,
     jpeg_only: bool,
     with_back: bool,
@@ -325,7 +332,16 @@ pub fn cmd_scan(
         ..ScannerConfig::default()
     };
     let repo = LocalRepository::with_config(directory, config);
-    let stacks = match repo.scan() {
+
+    // Auto-enable metadata loading when show_metadata is requested
+    let load_metadata = metadata || show_metadata;
+
+    let stacks = if load_metadata {
+        repo.scan_with_metadata()
+    } else {
+        repo.scan()
+    };
+    let stacks = match stacks {
         Ok(s) => s,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -396,7 +412,7 @@ pub fn cmd_search(
     offset: usize,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stacks = match repo.scan() {
+    let stacks = match repo.scan_with_metadata() {
         Ok(s) => s,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -461,7 +477,7 @@ pub fn cmd_info(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stack = match repo.get_stack(stack_id) {
+    let mut stack = match repo.get_stack(stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -472,6 +488,11 @@ pub fn cmd_info(
             return EXIT_ERROR;
         }
     };
+
+    if let Err(e) = repo.load_metadata(&mut stack) {
+        let _ = writeln!(err, "Error loading metadata: {e}");
+        return EXIT_ERROR;
+    }
 
     match format {
         OutputFormat::Json => {
@@ -497,7 +518,7 @@ pub fn cmd_metadata_read(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stack = match repo.get_stack(stack_id) {
+    let mut stack = match repo.get_stack(stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -508,6 +529,11 @@ pub fn cmd_metadata_read(
             return EXIT_ERROR;
         }
     };
+
+    if let Err(e) = repo.load_metadata(&mut stack) {
+        let _ = writeln!(err, "Error loading metadata: {e}");
+        return EXIT_ERROR;
+    }
 
     match format {
         OutputFormat::Json => {
@@ -537,7 +563,7 @@ pub fn cmd_metadata_write(
     tags: &[(String, String)],
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stack = match repo.get_stack(stack_id) {
+    let mut stack = match repo.get_stack(stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -548,6 +574,11 @@ pub fn cmd_metadata_write(
             return EXIT_ERROR;
         }
     };
+
+    if let Err(e) = repo.load_metadata(&mut stack) {
+        let _ = writeln!(err, "Error loading metadata: {e}");
+        return EXIT_ERROR;
+    }
 
     let mut new_tags = Metadata::default();
     for (key, value) in tags {
@@ -604,7 +635,7 @@ pub fn cmd_export(
     output: Option<&Path>,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stacks = match repo.scan() {
+    let stacks = match repo.scan_with_metadata() {
         Ok(s) => s,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -1447,6 +1478,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             0,
         );
@@ -1465,6 +1497,7 @@ mod tests {
             &mut err,
             &testdata_path(),
             OutputFormat::Json,
+            false,
             false,
             false,
             false,
@@ -1495,6 +1528,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             0,
         );
@@ -1512,6 +1546,7 @@ mod tests {
             &mut err,
             &testdata_path(),
             OutputFormat::Csv,
+            false,
             false,
             false,
             true,
@@ -1543,6 +1578,7 @@ mod tests {
             &testdata_path(),
             OutputFormat::Csv,
             false,
+            false,
             true,
             false,
             false,
@@ -1565,6 +1601,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             true,
             false,
             0,
@@ -1583,6 +1620,7 @@ mod tests {
             &testdata_path(),
             OutputFormat::Table,
             true,
+            false,
             false,
             false,
             false,
@@ -1609,6 +1647,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             0,
         );
@@ -1626,6 +1665,7 @@ mod tests {
             &mut err,
             &PathBuf::from("/nonexistent/dir"),
             OutputFormat::Table,
+            false,
             false,
             false,
             false,
@@ -2029,6 +2069,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             0,
             0,
         );
@@ -2115,6 +2156,7 @@ mod tests {
                 directory: testdata_path(),
                 format: OutputFormat::Table,
                 show_metadata: false,
+                metadata: false,
                 tiff_only: false,
                 jpeg_only: false,
                 with_back: false,
