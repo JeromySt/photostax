@@ -395,8 +395,7 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
                     paginated.items
                 };
 
-                let ffi_stacks: Vec<FfiPhotoStack> =
-                    items.iter().map(photo_stack_to_ffi).collect();
+                let ffi_stacks: Vec<FfiPhotoStack> = items.iter().map(photo_stack_to_ffi).collect();
                 let len = ffi_stacks.len();
                 let boxed_slice = ffi_stacks.into_boxed_slice();
                 let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -461,8 +460,7 @@ pub unsafe extern "C" fn photostax_stack_load_metadata(
             "custom_tags": stack.metadata.custom_tags,
         });
 
-        let json_str =
-            serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+        let json_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
         CString::new(json_str)
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut())
