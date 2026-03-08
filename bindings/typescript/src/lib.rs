@@ -191,10 +191,11 @@ impl PhotostaxRepository {
         }
     }
 
-    /// Scan the repository and return all discovered photo stacks.
+    /// Scan the repository and return all discovered photo stacks (fast, no file-based metadata).
     ///
-    /// Groups files by FastFoto naming convention and enriches each stack
-    /// with EXIF, XMP, and sidecar metadata.
+    /// Returns stacks with paths and folder-derived metadata only.
+    /// Use `scanWithMetadata()` to load EXIF/XMP/sidecar data for all stacks,
+    /// or `loadMetadata(stackId)` to load metadata for individual stacks on demand.
     ///
     /// @returns Array of photo stacks found in the repository
     /// @throws Error if the directory cannot be accessed
@@ -202,6 +203,21 @@ impl PhotostaxRepository {
     pub fn scan(&self) -> napi::Result<Vec<JsPhotoStack>> {
         self.inner
             .scan()
+            .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Scan the repository and return all photo stacks with full metadata loaded.
+    ///
+    /// This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
+    /// Prefer `scan()` + `loadMetadata()` for lazy-loading in large repositories.
+    ///
+    /// @returns Array of photo stacks with complete metadata
+    /// @throws Error if the directory cannot be accessed
+    #[napi]
+    pub fn scan_with_metadata(&self) -> napi::Result<Vec<JsPhotoStack>> {
+        self.inner
+            .scan_with_metadata()
             .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
@@ -217,6 +233,28 @@ impl PhotostaxRepository {
             .get_stack(&id)
             .map(JsPhotoStack::from)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Load full metadata (EXIF, XMP, sidecar) for a specific stack.
+    ///
+    /// Use this with `scan()` for lazy-loading: scan first to get lightweight
+    /// stacks, then load metadata on demand for individual stacks.
+    ///
+    /// @param stackId - The stack identifier
+    /// @returns The loaded metadata
+    /// @throws Error if the stack is not found or metadata cannot be read
+    #[napi]
+    pub fn load_metadata(&self, stack_id: String) -> napi::Result<JsMetadata> {
+        let mut stack = self
+            .inner
+            .get_stack(&stack_id)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        self.inner
+            .load_metadata(&mut stack)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        Ok(stack.metadata.into())
     }
 
     /// Read the raw bytes of an image file.
@@ -301,7 +339,7 @@ impl PhotostaxRepository {
                 .map(|s| {
                     let mut owned = s.clone();
                     let _ = self.inner.load_metadata(&mut owned);
-                    JsPhotoStack::from(&owned)
+                    JsPhotoStack::from(owned)
                 })
                 .collect()
         } else {

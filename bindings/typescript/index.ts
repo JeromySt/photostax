@@ -224,10 +224,11 @@ export class PhotostaxRepository {
   }
 
   /**
-   * Scan the repository and return all photo stacks.
+   * Scan the repository and return all photo stacks (fast, no file-based metadata).
    *
-   * Groups files by FastFoto naming convention and enriches each stack
-   * with EXIF, XMP, and sidecar metadata.
+   * Returns stacks with paths and folder-derived metadata only.
+   * Use {@link scanWithMetadata} to load EXIF/XMP/sidecar data for all stacks,
+   * or {@link loadMetadata} to load metadata for individual stacks on demand.
    *
    * @returns Array of photo stacks
    * @throws Error if the directory cannot be accessed
@@ -249,6 +250,55 @@ export class PhotostaxRepository {
         }
       )
     );
+  }
+
+  /**
+   * Scan the repository and return all photo stacks with full metadata loaded.
+   *
+   * This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
+   * Prefer {@link scan} + {@link loadMetadata} for lazy-loading in large repositories.
+   *
+   * @returns Array of photo stacks with complete metadata
+   * @throws Error if the directory cannot be accessed
+   */
+  scanWithMetadata(): PhotoStack[] {
+    const native = this._native as { scanWithMetadata(): unknown[] };
+    return native.scanWithMetadata().map((s) =>
+      fromNativeStack(
+        s as {
+          id: string;
+          original: string | null;
+          enhanced: string | null;
+          back: string | null;
+          metadata: {
+            exif_tags: Record<string, string>;
+            xmp_tags: Record<string, string>;
+            custom_tags: Record<string, unknown>;
+          };
+        }
+      )
+    );
+  }
+
+  /**
+   * Load full metadata (EXIF, XMP, sidecar) for a specific stack.
+   *
+   * Use with {@link scan} for lazy-loading: scan first to get lightweight
+   * stacks, then load metadata on demand for individual stacks.
+   *
+   * @param stackId - The stack identifier
+   * @returns The loaded metadata
+   * @throws Error if the stack is not found or metadata cannot be read
+   */
+  loadMetadata(stackId: string): Metadata {
+    const native = this._native as {
+      loadMetadata(stackId: string): {
+        exif_tags: Record<string, string>;
+        xmp_tags: Record<string, string>;
+        custom_tags: Record<string, unknown>;
+      };
+    };
+    return fromNativeMetadata(native.loadMetadata(stackId));
   }
 
   /**
@@ -361,6 +411,7 @@ export class PhotostaxRepository {
    *
    * @param offset - Number of stacks to skip (0-based)
    * @param limit - Maximum number of stacks per page
+   * @param loadMetadata - When true, loads EXIF/XMP/sidecar metadata for each stack in the page
    * @returns Paginated result with items and metadata
    * @throws Error if the directory cannot be accessed
    *
@@ -373,9 +424,9 @@ export class PhotostaxRepository {
    * }
    * ```
    */
-  scanPaginated(offset: number, limit: number): PaginatedResult {
+  scanPaginated(offset: number, limit: number, loadMetadata?: boolean): PaginatedResult {
     const native = this._native as {
-      scanPaginated(offset: number, limit: number): {
+      scanPaginated(offset: number, limit: number, loadMetadata: boolean | undefined | null): {
         items: unknown[];
         total_count: number;
         offset: number;
@@ -383,7 +434,7 @@ export class PhotostaxRepository {
         has_more: boolean;
       };
     };
-    const result = native.scanPaginated(offset, limit);
+    const result = native.scanPaginated(offset, limit, loadMetadata ?? null);
     return {
       items: result.items.map((s) =>
         fromNativeStack(

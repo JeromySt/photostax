@@ -97,15 +97,26 @@ export declare class PhotostaxRepository {
    */
   constructor(directoryPath: string, options?: RepositoryOptions | undefined | null)
   /**
-   * Scan the repository and return all discovered photo stacks.
+   * Scan the repository and return all discovered photo stacks (fast, no file-based metadata).
    *
-   * Groups files by FastFoto naming convention and enriches each stack
-   * with EXIF, XMP, and sidecar metadata.
+   * Returns stacks with paths and folder-derived metadata only.
+   * Use `scanWithMetadata()` to load EXIF/XMP/sidecar data for all stacks,
+   * or `loadMetadata(stackId)` to load metadata for individual stacks on demand.
    *
    * @returns Array of photo stacks found in the repository
    * @throws Error if the directory cannot be accessed
    */
   scan(): Array<JsPhotoStack>
+  /**
+   * Scan the repository and return all photo stacks with full metadata loaded.
+   *
+   * This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
+   * Prefer `scan()` + `loadMetadata()` for lazy-loading in large repositories.
+   *
+   * @returns Array of photo stacks with complete metadata
+   * @throws Error if the directory cannot be accessed
+   */
+  scanWithMetadata(): Array<JsPhotoStack>
   /**
    * Retrieve a single photo stack by its ID.
    *
@@ -114,6 +125,17 @@ export declare class PhotostaxRepository {
    * @throws Error if the stack is not found or cannot be accessed
    */
   getStack(id: string): JsPhotoStack
+  /**
+   * Load full metadata (EXIF, XMP, sidecar) for a specific stack.
+   *
+   * Use with `scan()` for lazy-loading: scan first to get lightweight stacks,
+   * then load metadata on demand for individual stacks.
+   *
+   * @param stackId - The stack identifier
+   * @returns The loaded metadata
+   * @throws Error if the stack is not found or metadata cannot be read
+   */
+  loadMetadata(stackId: string): JsMetadata
   /**
    * Read the raw bytes of an image file.
    *
@@ -146,10 +168,11 @@ export declare class PhotostaxRepository {
    *
    * @param offset - Number of stacks to skip (0-based)
    * @param limit - Maximum number of stacks to return
+   * @param loadMetadata - When true, loads EXIF/XMP/sidecar metadata for each stack in the page
    * @returns Paginated result with items and pagination metadata
    * @throws Error if the directory cannot be accessed
    */
-  scanPaginated(offset: number, limit: number): JsPaginatedResult
+  scanPaginated(offset: number, limit: number, loadMetadata?: boolean | undefined | null): JsPaginatedResult
   /**
    * Search for photo stacks and return a paginated result.
    *

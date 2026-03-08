@@ -92,6 +92,16 @@ public class RepositoryTests
         });
     }
 
+    [Fact]
+    public void LoadMetadata_NullStackId_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            string? nullId = null;
+            ArgumentNullException.ThrowIfNull(nullId);
+        });
+    }
+
     /// <summary>
     /// Helper class to verify dispose pattern without native library.
     /// </summary>
