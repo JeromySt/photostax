@@ -15,7 +15,9 @@ use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use serde::Deserialize;
 
-use crate::types::{FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo};
+use crate::types::{
+    FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo,
+};
 
 /// Helper to convert a PathBuf option to a C string (null if None).
 fn path_to_c_string(path: &Option<PathBuf>) -> *mut c_char {
@@ -336,6 +338,86 @@ pub unsafe extern "C" fn photostax_write_metadata(
     });
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
+}
+
+/// Scan the repository and return a paginated result.
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - Returns empty result if `repo` is null or scan fails
+/// - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repo_scan_paginated(
+    repo: *const PhotostaxRepo,
+    offset: usize,
+    limit: usize,
+) -> FfiPaginatedResult {
+    let result = panic::catch_unwind(|| {
+        if repo.is_null() {
+            return FfiPaginatedResult::empty(offset, limit);
+        }
+
+        let repo_ref = unsafe { &*repo };
+        match repo_ref.inner.scan() {
+            Ok(stacks) => {
+                let paginated = photostax_core::search::paginate_stacks(
+                    &stacks,
+                    &photostax_core::search::PaginationParams { offset, limit },
+                );
+
+                if paginated.items.is_empty() {
+                    return FfiPaginatedResult {
+                        data: ptr::null_mut(),
+                        len: 0,
+                        total_count: paginated.total_count,
+                        offset: paginated.offset,
+                        limit: paginated.limit,
+                        has_more: paginated.has_more,
+                    };
+                }
+
+                let ffi_stacks: Vec<FfiPhotoStack> =
+                    paginated.items.iter().map(photo_stack_to_ffi).collect();
+                let len = ffi_stacks.len();
+                let boxed_slice = ffi_stacks.into_boxed_slice();
+                let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
+
+                FfiPaginatedResult {
+                    data,
+                    len,
+                    total_count: paginated.total_count,
+                    offset: paginated.offset,
+                    limit: paginated.limit,
+                    has_more: paginated.has_more,
+                }
+            }
+            Err(_) => FfiPaginatedResult::empty(offset, limit),
+        }
+    });
+
+    result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
+}
+
+/// Free a paginated result.
+///
+/// # Safety
+///
+/// - `result` must have been returned by a paginated FFI function
+/// - After calling, all pointers within `result` are invalid
+#[no_mangle]
+pub unsafe extern "C" fn photostax_paginated_result_free(result: FfiPaginatedResult) {
+    let _ = panic::catch_unwind(|| {
+        if !result.data.is_null() && result.len > 0 {
+            let slice = unsafe { std::slice::from_raw_parts_mut(result.data, result.len) };
+            for stack in slice.iter() {
+                free_stack_strings(stack);
+            }
+            let _ = unsafe {
+                Box::from_raw(std::ptr::slice_from_raw_parts_mut(result.data, result.len))
+            };
+        }
+    });
 }
 
 /// Free a photo stack array.

@@ -36,7 +36,7 @@ The core library is the single source of truth for all business logic:
 | `photo_stack` | `PhotoStack` and `Metadata` types representing grouped photos |
 | `repository` | `Repository` trait for storage backend abstraction |
 | `scanner` | Directory scanning and FastFoto file grouping logic |
-| `search` | Query builder for filtering stacks by metadata |
+| `search` | Query builder for filtering stacks by metadata, with pagination support |
 | `metadata` | EXIF reading, XMP read/write, XMP sidecar file support |
 | `backends` | Storage backend implementations (local filesystem) |
 
@@ -83,6 +83,11 @@ Each binding provides idiomatic wrappers:
    ├─ Build query with filters
    ├─ Match against indexed metadata
    └─ Return matching PhotoStacks
+
+5. PAGINATE (optional)
+   ├─ Apply offset and limit to results
+   ├─ Calculate total count and has_more
+   └─ Return PaginatedResult with page metadata
 ```
 
 ### Metadata Flow
@@ -125,6 +130,7 @@ Image Files                    XMP Sidecar Files
 
 - **Cloud backends**: OneDrive, Google Drive via OAuth
 - **Async API**: Non-blocking I/O for large repositories
+- **Cursor-based pagination**: Complement offset-based pagination with cursor support
 - **Incremental scanning**: Watch for file changes
 - **Batch operations**: Bulk metadata updates
 

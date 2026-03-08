@@ -98,6 +98,46 @@ typedef struct FfiPhotoStackArray {
 } FfiPhotoStackArray;
 
 /**
+ * Paginated result of photo stacks returned across FFI.
+ *
+ * Contains a page of stacks along with pagination metadata needed
+ * for rendering pagination controls in a web UI.
+ *
+ * # Memory Ownership
+ *
+ * - Caller receives ownership of the entire result
+ * - Call [`photostax_paginated_result_free`] to release all memory
+ *
+ * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ */
+typedef struct FfiPaginatedResult {
+  /**
+   * Pointer to array of stacks in this page (null if len == 0).
+   */
+  struct FfiPhotoStack *data;
+  /**
+   * Number of stacks in this page.
+   */
+  uintptr_t len;
+  /**
+   * Total number of stacks across all pages (before pagination).
+   */
+  uintptr_t total_count;
+  /**
+   * The offset used for this page.
+   */
+  uintptr_t offset;
+  /**
+   * The page size limit used for this page.
+   */
+  uintptr_t limit;
+  /**
+   * Whether there are more items beyond this page.
+   */
+  bool has_more;
+} FfiPaginatedResult;
+
+/**
  * Create a new local repository handle.
  *
  * # Safety
@@ -288,6 +328,29 @@ struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
                                           const char *metadata_json);
 
 /**
+ * Scan the repository and return a paginated result.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - Returns empty result if `repo` is null or scan fails
+ * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ */
+struct FfiPaginatedResult photostax_repo_scan_paginated(const struct PhotostaxRepo *repo,
+                                                        uintptr_t offset,
+                                                        uintptr_t limit);
+
+/**
+ * Free a paginated result.
+ *
+ * # Safety
+ *
+ * - `result` must have been returned by a paginated FFI function
+ * - After calling, all pointers within `result` are invalid
+ */
+void photostax_paginated_result_free(struct FfiPaginatedResult result);
+
+/**
  * Free a photo stack array.
  *
  * # Safety
@@ -356,3 +419,25 @@ void photostax_bytes_free(uint8_t *data, uintptr_t len);
  */
 struct FfiPhotoStackArray photostax_search(const struct PhotostaxRepo *repo,
                                            const char *query_json);
+
+/**
+ * Search/filter stacks with pagination. `query_json` is a JSON-serialized SearchQuery.
+ *
+ * # Query JSON Format
+ *
+ * Same as [`photostax_search`], but results are paginated.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `query_json` must be a valid null-terminated JSON string
+ * - Returns empty result on null pointers or errors
+ * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ */
+struct FfiPaginatedResult photostax_search_paginated(const struct PhotostaxRepo *repo,
+                                                     const char *query_json,
+                                                     uintptr_t offset,
+                                                     uintptr_t limit);

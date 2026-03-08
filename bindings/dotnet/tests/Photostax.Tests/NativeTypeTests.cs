@@ -158,4 +158,19 @@ public class NativeTypeTests
         Assert.True(handle.IsInvalid);
         Assert.Null(handle.GetString());
     }
+
+    // --- FfiPaginatedResult ---
+
+    [Fact]
+    public void FfiPaginatedResult_Default_IsEmpty()
+    {
+        var result = new FfiPaginatedResult();
+
+        Assert.Equal(IntPtr.Zero, result.Data);
+        Assert.Equal((nuint)0, result.Len);
+        Assert.Equal((nuint)0, result.TotalCount);
+        Assert.Equal((nuint)0, result.Offset);
+        Assert.Equal((nuint)0, result.Limit);
+        Assert.False(result.HasMore);
+    }
 }

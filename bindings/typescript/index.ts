@@ -87,6 +87,22 @@ export interface SearchQuery {
 }
 
 /**
+ * A paginated result containing a page of items and pagination metadata.
+ */
+export interface PaginatedResult {
+  /** The photo stacks in this page */
+  items: PhotoStack[];
+  /** Total number of stacks across all pages */
+  totalCount: number;
+  /** The offset used for this page */
+  offset: number;
+  /** The page size limit used for this page */
+  limit: number;
+  /** Whether there are more items beyond this page */
+  hasMore: boolean;
+}
+
+/**
  * Convert camelCase Metadata to snake_case for native binding.
  */
 function toNativeMetadata(meta: Partial<Metadata>): {
@@ -338,6 +354,119 @@ export class PhotostaxRepository {
         }
       )
     );
+  }
+
+  /**
+   * Scan the repository and return a paginated page of photo stacks.
+   *
+   * @param offset - Number of stacks to skip (0-based)
+   * @param limit - Maximum number of stacks per page
+   * @returns Paginated result with items and metadata
+   * @throws Error if the directory cannot be accessed
+   *
+   * @example
+   * ```typescript
+   * const page1 = repo.scanPaginated(0, 20);
+   * console.log(`Showing ${page1.items.length} of ${page1.totalCount}`);
+   * if (page1.hasMore) {
+   *   const page2 = repo.scanPaginated(20, 20);
+   * }
+   * ```
+   */
+  scanPaginated(offset: number, limit: number): PaginatedResult {
+    const native = this._native as {
+      scanPaginated(offset: number, limit: number): {
+        items: unknown[];
+        total_count: number;
+        offset: number;
+        limit: number;
+        has_more: boolean;
+      };
+    };
+    const result = native.scanPaginated(offset, limit);
+    return {
+      items: result.items.map((s) =>
+        fromNativeStack(
+          s as {
+            id: string;
+            original: string | null;
+            enhanced: string | null;
+            back: string | null;
+            metadata: {
+              exif_tags: Record<string, string>;
+              xmp_tags: Record<string, string>;
+              custom_tags: Record<string, unknown>;
+            };
+          }
+        )
+      ),
+      totalCount: result.total_count,
+      offset: result.offset,
+      limit: result.limit,
+      hasMore: result.has_more,
+    };
+  }
+
+  /**
+   * Search for photo stacks with pagination.
+   *
+   * @param query - Search criteria (all filters are AND'd)
+   * @param offset - Number of stacks to skip (0-based)
+   * @param limit - Maximum number of stacks per page
+   * @returns Paginated result with matching items and metadata
+   * @throws Error if the repository cannot be scanned
+   *
+   * @example
+   * ```typescript
+   * const results = repo.searchPaginated(
+   *   { exifFilters: [{ key: 'Make', value: 'EPSON' }] },
+   *   0, 10
+   * );
+   * console.log(`${results.totalCount} total matches`);
+   * ```
+   */
+  searchPaginated(query: SearchQuery, offset: number, limit: number): PaginatedResult {
+    const native = this._native as {
+      searchPaginated(
+        query: {
+          text: string | null;
+          exif_filters: Array<{ key: string; value: string }> | null;
+          custom_filters: Array<{ key: string; value: string }> | null;
+          has_back: boolean | null;
+          has_enhanced: boolean | null;
+        },
+        offset: number,
+        limit: number
+      ): {
+        items: unknown[];
+        total_count: number;
+        offset: number;
+        limit: number;
+        has_more: boolean;
+      };
+    };
+    const result = native.searchPaginated(toNativeSearchQuery(query), offset, limit);
+    return {
+      items: result.items.map((s) =>
+        fromNativeStack(
+          s as {
+            id: string;
+            original: string | null;
+            enhanced: string | null;
+            back: string | null;
+            metadata: {
+              exif_tags: Record<string, string>;
+              xmp_tags: Record<string, string>;
+              custom_tags: Record<string, unknown>;
+            };
+          }
+        )
+      ),
+      totalCount: result.total_count,
+      offset: result.offset,
+      limit: result.limit,
+      hasMore: result.has_more,
+    };
   }
 }
 

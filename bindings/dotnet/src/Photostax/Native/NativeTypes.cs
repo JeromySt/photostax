@@ -68,3 +68,41 @@ internal struct FfiPhotoStackArray
     /// </summary>
     public nuint Len;
 }
+
+/// <summary>
+/// Paginated result of photo stacks from FFI.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiPaginatedResult
+{
+    /// <summary>
+    /// Pointer to array of stacks in this page (null if len == 0).
+    /// </summary>
+    public IntPtr Data;
+
+    /// <summary>
+    /// Number of stacks in this page.
+    /// </summary>
+    public nuint Len;
+
+    /// <summary>
+    /// Total number of stacks across all pages.
+    /// </summary>
+    public nuint TotalCount;
+
+    /// <summary>
+    /// The offset used for this page.
+    /// </summary>
+    public nuint Offset;
+
+    /// <summary>
+    /// The page size limit used for this page.
+    /// </summary>
+    public nuint Limit;
+
+    /// <summary>
+    /// Whether there are more items beyond this page.
+    /// </summary>
+    [MarshalAs(UnmanagedType.I1)]
+    public bool HasMore;
+}

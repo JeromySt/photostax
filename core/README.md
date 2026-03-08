@@ -31,6 +31,7 @@ cargo add photostax-core
 - **Repository trait** — Pluggable storage backends (local filesystem included)
 - **Metadata support** — Read EXIF, read/write XMP, and custom sidecar database
 - **Search & filter** — Query stacks by metadata with a fluent builder API
+- **Pagination** — Fetch pages of results by offset and limit for efficient web rendering
 
 ## Quick Start
 
@@ -60,6 +61,8 @@ for stack in &stacks {
 | `Repository` | Trait for storage backend abstraction |
 | `LocalRepository` | Local filesystem implementation |
 | `SearchQuery` | Builder for filtering stacks by metadata |
+| `PaginationParams` | Offset and limit for paginated queries |
+| `PaginatedResult<T>` | A page of results with total count and navigation metadata |
 
 ### Key Methods
 
@@ -77,6 +80,13 @@ let query = SearchQuery::new()
     .with_text("vacation")
     .with_has_back(true);
 let results = repo.search(&query)?;
+
+// Pagination
+use photostax_core::search::{paginate_stacks, PaginationParams};
+let stacks = repo.scan()?;
+let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 20 });
+println!("Page has {} items, {} total", page.items.len(), page.total_count);
+assert_eq!(page.has_more, stacks.len() > 20);
 
 // Read image bytes
 let bytes = repo.read_image(&stack.original.unwrap())?;

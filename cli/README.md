@@ -42,6 +42,7 @@ Scan a directory and list all photo stacks.
 photostax-cli scan /photos
 photostax-cli scan /photos --format json
 photostax-cli scan /photos --recursive
+photostax-cli scan /photos --limit 20 --offset 0
 ```
 
 ### info
@@ -61,6 +62,7 @@ Search for stacks matching text or filters.
 photostax-cli search /photos "vacation"
 photostax-cli search /photos --has-back
 photostax-cli search /photos --exif Make=EPSON
+photostax-cli search /photos "vacation" --limit 10 --offset 20
 ```
 
 ### export
@@ -91,6 +93,7 @@ photostax-cli metadata write /photos IMG_0001 --tag people="John,Jane"
 - **Scan directories** for FastFoto photo stacks (JPEG and TIFF)
 - **Inspect metadata** — View EXIF, XMP, and custom tags
 - **Search & filter** — Query by text, metadata, or stack properties
+- **Pagination** — Use `--limit` and `--offset` to page through results
 - **Export** — Generate JSON reports for scripting
 - **Metadata management** — Read and write custom tags
 

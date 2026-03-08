@@ -42,6 +42,11 @@ var query = new SearchQuery()
 
 var results = repo.Search(query);
 
+// Paginate results
+var page = repo.ScanPaginated(offset: 0, limit: 20);
+Console.WriteLine($"Page has {page.Items.Count} of {page.TotalCount} total");
+Console.WriteLine($"Has more: {page.HasMore}");
+
 // Read image bytes
 var imageData = repo.ReadImage(stacks[0].OriginalPath!);
 
@@ -63,6 +68,8 @@ The main entry point for working with photo repositories.
 | `ReadImage(path)` | Read raw image bytes |
 | `WriteMetadata(id, metadata)` | Write metadata to a stack |
 | `Search(query)` | Find stacks matching a query |
+| `ScanPaginated(offset, limit)` | Scan with pagination (offset/limit) |
+| `SearchPaginated(query, offset, limit)` | Search with pagination (offset/limit) |
 
 ### PhotoStack
 

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.4] - 2026-03-08
+
+### Added
+
+- Pagination support across all layers for efficient web rendering
+  - `PaginationParams` and `PaginatedResult<T>` types in `photostax-core`
+  - `paginate_stacks()` function to apply offset/limit to any collection of photo stacks
+  - `photostax_repo_scan_paginated` and `photostax_search_paginated` FFI functions with `FfiPaginatedResult`
+  - `--limit` and `--offset` flags on `scan` and `search` CLI commands
+  - `scanPaginated()` and `searchPaginated()` methods in TypeScript binding
+  - `ScanPaginated()` and `SearchPaginated()` methods in .NET binding
+
 ## [0.1.3] - 2026-03-07
 
 ### Fixed
@@ -49,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.1.4]: https://github.com/JeromySt/photostax/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/JeromySt/photostax/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/JeromySt/photostax/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/JeromySt/photostax/compare/v0.1.0...v0.1.1
