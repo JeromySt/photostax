@@ -1344,9 +1344,7 @@ mod tests {
 
     /// Create a real JPEG in the given directory with known dimensions.
     fn create_test_image_jpeg(path: &std::path::Path, width: u32, height: u32) {
-        let img = image::RgbImage::from_fn(width, height, |x, y| {
-            image::Rgb([x as u8, y as u8, 0])
-        });
+        let img = image::RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 0]));
         img.save(path).unwrap();
     }
 

@@ -380,11 +380,7 @@ impl Repository for LocalRepository {
         .map_err(|e| RepositoryError::Other(e.to_string()))
     }
 
-    fn rotate_stack(
-        &self,
-        id: &str,
-        rotation: Rotation,
-    ) -> Result<PhotoStack, RepositoryError> {
+    fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError> {
         let stack = self.get_stack(id)?;
 
         // Collect all image paths present in the stack
@@ -413,10 +409,7 @@ impl Repository for LocalRepository {
 /// Decode an image file, rotate the pixel data, and write it back.
 fn rotate_image_file(path: &Path, rotation: Rotation) -> Result<(), RepositoryError> {
     let img = image::open(path).map_err(|e| {
-        RepositoryError::Other(format!(
-            "Failed to decode image {}: {e}",
-            path.display()
-        ))
+        RepositoryError::Other(format!("Failed to decode image {}: {e}", path.display()))
     })?;
 
     let rotated = match rotation {
@@ -1010,9 +1003,7 @@ mod tests {
 
     /// Create a real JPEG file with known dimensions using the `image` crate.
     fn create_test_image_jpeg(path: &std::path::Path, width: u32, height: u32) {
-        let img = image::RgbImage::from_fn(width, height, |x, y| {
-            image::Rgb([x as u8, y as u8, 0])
-        });
+        let img = image::RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 0]));
         img.save(path).unwrap();
     }
 

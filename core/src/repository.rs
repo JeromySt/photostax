@@ -212,11 +212,7 @@ pub trait Repository {
     /// - [`RepositoryError::NotFound`] if the stack ID does not exist
     /// - [`RepositoryError::Io`] if any image file cannot be read or written
     /// - [`RepositoryError::Other`] if an image cannot be decoded
-    fn rotate_stack(
-        &self,
-        id: &str,
-        rotation: Rotation,
-    ) -> Result<PhotoStack, RepositoryError>;
+    fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError>;
 }
 
 #[cfg(test)]
