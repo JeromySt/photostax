@@ -146,6 +146,18 @@ jobs:
         path: native-libs
         pattern: '*-ffi'
 
+    - name: Stage native libraries for NuGet packaging
+      run: |
+        mkdir -p staged-native
+        # Windows x64
+        cp native-libs/photostax-windows-x86_64-ffi/photostax_ffi.dll staged-native/ 2>/dev/null || true
+        # Linux x64
+        cp native-libs/photostax-linux-x86_64-ffi/libphotostax_ffi.so staged-native/ 2>/dev/null || true
+        # macOS ARM64 (renamed to arm64 variant expected by the .csproj)
+        cp native-libs/photostax-macos-aarch64-ffi/libphotostax_ffi.dylib staged-native/libphotostax_ffi_arm64.dylib 2>/dev/null || true
+        echo "Staged native libraries:"
+        ls -la staged-native/
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
@@ -156,7 +168,7 @@ jobs:
       run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
     - name: Build .NET package
-      run: dotnet pack bindings/dotnet/Photostax.sln --configuration Release -p:Version=${{ steps.version.outputs.version }}
+      run: dotnet pack bindings/dotnet/Photostax.sln --configuration Release -p:Version=${{ steps.version.outputs.version }} -p:RustTargetDir=${{ github.workspace }}/staged-native
 
     - name: Publish to NuGet
       run: dotnet nuget push "bindings/dotnet/**/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
