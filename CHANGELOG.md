@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-14
+
+### Added
+
+- Stack-level image rotation across all layers
+  - `Rotation` enum (`Cw90`, `Ccw90`, `Cw180`) with `from_degrees()` / `as_degrees()` helpers
+  - `Repository::rotate_stack()` trait method — rotates all images (original, enhanced, back) at the pixel level
+  - `LocalRepository` implementation using the `image` crate for JPEG and TIFF decode/rotate/re-encode
+  - `photostax_rotate_stack` FFI function accepting stack ID and degree value (90, -90, 180, -180)
+  - `photostax-cli rotate <dir> <stack_id> --degrees <angle>` CLI command
+  - `rotateStack(stackId, degrees)` method in TypeScript binding
+  - `RotateStack(stackId, degrees)` method in .NET binding
+
 ## [0.1.5] - 2026-03-08
 
 ### Added
@@ -80,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.1.7]: https://github.com/JeromySt/photostax/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/JeromySt/photostax/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/JeromySt/photostax/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/JeromySt/photostax/compare/v0.1.2...v0.1.3

@@ -27,6 +27,70 @@ use serde::{Deserialize, Serialize};
 
 use crate::metadata::{detect_image_format, ImageFormat};
 
+/// Rotation angle for rotating all images in a [`PhotoStack`].
+///
+/// Each variant corresponds to a fixed rotation applied to every image
+/// file in the stack. Pixel data is re-encoded on disk.
+///
+/// # Mapping from Degrees
+///
+/// | Input | Variant |
+/// |-------|---------|
+/// | `90` | [`Cw90`](Self::Cw90) |
+/// | `-90` / `270` | [`Ccw90`](Self::Ccw90) |
+/// | `180` / `-180` | [`Cw180`](Self::Cw180) |
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::photo_stack::Rotation;
+///
+/// let r = Rotation::from_degrees(90).unwrap();
+/// assert_eq!(r, Rotation::Cw90);
+///
+/// let r = Rotation::from_degrees(-90).unwrap();
+/// assert_eq!(r, Rotation::Ccw90);
+///
+/// let r = Rotation::from_degrees(180).unwrap();
+/// assert_eq!(r, Rotation::Cw180);
+///
+/// assert_eq!(Rotation::from_degrees(-180), Some(Rotation::Cw180));
+/// assert_eq!(Rotation::from_degrees(45), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rotation {
+    /// 90° clockwise.
+    Cw90,
+    /// 90° counter-clockwise (equivalently 270° clockwise).
+    Ccw90,
+    /// 180° rotation (same as −180°).
+    Cw180,
+}
+
+impl Rotation {
+    /// Convert a degree value to a [`Rotation`].
+    ///
+    /// Accepts `90`, `-90`, `270`, `180`, and `-180`.
+    /// Returns `None` for unsupported angles.
+    pub fn from_degrees(degrees: i32) -> Option<Self> {
+        match degrees {
+            90 => Some(Self::Cw90),
+            -90 | 270 => Some(Self::Ccw90),
+            180 | -180 => Some(Self::Cw180),
+            _ => None,
+        }
+    }
+
+    /// Return the rotation as a positive degree value.
+    pub fn as_degrees(&self) -> i32 {
+        match self {
+            Self::Cw90 => 90,
+            Self::Ccw90 => 270,
+            Self::Cw180 => 180,
+        }
+    }
+}
+
 /// A unified representation of a single scanned photo from an Epson FastFoto scanner.
 ///
 /// Groups the original scan, enhanced version, and back-of-photo image into
@@ -676,5 +740,54 @@ mod tests {
         stack.original = Some(PathBuf::from("/photos/1984/IMG_001.jpg"));
         stack.enhanced = Some(PathBuf::from("/photos/other/IMG_001_a.jpg"));
         assert_eq!(stack.containing_folder(), Some("1984".to_string()));
+    }
+
+    // ── Rotation enum tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_rotation_from_degrees_90() {
+        assert_eq!(Rotation::from_degrees(90), Some(Rotation::Cw90));
+    }
+
+    #[test]
+    fn test_rotation_from_degrees_neg90() {
+        assert_eq!(Rotation::from_degrees(-90), Some(Rotation::Ccw90));
+    }
+
+    #[test]
+    fn test_rotation_from_degrees_270() {
+        assert_eq!(Rotation::from_degrees(270), Some(Rotation::Ccw90));
+    }
+
+    #[test]
+    fn test_rotation_from_degrees_180() {
+        assert_eq!(Rotation::from_degrees(180), Some(Rotation::Cw180));
+    }
+
+    #[test]
+    fn test_rotation_from_degrees_neg180() {
+        assert_eq!(Rotation::from_degrees(-180), Some(Rotation::Cw180));
+    }
+
+    #[test]
+    fn test_rotation_from_degrees_invalid() {
+        assert_eq!(Rotation::from_degrees(0), None);
+        assert_eq!(Rotation::from_degrees(45), None);
+        assert_eq!(Rotation::from_degrees(360), None);
+    }
+
+    #[test]
+    fn test_rotation_as_degrees() {
+        assert_eq!(Rotation::Cw90.as_degrees(), 90);
+        assert_eq!(Rotation::Ccw90.as_degrees(), 270);
+        assert_eq!(Rotation::Cw180.as_degrees(), 180);
+    }
+
+    #[test]
+    fn test_rotation_roundtrip_serde() {
+        let r = Rotation::Cw90;
+        let json = serde_json::to_string(&r).unwrap();
+        let deser: Rotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser, r);
     }
 }

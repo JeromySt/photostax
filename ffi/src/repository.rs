@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::ptr;
 
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::photo_stack::PhotoStack;
+use photostax_core::photo_stack::{PhotoStack, Rotation};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use serde::Deserialize;
@@ -338,6 +338,51 @@ pub unsafe extern "C" fn photostax_write_metadata(
     });
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
+}
+
+/// Rotate all images in a photo stack by the given number of degrees.
+///
+/// Accepted `degrees` values: `90`, `-90`, `180`, `-180`, `270`.
+/// Returns the updated stack with refreshed metadata on success.
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `stack_id` must be a valid null-terminated UTF-8 string
+/// - On success, caller owns the returned pointer and must call [`photostax_stack_free`]
+/// - Returns null on error; inspect the result for the error message
+#[no_mangle]
+pub unsafe extern "C" fn photostax_rotate_stack(
+    repo: *const PhotostaxRepo,
+    stack_id: *const c_char,
+    degrees: i32,
+) -> *mut FfiPhotoStack {
+    let result = panic::catch_unwind(|| {
+        if repo.is_null() {
+            return ptr::null_mut();
+        }
+        if stack_id.is_null() {
+            return ptr::null_mut();
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let id_str = match unsafe { CStr::from_ptr(stack_id) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let rotation = match Rotation::from_degrees(degrees) {
+            Some(r) => r,
+            None => return ptr::null_mut(),
+        };
+
+        match repo_ref.inner.rotate_stack(id_str, rotation) {
+            Ok(stack) => Box::into_raw(Box::new(photo_stack_to_ffi(&stack))),
+            Err(_) => ptr::null_mut(),
+        }
+    });
+
+    result.unwrap_or(ptr::null_mut())
 }
 
 /// Scan the repository and return a paginated result.
@@ -1292,6 +1337,82 @@ mod tests {
         );
 
         unsafe { photostax_paginated_result_free(page) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    // ── Rotate stack FFI tests ─────────────────────────────────────────────
+
+    /// Create a real JPEG in the given directory with known dimensions.
+    fn create_test_image_jpeg(path: &std::path::Path, width: u32, height: u32) {
+        let img = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([x as u8, y as u8, 0])
+        });
+        img.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_rotate_stack_null_repo() {
+        let id = CString::new("test").unwrap();
+        let result = unsafe { photostax_rotate_stack(ptr::null(), id.as_ptr(), 90) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_rotate_stack_null_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        let result = unsafe { photostax_rotate_stack(repo, ptr::null(), 90) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_rotate_stack_invalid_degrees() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        let id = CString::new("IMG_001").unwrap();
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 45) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_rotate_stack_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        let id = CString::new("nonexistent").unwrap();
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90) };
+        assert!(result.is_null());
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_rotate_stack_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+        create_test_image_jpeg(&dir.path().join("IMG_001_a.jpg"), 4, 2);
+
+        let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let repo = unsafe { photostax_repo_open(path.as_ptr()) };
+        let id = CString::new("IMG_001").unwrap();
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90) };
+        assert!(!result.is_null(), "rotate_stack should return a stack");
+
+        let stack = unsafe { &*result };
+        let id_str = unsafe { CStr::from_ptr(stack.id) }.to_str().unwrap();
+        assert_eq!(id_str, "IMG_001");
+
+        // Verify file dimensions changed (4×2 → 2×4 after 90° CW)
+        let img = image::open(dir.path().join("IMG_001.jpg")).unwrap();
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 4);
+
+        unsafe { photostax_stack_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 }

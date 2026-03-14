@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
-//! use photostax_core::photo_stack::{Metadata, PhotoStack};
+//! use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation};
 //! use std::path::Path;
 //!
 //! struct MyCloudRepository {
@@ -49,6 +49,11 @@
 //!         // Upload metadata to cloud
 //!         todo!()
 //!     }
+//!
+//!     fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError> {
+//!         // Download, rotate, re-upload
+//!         todo!()
+//!     }
 //! }
 //! ```
 //!
@@ -56,7 +61,7 @@
 
 use std::path::Path;
 
-use crate::photo_stack::{Metadata, PhotoStack};
+use crate::photo_stack::{Metadata, PhotoStack, Rotation};
 
 /// Errors that can occur when interacting with a photo repository.
 ///
@@ -187,6 +192,31 @@ pub trait Repository {
     ///
     /// Returns [`RepositoryError::Other`] if metadata cannot be written.
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError>;
+
+    /// Rotate all images in a photo stack by the given angle.
+    ///
+    /// Every image file present in the stack (original, enhanced, back) is
+    /// decoded, rotated at the pixel level, and re-encoded to disk in the
+    /// same format. After rotation the stack is returned with refreshed
+    /// metadata so callers can immediately use the updated state.
+    ///
+    /// # Supported Formats
+    ///
+    /// | Format | Behaviour |
+    /// |--------|-----------|
+    /// | JPEG | Decoded → rotated → re-encoded (lossy) |
+    /// | TIFF | Decoded → rotated → re-encoded |
+    ///
+    /// # Errors
+    ///
+    /// - [`RepositoryError::NotFound`] if the stack ID does not exist
+    /// - [`RepositoryError::Io`] if any image file cannot be read or written
+    /// - [`RepositoryError::Other`] if an image cannot be decoded
+    fn rotate_stack(
+        &self,
+        id: &str,
+        rotation: Rotation,
+    ) -> Result<PhotoStack, RepositoryError>;
 }
 
 #[cfg(test)]

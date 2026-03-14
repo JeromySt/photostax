@@ -274,6 +274,45 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Rotates all images in a photo stack by the given number of degrees.
+    /// </summary>
+    /// <remarks>
+    /// Every image file (original, enhanced, back) is decoded, rotated at the
+    /// pixel level, and re-encoded on disk.  JPEG files are re-encoded (lossy).
+    /// Returns the refreshed stack with updated metadata.
+    /// </remarks>
+    /// <param name="stackId">The stack identifier.</param>
+    /// <param name="degrees">Rotation angle: 90, -90, 180, or -180.</param>
+    /// <returns>The updated photo stack with refreshed metadata.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="stackId"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="degrees"/> is not a valid rotation angle.</exception>
+    /// <exception cref="PhotostaxException">Thrown when the stack is not found or rotation fails.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PhotoStack RotateStack(string stackId, int degrees)
+    {
+        ArgumentNullException.ThrowIfNull(stackId);
+        ThrowIfDisposed();
+
+        if (degrees != 90 && degrees != -90 && degrees != 180 && degrees != -180 && degrees != 270)
+        {
+            throw new ArgumentException(
+                $"Invalid rotation: {degrees}°. Accepted values: 90, -90, 180, -180.",
+                nameof(degrees));
+        }
+
+        var ptr = NativeMethods.photostax_rotate_stack(
+            _handle.DangerousGetHandle(), stackId, degrees);
+
+        if (ptr == IntPtr.Zero)
+        {
+            throw new PhotostaxException($"Failed to rotate stack '{stackId}' by {degrees}°");
+        }
+
+        using var stackHandle = StackSafeHandle.FromPointer(ptr);
+        return ConvertStack(Marshal.PtrToStructure<FfiPhotoStack>(ptr));
+    }
+
+    /// <summary>
     /// Disposes the repository and releases all resources.
     /// </summary>
     public void Dispose()

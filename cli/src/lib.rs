@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::ImageFormat;
-use photostax_core::photo_stack::{Metadata, PhotoStack};
+use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
@@ -151,6 +151,28 @@ pub enum Commands {
         /// Output file (default: stdout)
         #[arg(long, short)]
         output: Option<PathBuf>,
+    },
+
+    /// Rotate all images in a photo stack
+    #[command(
+        long_about = "Rotate every image file in a photo stack by the given angle.\n\n\
+        Pixel data is re-encoded on disk (lossy for JPEG). Accepted degree\n\
+        values: 90 (clockwise), -90 (counter-clockwise), 180, -180."
+    )]
+    Rotate {
+        /// Directory containing FastFoto scans
+        directory: PathBuf,
+
+        /// Stack ID (base filename without suffix or extension)
+        stack_id: String,
+
+        /// Rotation in degrees (90, -90, 180, -180)
+        #[arg(long, short, allow_hyphen_values = true)]
+        degrees: i32,
+
+        /// Output format
+        #[arg(long, short, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
     },
 }
 
@@ -308,6 +330,13 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Commands::Export { directory, output } => {
             cmd_export(out, err, directory, output.as_deref())
         }
+
+        Commands::Rotate {
+            directory,
+            stack_id,
+            degrees,
+            format,
+        } => cmd_rotate(out, err, directory, stack_id, *degrees, *format),
     }
 }
 
@@ -661,6 +690,55 @@ pub fn cmd_export(
         None => {
             let _ = writeln!(out, "{json}");
         }
+    }
+
+    EXIT_SUCCESS
+}
+
+/// Rotate command implementation
+pub fn cmd_rotate(
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    directory: &PathBuf,
+    stack_id: &str,
+    degrees: i32,
+    format: OutputFormat,
+) -> i32 {
+    let rotation = match Rotation::from_degrees(degrees) {
+        Some(r) => r,
+        None => {
+            let _ = writeln!(
+                err,
+                "Invalid rotation: {degrees}°. Accepted values: 90, -90, 180, -180"
+            );
+            return EXIT_ERROR;
+        }
+    };
+
+    let repo = LocalRepository::new(directory);
+
+    let stack = match repo.rotate_stack(stack_id, rotation) {
+        Ok(s) => s,
+        Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
+            let _ = writeln!(err, "Stack not found: {stack_id}");
+            return EXIT_NOT_FOUND;
+        }
+        Err(e) => {
+            let _ = writeln!(err, "Error rotating stack: {e}");
+            return EXIT_ERROR;
+        }
+    };
+
+    let _ = writeln!(
+        out,
+        "Rotated {} image(s) in stack '{}' by {}°",
+        stack.image_count(),
+        stack.id,
+        rotation.as_degrees()
+    );
+
+    if format == OutputFormat::Json {
+        let _ = writeln!(out, "{}", serde_json::to_string_pretty(&stack).unwrap());
     }
 
     EXIT_SUCCESS
@@ -2542,5 +2620,129 @@ mod tests {
             &tags,
         );
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
+    }
+
+    // ── Rotate command tests ───────────────────────────────────────────────
+
+    /// Create a real JPEG file with known dimensions using the `image` crate.
+    fn create_test_image_jpeg(path: &std::path::Path, width: u32, height: u32) {
+        let img = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([x as u8, y as u8, 0])
+        });
+        img.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_cmd_rotate_success() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+        create_test_image_jpeg(&dir.path().join("IMG_001_a.jpg"), 4, 2);
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &dir.path().to_path_buf(),
+            "IMG_001",
+            90,
+            OutputFormat::Table,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("Rotated"));
+        assert!(output.contains("IMG_001"));
+        assert!(output.contains("90°"));
+    }
+
+    #[test]
+    fn test_cmd_rotate_negative_90() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &dir.path().to_path_buf(),
+            "IMG_001",
+            -90,
+            OutputFormat::Table,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("270°"));
+    }
+
+    #[test]
+    fn test_cmd_rotate_180() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &dir.path().to_path_buf(),
+            "IMG_001",
+            180,
+            OutputFormat::Table,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn test_cmd_rotate_invalid_degrees() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &PathBuf::from("."),
+            "test",
+            45,
+            OutputFormat::Table,
+        );
+        assert_eq!(code, EXIT_ERROR);
+        let err_output = String::from_utf8(err).unwrap();
+        assert!(err_output.contains("Invalid rotation"));
+    }
+
+    #[test]
+    fn test_cmd_rotate_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &dir.path().to_path_buf(),
+            "nonexistent",
+            90,
+            OutputFormat::Table,
+        );
+        assert_eq!(code, EXIT_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_cmd_rotate_json_output() {
+        let dir = tempfile::tempdir().unwrap();
+        create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = cmd_rotate(
+            &mut out,
+            &mut err,
+            &dir.path().to_path_buf(),
+            "IMG_001",
+            90,
+            OutputFormat::Json,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("\"id\": \"IMG_001\""));
     }
 }
