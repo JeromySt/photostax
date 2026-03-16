@@ -8,7 +8,6 @@ use std::os::raw::c_char;
 use std::panic;
 use std::ptr;
 
-use photostax_core::repository::Repository;
 use photostax_core::search::SearchQuery;
 use photostax_core::snapshot::ScanSnapshot;
 
