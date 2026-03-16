@@ -16,6 +16,11 @@
 typedef struct PhotostaxRepo PhotostaxRepo;
 
 /**
+ * Opaque handle to a scan snapshot.
+ */
+typedef struct PhotostaxSnapshot PhotostaxSnapshot;
+
+/**
  * Result type for FFI calls.
  *
  * On success, `success` is true and `error_message` is null.
@@ -136,6 +141,32 @@ typedef struct FfiPaginatedResult {
    */
   bool has_more;
 } FfiPaginatedResult;
+
+/**
+ * Staleness information returned by [`photostax_snapshot_check_status`].
+ */
+typedef struct FfiSnapshotStatus {
+  /**
+   * `true` when the filesystem no longer matches the snapshot.
+   */
+  bool is_stale;
+  /**
+   * Number of stacks captured in the snapshot.
+   */
+  uintptr_t snapshot_count;
+  /**
+   * Number of stacks currently on disk.
+   */
+  uintptr_t current_count;
+  /**
+   * New stacks on disk that were not in the snapshot.
+   */
+  uintptr_t added;
+  /**
+   * Snapshot stacks no longer present on disk.
+   */
+  uintptr_t removed;
+} FfiSnapshotStatus;
 
 /**
  * Create a new local repository handle.
@@ -479,3 +510,90 @@ struct FfiPaginatedResult photostax_search_paginated(const struct PhotostaxRepo 
                                                      const char *query_json,
                                                      uintptr_t offset,
                                                      uintptr_t limit);
+
+/**
+ * Create a snapshot from a lightweight scan (no file-based metadata).
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - Returns null on error
+ * - Caller owns the returned pointer and must call [`photostax_snapshot_free`]
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ */
+struct PhotostaxSnapshot *photostax_create_snapshot(const struct PhotostaxRepo *repo,
+                                                    bool load_metadata);
+
+/**
+ * Get the total number of stacks in the snapshot.
+ *
+ * # Safety
+ *
+ * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
+ * - Returns 0 on null pointer
+ */
+uintptr_t photostax_snapshot_total_count(const struct PhotostaxSnapshot *snapshot);
+
+/**
+ * Get a page of stacks from the snapshot.
+ *
+ * This is a pure in-memory operation — it never accesses the filesystem
+ * and always returns a consistent page.
+ *
+ * # Safety
+ *
+ * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
+ * - Returns empty result on null pointer
+ * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ *
+ * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ */
+struct FfiPaginatedResult photostax_snapshot_get_page(const struct PhotostaxSnapshot *snapshot,
+                                                      uintptr_t offset,
+                                                      uintptr_t limit);
+
+/**
+ * Check whether a snapshot is still current.
+ *
+ * Performs a fast re-scan (no metadata I/O) and compares against the
+ * snapshot to report added/removed stacks.
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
+ * - Returns a zeroed status with `is_stale = true` on error
+ *
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
+ */
+struct FfiSnapshotStatus photostax_snapshot_check_status(const struct PhotostaxRepo *repo,
+                                                         const struct PhotostaxSnapshot *snapshot);
+
+/**
+ * Create a new snapshot by filtering an existing one.
+ *
+ * The `query_json` format is the same as [`photostax_search`].
+ * Returns a new snapshot containing only matching stacks.
+ *
+ * # Safety
+ *
+ * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
+ * - `query_json` must be a valid null-terminated JSON string
+ * - Returns null on error
+ * - Caller owns the returned pointer and must call [`photostax_snapshot_free`]
+ *
+ * [`photostax_search`]: crate::search::photostax_search
+ */
+struct PhotostaxSnapshot *photostax_snapshot_filter(const struct PhotostaxSnapshot *snapshot,
+                                                    const char *query_json);
+
+/**
+ * Free a snapshot handle.
+ *
+ * # Safety
+ *
+ * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
+ *   or [`photostax_snapshot_filter`], or null (no-op).
+ */
+void photostax_snapshot_free(struct PhotostaxSnapshot *snapshot);

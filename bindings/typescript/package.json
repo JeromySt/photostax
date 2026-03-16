@@ -1,6 +1,6 @@
 {
   "name": "@photostax/core",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Unified photo stack library for Epson FastFoto repositories - Node.js binding",
   "main": "index.js",
   "types": "index.d.ts",

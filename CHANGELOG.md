@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-16
+
+### Added
+
+- Snapshot-based pagination for consistent page counts across all layers
+  - `ScanSnapshot` captures a point-in-time view of stacks — page requests always return consistent totals
+  - `ScanSnapshot::get_page(offset, limit)` is pure in-memory and never fails, even if files are deleted
+  - `ScanSnapshot::filter(query)` creates a filtered sub-snapshot for search+paginate workflows
+  - `ScanSnapshot::check_status(repo)` detects staleness (added/removed files) so callers know when to refresh
+  - `SnapshotStatus` reports `is_stale`, `added`, `removed`, `snapshot_count`, `current_count`
+  - FFI: `photostax_create_snapshot`, `_get_page`, `_total_count`, `_check_status`, `_filter`, `_free`
+  - TypeScript: `createSnapshot()`, `checkSnapshotStatus()` on repo; `ScanSnapshot` class with `getPage()`, `filter()`, `totalCount`
+  - .NET: `CreateSnapshot()`, `CheckSnapshotStatus()` on repo; `ScanSnapshot : IDisposable` with `GetPage()`, `Filter()`
+
 ## [0.1.8] - 2026-03-14
 
 ### Added
@@ -104,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.1.9]: https://github.com/JeromySt/photostax/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/JeromySt/photostax/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/JeromySt/photostax/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/JeromySt/photostax/compare/v0.1.4...v0.1.5

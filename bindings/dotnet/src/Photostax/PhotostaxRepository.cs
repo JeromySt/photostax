@@ -313,6 +313,58 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Create a point-in-time snapshot for consistent pagination.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot captures the current set of stacks so that page requests
+    /// always see the same total count and ordering, even if files are added
+    /// or removed on disk between page calls.
+    /// </remarks>
+    /// <param name="loadMetadata">When true, loads EXIF/XMP/sidecar metadata for every stack.</param>
+    /// <returns>A frozen snapshot that supports <see cref="ScanSnapshot.GetPage"/> and <see cref="ScanSnapshot.Filter"/>.</returns>
+    /// <exception cref="PhotostaxException">Thrown when the scan fails.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public ScanSnapshot CreateSnapshot(bool loadMetadata = false)
+    {
+        ThrowIfDisposed();
+
+        var ptr = NativeMethods.photostax_create_snapshot(
+            _handle.DangerousGetHandle(), loadMetadata);
+
+        if (ptr == IntPtr.Zero)
+            throw new PhotostaxException("Failed to create snapshot.");
+
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr));
+    }
+
+    /// <summary>
+    /// Check whether a snapshot is still current.
+    /// </summary>
+    /// <remarks>
+    /// Performs a fast re-scan and compares against the snapshot to detect
+    /// added or removed stacks. Use this to decide when to create a new snapshot.
+    /// </remarks>
+    /// <param name="snapshot">The snapshot to check.</param>
+    /// <returns>Status information including staleness and change counts.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public SnapshotStatus CheckSnapshotStatus(ScanSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ThrowIfDisposed();
+
+        var status = NativeMethods.photostax_snapshot_check_status(
+            _handle.DangerousGetHandle(),
+            snapshot.Handle);
+
+        return new SnapshotStatus(
+            status.IsStale,
+            (int)status.SnapshotCount,
+            (int)status.CurrentCount,
+            (int)status.Added,
+            (int)status.Removed);
+    }
+
+    /// <summary>
     /// Disposes the repository and releases all resources.
     /// </summary>
     public void Dispose()
@@ -375,7 +427,7 @@ public sealed class PhotostaxRepository : IDisposable
         return stacks;
     }
 
-    private static PhotoStack ConvertStack(FfiPhotoStack ffi)
+    internal static PhotoStack ConvertStack(FfiPhotoStack ffi)
     {
         var id = Marshal.PtrToStringUTF8(ffi.Id) ?? throw new PhotostaxException("Stack ID is null");
         var original = ffi.Original != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Original) : null;

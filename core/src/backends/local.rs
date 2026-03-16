@@ -1107,4 +1107,134 @@ mod tests {
         assert_eq!(rotated.id, "IMG_001");
         assert!(rotated.original.is_some());
     }
+
+    // ── Snapshot integration tests ──────────────────────────────
+
+    fn testdata_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("testdata")
+    }
+
+    #[test]
+    fn test_snapshot_from_scan() {
+        let repo = LocalRepository::new(testdata_path());
+        let snap = crate::snapshot::ScanSnapshot::from_scan(&repo).unwrap();
+        assert!(snap.total_count() > 0);
+        assert_eq!(snap.ids().len(), snap.total_count());
+    }
+
+    #[test]
+    fn test_snapshot_from_scan_with_metadata() {
+        let repo = LocalRepository::new(testdata_path());
+        let snap = crate::snapshot::ScanSnapshot::from_scan_with_metadata(&repo).unwrap();
+        assert!(snap.total_count() > 0);
+        // Metadata should be populated
+        let has_exif = snap
+            .stacks()
+            .iter()
+            .any(|s| !s.metadata.exif_tags.is_empty());
+        assert!(has_exif, "At least one stack should have EXIF tags");
+    }
+
+    #[test]
+    fn test_snapshot_page_consistency() {
+        let repo = LocalRepository::new(testdata_path());
+        let snap = crate::snapshot::ScanSnapshot::from_scan(&repo).unwrap();
+        let total = snap.total_count();
+
+        let page1 = snap.get_page(0, 2);
+        let page2 = snap.get_page(2, 2);
+
+        // total_count is identical across pages
+        assert_eq!(page1.total_count, total);
+        assert_eq!(page2.total_count, total);
+
+        // pages don't overlap (IDs are different)
+        if page1.items.len() > 0 && page2.items.len() > 0 {
+            assert_ne!(page1.items[0].id, page2.items[0].id);
+        }
+    }
+
+    #[test]
+    fn test_snapshot_check_status_unchanged() {
+        let repo = LocalRepository::new(testdata_path());
+        let snap = crate::snapshot::ScanSnapshot::from_scan(&repo).unwrap();
+        let status = snap.check_status(&repo).unwrap();
+
+        assert!(!status.is_stale);
+        assert_eq!(status.added, 0);
+        assert_eq!(status.removed, 0);
+        assert_eq!(status.snapshot_count, status.current_count);
+    }
+
+    #[test]
+    fn test_snapshot_check_status_after_addition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("IMG_001.jpg"), b"fake jpeg").unwrap();
+
+        let repo = LocalRepository::new(dir);
+        let snap = crate::snapshot::ScanSnapshot::from_scan(&repo).unwrap();
+        assert_eq!(snap.total_count(), 1);
+
+        // Add a new file
+        std::fs::write(dir.join("IMG_002.jpg"), b"fake jpeg 2").unwrap();
+
+        let status = snap.check_status(&repo).unwrap();
+        assert!(status.is_stale);
+        assert_eq!(status.added, 1);
+        assert_eq!(status.removed, 0);
+        assert_eq!(status.snapshot_count, 1);
+        assert_eq!(status.current_count, 2);
+    }
+
+    #[test]
+    fn test_snapshot_check_status_after_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("IMG_001.jpg"), b"fake").unwrap();
+        std::fs::write(dir.join("IMG_002.jpg"), b"fake").unwrap();
+
+        let repo = LocalRepository::new(dir);
+        let snap = crate::snapshot::ScanSnapshot::from_scan(&repo).unwrap();
+        assert_eq!(snap.total_count(), 2);
+
+        // Remove a file
+        std::fs::remove_file(dir.join("IMG_001.jpg")).unwrap();
+
+        let status = snap.check_status(&repo).unwrap();
+        assert!(status.is_stale);
+        assert_eq!(status.added, 0);
+        assert_eq!(status.removed, 1);
+        assert_eq!(status.snapshot_count, 2);
+        assert_eq!(status.current_count, 1);
+
+        // Snapshot pages still work after deletion (in-memory data intact)
+        let page = snap.get_page(0, 10);
+        assert_eq!(page.total_count, 2); // snapshot count unchanged
+        assert_eq!(page.items.len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_filter_then_page() {
+        let repo = LocalRepository::new(testdata_path());
+        let snap = crate::snapshot::ScanSnapshot::from_scan_with_metadata(&repo).unwrap();
+
+        let query = crate::search::SearchQuery::new().with_text("FamilyPhotos");
+        let filtered = snap.filter(&query);
+
+        assert!(filtered.total_count() > 0);
+        assert!(filtered.total_count() <= snap.total_count());
+
+        let page = filtered.get_page(0, 100);
+        assert_eq!(page.total_count, filtered.total_count());
+        for item in &page.items {
+            assert!(
+                item.id.contains("FamilyPhotos"),
+                "filtered item {} should match",
+                item.id
+            );
+        }
+    }
 }

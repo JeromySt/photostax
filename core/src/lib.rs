@@ -42,6 +42,7 @@
 //! - [`repository`] — [`Repository`] trait for storage backend abstraction
 //! - [`scanner`] — Directory scanning and file grouping logic
 //! - [`search`] — Query builder for filtering photo stacks by metadata
+//! - [`snapshot`] — Point-in-time snapshot for consistent pagination
 //! - [`metadata`] — EXIF, XMP, and sidecar database support
 //! - [`backends`] — Storage backend implementations (local filesystem, cloud planned)
 //!
@@ -69,3 +70,4 @@ pub mod photo_stack;
 pub mod repository;
 pub mod scanner;
 pub mod search;
+pub mod snapshot;

@@ -169,3 +169,37 @@ internal sealed class BytesSafeHandle : SafeHandle
         return bytes;
     }
 }
+
+/// <summary>
+/// Safe handle for snapshot pointers.
+/// </summary>
+internal sealed class SnapshotSafeHandle : SafeHandle
+{
+    /// <summary>
+    /// Creates a new snapshot safe handle.
+    /// </summary>
+    public SnapshotSafeHandle() : base(IntPtr.Zero, true)
+    {
+    }
+
+    /// <inheritdoc/>
+    public override bool IsInvalid => handle == IntPtr.Zero;
+
+    /// <inheritdoc/>
+    [ExcludeFromCodeCoverage]
+    protected override bool ReleaseHandle()
+    {
+        NativeMethods.photostax_snapshot_free(handle);
+        return true;
+    }
+
+    /// <summary>
+    /// Creates a safe handle from a raw pointer.
+    /// </summary>
+    internal static SnapshotSafeHandle FromPointer(IntPtr ptr)
+    {
+        var safeHandle = new SnapshotSafeHandle();
+        safeHandle.SetHandle(ptr);
+        return safeHandle;
+    }
+}

@@ -250,4 +250,51 @@ internal static partial class NativeMethods
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
         int degrees);
+
+    // ── Snapshot functions ──────────────────────────────────────
+
+    /// <summary>
+    /// Create a point-in-time snapshot for consistent pagination.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_create_snapshot(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.U1)] bool loadMetadata);
+
+    /// <summary>
+    /// Get the total number of stacks in the snapshot.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern nuint photostax_snapshot_total_count(IntPtr snapshot);
+
+    /// <summary>
+    /// Get a page of stacks from the snapshot.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiPaginatedResult photostax_snapshot_get_page(
+        IntPtr snapshot,
+        nuint offset,
+        nuint limit);
+
+    /// <summary>
+    /// Check whether a snapshot is still current.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiSnapshotStatus photostax_snapshot_check_status(
+        IntPtr repo,
+        IntPtr snapshot);
+
+    /// <summary>
+    /// Create a filtered snapshot from an existing one.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_snapshot_filter(
+        IntPtr snapshot,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string queryJson);
+
+    /// <summary>
+    /// Free a snapshot handle.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void photostax_snapshot_free(IntPtr snapshot);
 }

@@ -106,3 +106,36 @@ internal struct FfiPaginatedResult
     [MarshalAs(UnmanagedType.I1)]
     public bool HasMore;
 }
+
+/// <summary>
+/// Staleness information for a snapshot from FFI.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiSnapshotStatus
+{
+    /// <summary>
+    /// True when the filesystem no longer matches the snapshot.
+    /// </summary>
+    [MarshalAs(UnmanagedType.I1)]
+    public bool IsStale;
+
+    /// <summary>
+    /// Number of stacks in the snapshot.
+    /// </summary>
+    public nuint SnapshotCount;
+
+    /// <summary>
+    /// Number of stacks currently on disk.
+    /// </summary>
+    public nuint CurrentCount;
+
+    /// <summary>
+    /// New stacks on disk that were not in the snapshot.
+    /// </summary>
+    public nuint Added;
+
+    /// <summary>
+    /// Snapshot stacks no longer present on disk.
+    /// </summary>
+    public nuint Removed;
+}

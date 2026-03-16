@@ -8,6 +8,7 @@
 pub mod metadata;
 pub mod repository;
 pub mod search;
+pub mod snapshot;
 pub mod types;
 
 use std::ffi::CStr;

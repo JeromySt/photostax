@@ -13,6 +13,7 @@ use photostax_core::backends::local::LocalRepository;
 use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation};
 use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
+use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
 
 /// Metadata associated with a photo stack.
 ///
@@ -421,5 +422,119 @@ impl PhotostaxRepository {
             .rotate_stack(&stack_id, rotation)
             .map(JsPhotoStack::from)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Create a point-in-time snapshot for consistent pagination.
+    ///
+    /// The snapshot captures the current set of stacks so that page requests
+    /// always see the same total count and ordering, even if files are added
+    /// or removed on disk between page calls.
+    ///
+    /// @param loadMetadata - When true, loads EXIF/XMP/sidecar metadata for every stack
+    /// @returns A frozen snapshot that supports `getPage()` and `filter()`
+    /// @throws Error if the scan fails
+    #[napi]
+    pub fn create_snapshot(&self, load_metadata: Option<bool>) -> napi::Result<JsScanSnapshot> {
+        let snapshot = if load_metadata.unwrap_or(false) {
+            CoreScanSnapshot::from_scan_with_metadata(&self.inner)
+        } else {
+            CoreScanSnapshot::from_scan(&self.inner)
+        };
+
+        snapshot
+            .map(|s| JsScanSnapshot { inner: s })
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Check whether a snapshot is still current.
+    ///
+    /// Performs a fast re-scan and compares against the snapshot to detect
+    /// added or removed stacks. Use this to decide when to create a new snapshot.
+    ///
+    /// @param snapshot - The snapshot to check
+    /// @returns Status information including staleness and change counts
+    /// @throws Error if the re-scan fails
+    #[napi]
+    pub fn check_snapshot_status(&self, snapshot: &JsScanSnapshot) -> napi::Result<JsSnapshotStatus> {
+        snapshot
+            .inner
+            .check_status(&self.inner)
+            .map(|s| JsSnapshotStatus {
+                is_stale: s.is_stale,
+                snapshot_count: s.snapshot_count as u32,
+                current_count: s.current_count as u32,
+                added: s.added as u32,
+                removed: s.removed as u32,
+            })
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+}
+
+/// Result of checking a snapshot's staleness.
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsSnapshotStatus {
+    /// True when the filesystem no longer matches the snapshot.
+    pub is_stale: bool,
+    /// Number of stacks in the snapshot.
+    pub snapshot_count: u32,
+    /// Number of stacks currently on disk.
+    pub current_count: u32,
+    /// New stacks on disk that were not in the snapshot.
+    pub added: u32,
+    /// Snapshot stacks no longer present on disk.
+    pub removed: u32,
+}
+
+/// A point-in-time snapshot of scanned photo stacks.
+///
+/// Pages from a snapshot always have a consistent total count, even if the
+/// underlying filesystem changes between page requests.
+#[napi]
+pub struct JsScanSnapshot {
+    inner: CoreScanSnapshot,
+}
+
+#[napi]
+impl JsScanSnapshot {
+    /// Total number of stacks in the snapshot.
+    #[napi(getter)]
+    pub fn total_count(&self) -> u32 {
+        self.inner.total_count() as u32
+    }
+
+    /// Get a page of stacks from the snapshot.
+    ///
+    /// This is a pure in-memory operation — it never touches the filesystem
+    /// and always returns a consistent page.
+    ///
+    /// @param offset - Number of stacks to skip (0-based)
+    /// @param limit - Maximum number of stacks to return per page
+    /// @returns Paginated result with items and metadata
+    #[napi]
+    pub fn get_page(&self, offset: u32, limit: u32) -> JsPaginatedResult {
+        let paginated = self.inner.get_page(offset as usize, limit as usize);
+        JsPaginatedResult {
+            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            total_count: paginated.total_count as u32,
+            offset: paginated.offset as u32,
+            limit: paginated.limit as u32,
+            has_more: paginated.has_more,
+        }
+    }
+
+    /// Filter the snapshot by a search query, returning a new snapshot.
+    ///
+    /// The resulting snapshot contains only stacks matching the query.
+    /// All page counts are recalculated against the filtered set.
+    ///
+    /// @param query - Search criteria (all filters are AND'd together)
+    /// @returns A new snapshot containing only matching stacks
+    #[napi]
+    pub fn filter(&self, query: JsSearchQuery) -> JsScanSnapshot {
+        let core_query: CoreSearchQuery = query.into();
+        JsScanSnapshot {
+            inner: self.inner.filter(&core_query),
+        }
     }
 }
