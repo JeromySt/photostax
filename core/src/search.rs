@@ -14,6 +14,10 @@
 //!     .with_exif_filter("Make", "EPSON")
 //!     .with_has_back(true)
 //!     .with_text("birthday");
+//!
+//! // Filter to specific stack IDs:
+//! let targeted = SearchQuery::new()
+//!     .with_ids(vec!["IMG_001".into(), "IMG_002".into()]);
 //! ```
 //!
 //! ## Filter Composition
@@ -183,6 +187,9 @@ pub struct SearchQuery {
 
     /// Filter by presence of enhanced scan (`Some(true)` = must have, `Some(false)` = must not have).
     pub has_enhanced: Option<bool>,
+
+    /// Allowlist of stack IDs. When set, only stacks whose ID is in this list are returned.
+    pub stack_ids: Option<Vec<String>>,
 }
 
 impl SearchQuery {
@@ -297,6 +304,28 @@ impl SearchQuery {
         self.has_enhanced = Some(has_enhanced);
         self
     }
+
+    /// Filter to only include stacks whose ID is in the given list.
+    ///
+    /// This acts as an allowlist — only stacks with matching IDs are returned.
+    /// Combined with AND logic like all other filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - List of stack IDs to include
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// let query = SearchQuery::new()
+    ///     .with_ids(vec!["IMG_001".to_string(), "IMG_002".to_string()]);
+    /// ```
+    pub fn with_ids(mut self, ids: Vec<String>) -> Self {
+        self.stack_ids = Some(ids);
+        self
+    }
 }
 
 /// Filter a collection of photo stacks based on a search query.
@@ -336,6 +365,13 @@ pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoSta
 
 /// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    // Check stack ID allowlist
+    if let Some(ref ids) = query.stack_ids {
+        if !ids.iter().any(|id| id == &stack.id) {
+            return false;
+        }
+    }
+
     // Check structural filters
     if let Some(has_back) = query.has_back {
         if stack.back.is_some() != has_back {
@@ -671,6 +707,7 @@ mod tests {
         assert!(q.text_query.is_none());
         assert!(q.has_back.is_none());
         assert!(q.has_enhanced.is_none());
+        assert!(q.stack_ids.is_none());
     }
 
     #[test]
@@ -902,5 +939,78 @@ mod tests {
         assert_eq!(page.items[1].id, "IMG_003");
         assert_eq!(page.total_count, 3);
         assert!(page.has_more);
+    }
+
+    // ── Stack ID allowlist tests ──────────────────────────────────
+
+    #[test]
+    fn test_filter_by_stack_ids() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+            make_stack("IMG_003", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_ids(vec!["IMG_001".to_string(), "IMG_003".to_string()]);
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[1].id, "IMG_003");
+    }
+
+    #[test]
+    fn test_filter_by_stack_ids_empty_list() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_ids(vec![]);
+        let results = filter_stacks(&stacks, &q);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_stack_ids_no_match() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+        ];
+
+        let q = SearchQuery::new().with_ids(vec!["NONEXISTENT".to_string()]);
+        let results = filter_stacks(&stacks, &q);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_stack_ids_combined_with_other_filters() {
+        let stacks = vec![
+            make_stack("IMG_001", true, vec![("Make", "EPSON")], vec![]),
+            make_stack("IMG_002", true, vec![("Make", "Canon")], vec![]),
+            make_stack("IMG_003", false, vec![("Make", "EPSON")], vec![]),
+        ];
+
+        // IDs + has_back + EXIF filter — only IMG_001 matches all three
+        let q = SearchQuery::new()
+            .with_ids(vec!["IMG_001".to_string(), "IMG_002".to_string()])
+            .with_has_back(true)
+            .with_exif_filter("Make", "EPSON");
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "IMG_001");
+    }
+
+    #[test]
+    fn test_filter_by_stack_ids_none_returns_all() {
+        let stacks = vec![
+            make_stack("IMG_001", false, vec![], vec![]),
+            make_stack("IMG_002", false, vec![], vec![]),
+        ];
+
+        // stack_ids is None (default) — no ID filtering
+        let q = SearchQuery::new();
+        assert!(q.stack_ids.is_none());
+        let results = filter_stacks(&stacks, &q);
+        assert_eq!(results.len(), 2);
     }
 }

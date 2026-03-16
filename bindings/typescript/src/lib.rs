@@ -104,6 +104,8 @@ pub struct JsSearchQuery {
     pub has_back: Option<bool>,
     /// Filter by presence of enhanced scan
     pub has_enhanced: Option<bool>,
+    /// Allowlist of stack IDs — only stacks with matching IDs are returned
+    pub stack_ids: Option<Vec<String>>,
 }
 
 impl From<JsSearchQuery> for CoreSearchQuery {
@@ -132,6 +134,10 @@ impl From<JsSearchQuery> for CoreSearchQuery {
 
         if let Some(has_enhanced) = q.has_enhanced {
             query = query.with_has_enhanced(has_enhanced);
+        }
+
+        if let Some(ids) = q.stack_ids {
+            query = query.with_ids(ids);
         }
 
         query

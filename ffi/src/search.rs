@@ -105,6 +105,8 @@ pub unsafe extern "C" fn photostax_search(
             has_back: Option<bool>,
             #[serde(default)]
             has_enhanced: Option<bool>,
+            #[serde(default)]
+            stack_ids: Option<Vec<String>>,
         }
 
         let input: QueryInput = match serde_json::from_str(query_str) {
@@ -128,6 +130,9 @@ pub unsafe extern "C" fn photostax_search(
         }
         if let Some(has_enhanced) = input.has_enhanced {
             query = query.with_has_enhanced(has_enhanced);
+        }
+        if let Some(ids) = input.stack_ids {
+            query = query.with_ids(ids);
         }
 
         // Get all stacks with metadata (search needs metadata to filter)
@@ -199,6 +204,8 @@ pub unsafe extern "C" fn photostax_search_paginated(
             has_back: Option<bool>,
             #[serde(default)]
             has_enhanced: Option<bool>,
+            #[serde(default)]
+            stack_ids: Option<Vec<String>>,
         }
 
         let input: QueryInput = match serde_json::from_str(query_str) {
@@ -221,6 +228,9 @@ pub unsafe extern "C" fn photostax_search_paginated(
         }
         if let Some(has_enhanced) = input.has_enhanced {
             query = query.with_has_enhanced(has_enhanced);
+        }
+        if let Some(ids) = input.stack_ids {
+            query = query.with_ids(ids);
         }
 
         let stacks = match repo_ref.inner.scan_with_metadata() {
@@ -574,6 +584,75 @@ mod tests {
         assert_eq!(result.len, 0);
         assert!(result.data.is_null());
         // total_count is still the full count
+        assert!(!result.has_more);
+
+        unsafe { photostax_paginated_result_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_search_with_stack_ids_filter() {
+        let repo = open_testdata_repo();
+        // Get all stacks first to find valid IDs
+        let all_query = CString::new("{}").unwrap();
+        let all_result = unsafe { photostax_search(repo, all_query.as_ptr()) };
+        assert!(all_result.len > 0, "Expected stacks from testdata");
+
+        let first_id = unsafe { CStr::from_ptr((*all_result.data).id) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { photostax_stack_array_free(all_result) };
+
+        // Search with stack_ids containing only the first ID
+        let query_json = format!(r#"{{"stack_ids":["{}"]}}"#, first_id);
+        let query = CString::new(query_json).unwrap();
+        let result = unsafe { photostax_search(repo, query.as_ptr()) };
+
+        assert_eq!(result.len, 1);
+        let result_id = unsafe { CStr::from_ptr((*result.data).id) }
+            .to_str()
+            .unwrap();
+        assert_eq!(result_id, first_id);
+
+        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_search_with_stack_ids_no_match() {
+        let repo = open_testdata_repo();
+        let query = CString::new(r#"{"stack_ids":["NONEXISTENT_ID"]}"#).unwrap();
+        let result = unsafe { photostax_search(repo, query.as_ptr()) };
+
+        assert_eq!(result.len, 0);
+        assert!(result.data.is_null());
+
+        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_repo_free(repo) };
+    }
+
+    #[test]
+    fn test_search_paginated_with_stack_ids() {
+        let repo = open_testdata_repo();
+        // Get all stacks first
+        let all_query = CString::new("{}").unwrap();
+        let all_result = unsafe { photostax_search(repo, all_query.as_ptr()) };
+        assert!(all_result.len > 0);
+
+        let first_id = unsafe { CStr::from_ptr((*all_result.data).id) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { photostax_stack_array_free(all_result) };
+
+        // Paginated search with stack_ids
+        let query_json = format!(r#"{{"stack_ids":["{}"]}}"#, first_id);
+        let query = CString::new(query_json).unwrap();
+        let result = unsafe { photostax_search_paginated(repo, query.as_ptr(), 0, 10) };
+
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.len, 1);
         assert!(!result.has_more);
 
         unsafe { photostax_paginated_result_free(result) };

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-14
+
+### Added
+
+- Stack ID allowlist filter for `SearchQuery` across all layers
+  - `SearchQuery::with_ids(Vec<String>)` builder method — filters results to only include stacks with matching IDs
+  - `stack_ids` field in FFI JSON query format (`{"stack_ids": ["IMG_001", "IMG_002"]}`)
+  - `--id` flag on CLI `search` command (comma-separated or repeated: `--id IMG_001,IMG_002`)
+  - `stackIds` field on TypeScript `JsSearchQuery` object
+  - `WithIds(params string[] ids)` on .NET `SearchQuery` builder
+
 ## [0.1.7] - 2026-03-14
 
 ### Added
@@ -93,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.1.8]: https://github.com/JeromySt/photostax/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/JeromySt/photostax/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/JeromySt/photostax/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/JeromySt/photostax/compare/v0.1.3...v0.1.4

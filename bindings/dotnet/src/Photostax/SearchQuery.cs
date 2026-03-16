@@ -13,6 +13,7 @@ public sealed class SearchQuery
     private readonly List<(string Key, string Contains)> _customFilters = [];
     private bool? _hasBack;
     private bool? _hasEnhanced;
+    private List<string>? _stackIds;
 
     /// <summary>
     /// Adds a text search filter.
@@ -72,6 +73,17 @@ public sealed class SearchQuery
     }
 
     /// <summary>
+    /// Filters to only include stacks whose ID is in the given list.
+    /// </summary>
+    /// <param name="ids">The stack IDs to include.</param>
+    /// <returns>This query builder for chaining.</returns>
+    public SearchQuery WithIds(params string[] ids)
+    {
+        _stackIds = [..ids];
+        return this;
+    }
+
+    /// <summary>
     /// Serializes the query to JSON for FFI.
     /// </summary>
     internal string ToJson()
@@ -82,7 +94,8 @@ public sealed class SearchQuery
             ExifFilters = _exifFilters.Count > 0 ? _exifFilters.Select(f => new[] { f.Key, f.Contains }).ToList() : null,
             CustomFilters = _customFilters.Count > 0 ? _customFilters.Select(f => new[] { f.Key, f.Contains }).ToList() : null,
             HasBack = _hasBack,
-            HasEnhanced = _hasEnhanced
+            HasEnhanced = _hasEnhanced,
+            StackIds = _stackIds is { Count: > 0 } ? _stackIds : null
         };
 
         var options = new JsonSerializerOptions
@@ -110,5 +123,8 @@ public sealed class SearchQuery
 
         [JsonPropertyName("has_enhanced")]
         public bool? HasEnhanced { get; set; }
+
+        [JsonPropertyName("stack_ids")]
+        public List<string>? StackIds { get; set; }
     }
 }

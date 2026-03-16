@@ -106,6 +106,10 @@ pub enum Commands {
         #[arg(long)]
         has_enhanced: bool,
 
+        /// Only include stacks with these IDs (comma-separated or repeated)
+        #[arg(long = "id", value_delimiter = ',')]
+        stack_ids: Vec<String>,
+
         /// Output format
         #[arg(long, short, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
@@ -286,6 +290,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             tag_filters,
             has_back,
             has_enhanced,
+            stack_ids,
             format,
             limit,
             offset,
@@ -298,6 +303,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             tag_filters,
             *has_back,
             *has_enhanced,
+            stack_ids,
             *format,
             *limit,
             *offset,
@@ -436,6 +442,7 @@ pub fn cmd_search(
     tag_filters: &[(String, String)],
     has_back: bool,
     has_enhanced: bool,
+    stack_ids: &[String],
     format: OutputFormat,
     limit: usize,
     offset: usize,
@@ -463,6 +470,9 @@ pub fn cmd_search(
     }
     if has_enhanced {
         search = search.with_has_enhanced(true);
+    }
+    if !stack_ids.is_empty() {
+        search = search.with_ids(stack_ids.to_vec());
     }
 
     let results = filter_stacks(&stacks, &search);
@@ -1769,6 +1779,7 @@ mod tests {
             &[],
             false,
             false,
+            &[],
             OutputFormat::Table,
             0,
             0,
@@ -1791,6 +1802,7 @@ mod tests {
             &[],
             false,
             false,
+            &[],
             OutputFormat::Table,
             0,
             0,
@@ -1814,6 +1826,7 @@ mod tests {
             &[],
             false,
             false,
+            &[],
             OutputFormat::Json,
             0,
             0,
@@ -1834,6 +1847,7 @@ mod tests {
             &[],
             true,
             false,
+            &[],
             OutputFormat::Csv,
             0,
             0,
@@ -1854,6 +1868,7 @@ mod tests {
             &[],
             false,
             true,
+            &[],
             OutputFormat::Table,
             0,
             0,
@@ -1875,11 +1890,60 @@ mod tests {
             &tag_filters,
             false,
             false,
+            &[],
             OutputFormat::Table,
             0,
             0,
         );
         assert_eq!(code, EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn test_cmd_search_with_stack_ids() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let ids = vec!["FamilyPhotos_0001".to_string()];
+        let code = cmd_search(
+            &mut out,
+            &mut err,
+            &testdata_path(),
+            "",
+            &[],
+            &[],
+            false,
+            false,
+            &ids,
+            OutputFormat::Table,
+            0,
+            0,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("FamilyPhotos_0001"));
+    }
+
+    #[test]
+    fn test_cmd_search_with_stack_ids_no_match() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let ids = vec!["NONEXISTENT_ID".to_string()];
+        let code = cmd_search(
+            &mut out,
+            &mut err,
+            &testdata_path(),
+            "",
+            &[],
+            &[],
+            false,
+            false,
+            &ids,
+            OutputFormat::Table,
+            0,
+            0,
+        );
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("Found 0"));
     }
 
     #[test]
@@ -2259,6 +2323,7 @@ mod tests {
                 tag_filters: vec![],
                 has_back: false,
                 has_enhanced: false,
+                stack_ids: vec![],
                 format: OutputFormat::Table,
                 limit: 0,
                 offset: 0,
@@ -2556,6 +2621,7 @@ mod tests {
             &[],
             false,
             false,
+            &[],
             OutputFormat::Table,
             0,
             0,
