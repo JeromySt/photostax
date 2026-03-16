@@ -1151,7 +1151,7 @@ mod tests {
         assert_eq!(page2.total_count, total);
 
         // pages don't overlap (IDs are different)
-        if page1.items.len() > 0 && page2.items.len() > 0 {
+        if !page1.items.is_empty() && !page2.items.is_empty() {
             assert_ne!(page1.items[0].id, page2.items[0].id);
         }
     }
