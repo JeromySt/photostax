@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-03-17
+
+### Added
+
+- `CreateSnapshot` now accepts `ScannerProfile` and progress callback for single-pass scanning
+  - Rust: `ScanSnapshot::from_scan_with_progress(repo, profile, load_metadata, progress)`
+  - FFI: `photostax_create_snapshot_with_progress` with C callback + user_data
+  - TypeScript: `createSnapshotWithProgress(profile?, loadMetadata?, callback?)`
+  - .NET: `CreateSnapshot(ScannerProfile, bool, Action<ScanPhase, int, int>?)`
+- Eliminates redundant re-scanning when creating snapshots with progress reporting
+
 ## [0.1.12] - 2026-03-17
 
 ### Added

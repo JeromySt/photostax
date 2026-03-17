@@ -4,13 +4,15 @@
 //! A snapshot captures the scan result at a point in time so that page
 //! requests always see the same total count and ordering.
 
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::panic;
 use std::ptr;
 
+use photostax_core::photo_stack::ScannerProfile;
 use photostax_core::search::SearchQuery;
 use photostax_core::snapshot::ScanSnapshot;
 
+use crate::repository::ScanProgressFn;
 use crate::types::{FfiPaginatedResult, FfiPhotoStack, PhotostaxRepo};
 
 /// Opaque handle to a scan snapshot.
@@ -101,6 +103,67 @@ pub unsafe extern "C" fn photostax_create_snapshot(
         } else {
             ScanSnapshot::from_scan(&repo_ref.inner)
         };
+
+        match snapshot {
+            Ok(snap) => Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap })),
+            Err(_) => ptr::null_mut(),
+        }
+    });
+
+    result.unwrap_or(ptr::null_mut())
+}
+
+/// Create a snapshot with a scanner profile and optional progress callback.
+///
+/// Combines scanning, classification, optional metadata loading, and
+/// snapshot creation in a single pass — no redundant re-scanning.
+///
+/// # Parameters
+///
+/// - `profile` — scanner profile (0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly)
+/// - `load_metadata` — if true, EXIF/XMP/sidecar is loaded for every stack
+/// - `callback` — optional progress callback (may be null)
+/// - `user_data` — opaque pointer forwarded to callback (may be null)
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `callback` and `user_data` must be valid for the duration of the call
+/// - Returns null on error
+/// - Caller owns the returned pointer and must call [`photostax_snapshot_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
+    repo: *const PhotostaxRepo,
+    profile: i32,
+    load_metadata: bool,
+    callback: ScanProgressFn,
+    user_data: *mut c_void,
+) -> *mut PhotostaxSnapshot {
+    let result = panic::catch_unwind(|| {
+        if repo.is_null() {
+            return ptr::null_mut();
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+
+        let mut cb_wrapper;
+        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+            if let Some(cb_fn) = callback {
+                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
+                    cb_fn(p.phase as i32, p.current, p.total, user_data);
+                };
+                Some(&mut cb_wrapper)
+            } else {
+                None
+            };
+
+        let snapshot = ScanSnapshot::from_scan_with_progress(
+            &repo_ref.inner,
+            scanner_profile,
+            load_metadata,
+            progress,
+        );
 
         match snapshot {
             Ok(snap) => Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap })),

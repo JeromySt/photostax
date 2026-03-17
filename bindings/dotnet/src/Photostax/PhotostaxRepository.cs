@@ -388,6 +388,46 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Creates a snapshot with a scanner profile and optional progress callback.
+    /// </summary>
+    /// <remarks>
+    /// Combines scanning, classification, optional metadata loading, and snapshot
+    /// creation in a single pass — no redundant re-scanning.
+    /// </remarks>
+    /// <param name="profile">FastFoto scanner configuration.</param>
+    /// <param name="loadMetadata">When true, loads metadata for every stack.</param>
+    /// <param name="onProgress">Optional progress callback (phase, current, total).</param>
+    /// <returns>A frozen snapshot.</returns>
+    /// <exception cref="PhotostaxException">Thrown when the scan fails.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public ScanSnapshot CreateSnapshot(
+        ScannerProfile profile,
+        bool loadMetadata = false,
+        Action<ScanPhase, int, int>? onProgress = null)
+    {
+        ThrowIfDisposed();
+
+        NativeMethods.ScanProgressCallback? nativeCallback = null;
+        if (onProgress != null)
+        {
+            nativeCallback = (phase, current, total, _) =>
+                onProgress((ScanPhase)phase, (int)current, (int)total);
+        }
+
+        var ptr = NativeMethods.photostax_create_snapshot_with_progress(
+            _handle.DangerousGetHandle(),
+            (int)profile,
+            loadMetadata,
+            nativeCallback,
+            IntPtr.Zero);
+
+        if (ptr == IntPtr.Zero)
+            throw new PhotostaxException("Failed to create snapshot.");
+
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr));
+    }
+
+    /// <summary>
     /// Check whether a snapshot is still current.
     /// </summary>
     /// <remarks>

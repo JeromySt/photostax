@@ -38,7 +38,7 @@
 
 use std::collections::HashSet;
 
-use crate::photo_stack::PhotoStack;
+use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
 use crate::search::{
     filter_stacks, paginate_stacks, PaginatedResult, PaginationParams, SearchQuery,
@@ -86,9 +86,7 @@ impl ScanSnapshot {
     ///
     /// Returns [`RepositoryError::Io`] if the scan fails.
     pub fn from_scan(repo: &dyn Repository) -> Result<Self, RepositoryError> {
-        let stacks = repo.scan()?;
-        let ids = stacks.iter().map(|s| s.id.clone()).collect();
-        Ok(Self { stacks, ids })
+        Self::from_scan_with_progress(repo, ScannerProfile::Auto, false, None)
     }
 
     /// Create a snapshot with full metadata loaded for every stack.
@@ -100,9 +98,34 @@ impl ScanSnapshot {
     ///
     /// Returns [`RepositoryError::Io`] if the scan or metadata loading fails.
     pub fn from_scan_with_metadata(repo: &dyn Repository) -> Result<Self, RepositoryError> {
-        let mut stacks = repo.scan()?;
-        for stack in &mut stacks {
-            repo.load_metadata(stack)?;
+        Self::from_scan_with_progress(repo, ScannerProfile::Auto, true, None)
+    }
+
+    /// Create a snapshot with a [`ScannerProfile`] and optional progress callback.
+    ///
+    /// Combines scanning, classification, optional metadata loading, and
+    /// snapshot creation into a single pass.
+    ///
+    /// # Parameters
+    ///
+    /// - `profile` — FastFoto scanner configuration (controls classification I/O)
+    /// - `load_metadata` — if `true`, EXIF/XMP/sidecar is loaded for every stack
+    /// - `progress` — optional callback invoked with [`ScanProgress`] per step
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError::Io`] if the scan or metadata loading fails.
+    pub fn from_scan_with_progress(
+        repo: &dyn Repository,
+        profile: ScannerProfile,
+        load_metadata: bool,
+        progress: Option<&mut dyn FnMut(&ScanProgress)>,
+    ) -> Result<Self, RepositoryError> {
+        let mut stacks = repo.scan_with_progress(profile, progress)?;
+        if load_metadata {
+            for stack in &mut stacks {
+                repo.load_metadata(stack)?;
+            }
         }
         let ids = stacks.iter().map(|s| s.id.clone()).collect();
         Ok(Self { stacks, ids })
