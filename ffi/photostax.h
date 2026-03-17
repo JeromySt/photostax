@@ -563,6 +563,32 @@ struct PhotostaxSnapshot *photostax_create_snapshot(const struct PhotostaxRepo *
                                                     bool load_metadata);
 
 /**
+ * Create a snapshot with a scanner profile and optional progress callback.
+ *
+ * Combines scanning, classification, optional metadata loading, and
+ * snapshot creation in a single pass — no redundant re-scanning.
+ *
+ * # Parameters
+ *
+ * - `profile` — scanner profile (0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly)
+ * - `load_metadata` — if true, EXIF/XMP/sidecar is loaded for every stack
+ * - `callback` — optional progress callback (may be null)
+ * - `user_data` — opaque pointer forwarded to callback (may be null)
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `callback` and `user_data` must be valid for the duration of the call
+ * - Returns null on error
+ * - Caller owns the returned pointer and must call [`photostax_snapshot_free`]
+ */
+struct PhotostaxSnapshot *photostax_create_snapshot_with_progress(const struct PhotostaxRepo *repo,
+                                                                  int32_t profile,
+                                                                  bool load_metadata,
+                                                                  ScanProgressFn callback,
+                                                                  void *user_data);
+
+/**
  * Get the total number of stacks in the snapshot.
  *
  * # Safety

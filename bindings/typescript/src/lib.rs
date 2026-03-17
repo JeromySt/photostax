@@ -517,6 +517,60 @@ impl PhotostaxRepository {
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
+    /// Create a snapshot with a scanner profile and progress callback.
+    ///
+    /// Combines scanning, classification, optional metadata loading, and
+    /// snapshot creation in a single pass — no redundant re-scanning.
+    ///
+    /// @param profile - Scanner profile (default: "auto")
+    /// @param loadMetadata - When true, loads metadata for every stack
+    /// @param callback - Progress callback `(phase, current, total) => void`
+    /// @returns A frozen snapshot
+    /// @throws Error if the scan fails
+    #[napi(ts_args_type = "profile?: string, loadMetadata?: boolean, callback?: (phase: string, current: number, total: number) => void")]
+    pub fn create_snapshot_with_progress(
+        &self,
+        profile: Option<String>,
+        load_metadata: Option<bool>,
+        callback: Option<JsFunction>,
+    ) -> napi::Result<JsScanSnapshot> {
+        let scanner_profile = match profile.as_deref() {
+            Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
+            Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
+            Some("original_only") => CoreScannerProfile::OriginalOnly,
+            _ => CoreScannerProfile::Auto,
+        };
+
+        let mut cb_wrapper;
+        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+            if let Some(ref js_fn) = callback {
+                cb_wrapper = |p: &photostax_core::photo_stack::ScanProgress| {
+                    let phase = match p.phase {
+                        photostax_core::photo_stack::ScanPhase::Scanning => "scanning",
+                        photostax_core::photo_stack::ScanPhase::Classifying => "classifying",
+                        photostax_core::photo_stack::ScanPhase::Complete => "complete",
+                    };
+                    let _ = js_fn.call3::<String, u32, u32, Unknown>(
+                        phase.to_string(),
+                        p.current as u32,
+                        p.total as u32,
+                    );
+                };
+                Some(&mut cb_wrapper)
+            } else {
+                None
+            };
+
+        CoreScanSnapshot::from_scan_with_progress(
+            &self.inner,
+            scanner_profile,
+            load_metadata.unwrap_or(false),
+            progress,
+        )
+        .map(|s| JsScanSnapshot { inner: s })
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
     /// Check whether a snapshot is still current.
     ///
     /// Performs a fast re-scan and compares against the snapshot to detect

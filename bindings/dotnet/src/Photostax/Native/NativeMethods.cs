@@ -281,6 +281,17 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.U1)] bool loadMetadata);
 
     /// <summary>
+    /// Create a snapshot with scanner profile and progress callback.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_create_snapshot_with_progress(
+        IntPtr repo,
+        int profile,
+        [MarshalAs(UnmanagedType.U1)] bool loadMetadata,
+        ScanProgressCallback? callback,
+        IntPtr userData);
+
+    /// <summary>
     /// Get the total number of stacks in the snapshot.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
