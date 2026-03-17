@@ -10,7 +10,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation};
+use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation, RotationTarget as CoreRotationTarget};
 use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
 use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
@@ -401,25 +401,42 @@ impl PhotostaxRepository {
         })
     }
 
-    /// Rotate all images in a photo stack by the given number of degrees.
+    /// Rotate images in a photo stack by the given number of degrees.
     ///
-    /// Every image file (original, enhanced, back) is decoded, rotated at
-    /// the pixel level, and re-encoded on disk. Returns the refreshed stack.
+    /// Image files are decoded, rotated at the pixel level, and re-encoded
+    /// on disk. Returns the refreshed stack.
     ///
     /// @param stackId - The ID of the stack to rotate
     /// @param degrees - Rotation angle: 90, -90, 180, or -180
+    /// @param target - Which images to rotate: "all" (default), "front", or "back"
     /// @returns The updated photo stack with refreshed metadata
     /// @throws Error if the stack is not found, degrees are invalid, or rotation fails
     #[napi]
-    pub fn rotate_stack(&self, stack_id: String, degrees: i32) -> napi::Result<JsPhotoStack> {
+    pub fn rotate_stack(
+        &self,
+        stack_id: String,
+        degrees: i32,
+        target: Option<String>,
+    ) -> napi::Result<JsPhotoStack> {
         let rotation = CoreRotation::from_degrees(degrees).ok_or_else(|| {
             napi::Error::from_reason(format!(
                 "Invalid rotation: {degrees}°. Accepted values: 90, -90, 180, -180"
             ))
         })?;
 
+        let rotation_target = match target.as_deref() {
+            None | Some("all") => CoreRotationTarget::All,
+            Some("front") => CoreRotationTarget::Front,
+            Some("back") => CoreRotationTarget::Back,
+            Some(other) => {
+                return Err(napi::Error::from_reason(format!(
+                    "Invalid rotation target: '{other}'. Accepted values: all, front, back"
+                )));
+            }
+        };
+
         self.inner
-            .rotate_stack(&stack_id, rotation)
+            .rotate_stack(&stack_id, rotation, rotation_target)
             .map(JsPhotoStack::from)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }

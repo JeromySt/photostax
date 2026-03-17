@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
-//! use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation};
+//! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
 //! use std::path::Path;
 //!
 //! struct MyCloudRepository {
@@ -25,7 +25,7 @@
 //! }
 //!
 //! impl Repository for MyCloudRepository {
-//!     fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
+//!     fn scan_with_classification(&self, _mode: ClassifyMode) -> Result<Vec<PhotoStack>, RepositoryError> {
 //!         // List objects in cloud bucket, group by naming convention
 //!         todo!()
 //!     }
@@ -50,7 +50,7 @@
 //!         todo!()
 //!     }
 //!
-//!     fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError> {
+//!     fn rotate_stack(&self, id: &str, rotation: Rotation, target: RotationTarget) -> Result<PhotoStack, RepositoryError> {
 //!         // Download, rotate, re-upload
 //!         todo!()
 //!     }
@@ -61,7 +61,7 @@
 
 use std::path::Path;
 
-use crate::photo_stack::{Metadata, PhotoStack, Rotation};
+use crate::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
 
 /// Errors that can occur when interacting with a photo repository.
 ///
@@ -127,21 +127,37 @@ pub enum RepositoryError {
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 pub trait Repository {
-    /// Scan the repository and return all discovered photo stacks.
+    /// Scan the repository with the given classification mode.
     ///
-    /// Returns lightweight [`PhotoStack`] objects with file paths and
-    /// folder-derived metadata only. **No file content I/O** is performed
-    /// beyond the directory listing — EXIF, XMP, and sidecar data are not
-    /// loaded. Call [`load_metadata`](Self::load_metadata) on individual
-    /// stacks when you need their full metadata.
+    /// When `mode` is [`ClassifyMode::Auto`] (the default), ambiguous `_a`
+    /// images in stacks that have no `_b` file are analysed using pixel
+    /// variance. If the `_a` image looks like a back-of-photo scan (uniform,
+    /// bright) it is moved from the `enhanced` slot to the `back` slot.
     ///
-    /// This design makes scanning O(1) per file (just `read_dir`) regardless
-    /// of how many stacks exist, which is ideal for pagination and counting.
+    /// When `mode` is [`ClassifyMode::Skip`], `_a` is always treated as
+    /// enhanced — no image I/O beyond directory listing is performed.
     ///
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the repository location cannot be accessed.
-    fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError>;
+    fn scan_with_classification(
+        &self,
+        mode: ClassifyMode,
+    ) -> Result<Vec<PhotoStack>, RepositoryError>;
+
+    /// Scan the repository and return all discovered photo stacks.
+    ///
+    /// This is equivalent to calling
+    /// [`scan_with_classification(ClassifyMode::Auto)`](Self::scan_with_classification).
+    /// Ambiguous `_a` images are automatically classified as enhanced or back
+    /// using pixel analysis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError::Io`] if the repository location cannot be accessed.
+    fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
+        self.scan_with_classification(ClassifyMode::Auto)
+    }
 
     /// Load EXIF, XMP, and sidecar metadata into an existing photo stack.
     ///
@@ -193,12 +209,18 @@ pub trait Repository {
     /// Returns [`RepositoryError::Other`] if metadata cannot be written.
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError>;
 
-    /// Rotate all images in a photo stack by the given angle.
+    /// Rotate images in a photo stack by the given angle.
     ///
-    /// Every image file present in the stack (original, enhanced, back) is
-    /// decoded, rotated at the pixel level, and re-encoded to disk in the
-    /// same format. After rotation the stack is returned with refreshed
-    /// metadata so callers can immediately use the updated state.
+    /// The `target` parameter controls which images are rotated:
+    ///
+    /// | Target | Images rotated |
+    /// |--------|----------------|
+    /// | [`All`](RotationTarget::All) | original + enhanced + back |
+    /// | [`Front`](RotationTarget::Front) | original + enhanced only |
+    /// | [`Back`](RotationTarget::Back) | back only |
+    ///
+    /// After rotation the stack is returned with refreshed metadata so
+    /// callers can immediately use the updated state.
     ///
     /// # Supported Formats
     ///
@@ -212,7 +234,12 @@ pub trait Repository {
     /// - [`RepositoryError::NotFound`] if the stack ID does not exist
     /// - [`RepositoryError::Io`] if any image file cannot be read or written
     /// - [`RepositoryError::Other`] if an image cannot be decoded
-    fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError>;
+    fn rotate_stack(
+        &self,
+        id: &str,
+        rotation: Rotation,
+        target: RotationTarget,
+    ) -> Result<PhotoStack, RepositoryError>;
 }
 
 #[cfg(test)]

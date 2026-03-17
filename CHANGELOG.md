@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-03-16
+
+### Added
+
+- Automatic classification of ambiguous `_a` images as enhanced-front or back-of-photo
+  - Pixel variance analysis: low variance + light mean = back of photo; high variance = enhanced front
+  - `ClassifyMode` enum: `Auto` (default, analyzes during scan) and `Skip` (legacy behavior)
+  - `scan()` now runs classification by default; use `scan_with_classification(ClassifyMode::Skip)` to opt out
+  - Best-effort: images that fail to decode or are too small are left unchanged
+- Selective rotation targeting with `RotationTarget` enum
+  - `All` (default) — rotates original + enhanced + back
+  - `Front` — rotates original + enhanced only
+  - `Back` — rotates back only
+  - FFI: `photostax_rotate_stack` accepts `target` int parameter (0=All, 1=Front, 2=Back)
+  - TypeScript: `rotateStack()` accepts optional `target` string (`all`/`front`/`back`)
+  - .NET: `RotateStack()` accepts optional `RotationTarget` enum parameter
+  - CLI: `rotate` command accepts `--target` flag (`all`/`front`/`back`)
+
 ## [0.1.10] - 2026-03-16
 
 ### Fixed

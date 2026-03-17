@@ -242,14 +242,16 @@ internal static partial class NativeMethods
     internal static extern void photostax_bytes_free(IntPtr data, nuint len);
 
     /// <summary>
-    /// Rotate all images in a photo stack by the given degrees.
+    /// Rotate images in a photo stack by the given degrees.
+    /// Target: 0 = all, 1 = front only, 2 = back only.
     /// Returns a pointer to the updated FfiPhotoStack, or IntPtr.Zero on error.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr photostax_rotate_stack(
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
-        int degrees);
+        int degrees,
+        int target);
 
     // ── Snapshot functions ──────────────────────────────────────
 

@@ -359,9 +359,14 @@ struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
                                           const char *metadata_json);
 
 /**
- * Rotate all images in a photo stack by the given number of degrees.
+ * Rotate images in a photo stack by the given number of degrees.
  *
  * Accepted `degrees` values: `90`, `-90`, `180`, `-180`, `270`.
+ * The `target` parameter controls which images are rotated:
+ * - `0` = all images (original + enhanced + back)
+ * - `1` = front only (original + enhanced)
+ * - `2` = back only
+ *
  * Returns the updated stack with refreshed metadata on success.
  *
  * # Safety
@@ -373,7 +378,8 @@ struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
  */
 struct FfiPhotoStack *photostax_rotate_stack(const struct PhotostaxRepo *repo,
                                              const char *stack_id,
-                                             int32_t degrees);
+                                             int32_t degrees,
+                                             int32_t target);
 
 /**
  * Scan the repository and return a paginated result.

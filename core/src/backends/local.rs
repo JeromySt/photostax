@@ -57,11 +57,12 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::classify;
 use crate::metadata::exif;
 use crate::metadata::sidecar;
 use crate::metadata::xmp;
 use crate::metadata::ImageFormat;
-use crate::photo_stack::{Metadata, PhotoStack, Rotation};
+use crate::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, parse_folder_name, ScannerConfig};
 
@@ -226,11 +227,12 @@ impl LocalRepository {
     ///
     /// This is a convenience method that combines [`scan()`](Repository::scan)
     /// with [`load_metadata()`](Repository::load_metadata) for every stack.
+    /// Ambiguous `_a` images are classified by default.
     /// Use this when you need all metadata up front (e.g., for export or
     /// full-text search).
     ///
     /// For large repositories where you only need counts or paginated listings,
-    /// prefer [`scan()`](Repository::scan) which performs no file content I/O.
+    /// prefer [`scan()`](Repository::scan) which performs no metadata file I/O.
     ///
     /// # Errors
     ///
@@ -325,12 +327,18 @@ impl LocalRepository {
 }
 
 impl Repository for LocalRepository {
-    fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
+    fn scan_with_classification(
+        &self,
+        mode: ClassifyMode,
+    ) -> Result<Vec<PhotoStack>, RepositoryError> {
         let mut stacks = scanner::scan_directory(&self.root, &self.config)?;
-        // Apply folder-derived metadata only — no file content I/O.
-        // EXIF, XMP, and sidecar data are loaded on demand via load_metadata().
         for stack in &mut stacks {
             self.apply_folder_metadata(stack);
+        }
+        if mode == ClassifyMode::Auto {
+            for stack in &mut stacks {
+                classify::classify_ambiguous(stack)?;
+            }
         }
         Ok(stacks)
     }
@@ -380,18 +388,32 @@ impl Repository for LocalRepository {
         .map_err(|e| RepositoryError::Other(e.to_string()))
     }
 
-    fn rotate_stack(&self, id: &str, rotation: Rotation) -> Result<PhotoStack, RepositoryError> {
+    fn rotate_stack(
+        &self,
+        id: &str,
+        rotation: Rotation,
+        target: RotationTarget,
+    ) -> Result<PhotoStack, RepositoryError> {
         let stack = self.get_stack(id)?;
 
-        // Collect all image paths present in the stack
-        let paths: Vec<&Path> = [&stack.original, &stack.enhanced, &stack.back]
-            .iter()
-            .filter_map(|opt| opt.as_deref())
-            .collect();
+        let paths: Vec<&Path> = match target {
+            RotationTarget::All => [&stack.original, &stack.enhanced, &stack.back]
+                .iter()
+                .filter_map(|opt| opt.as_deref())
+                .collect(),
+            RotationTarget::Front => [&stack.original, &stack.enhanced]
+                .iter()
+                .filter_map(|opt| opt.as_deref())
+                .collect(),
+            RotationTarget::Back => [&stack.back]
+                .iter()
+                .filter_map(|opt| opt.as_deref())
+                .collect(),
+        };
 
         if paths.is_empty() {
             return Err(RepositoryError::Other(format!(
-                "Stack '{id}' has no image files to rotate"
+                "Stack '{id}' has no image files to rotate for target {target:?}"
             )));
         }
 
@@ -1016,7 +1038,9 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001_a.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
-        let rotated = repo.rotate_stack("IMG_001", Rotation::Cw90).unwrap();
+        let rotated = repo
+            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .unwrap();
         assert_eq!(rotated.id, "IMG_001");
 
         // After 90° CW rotation, 4×2 → 2×4
@@ -1036,7 +1060,9 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
-        let rotated = repo.rotate_stack("IMG_001", Rotation::Ccw90).unwrap();
+        let rotated = repo
+            .rotate_stack("IMG_001", Rotation::Ccw90, RotationTarget::All)
+            .unwrap();
         assert_eq!(rotated.id, "IMG_001");
 
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
@@ -1052,7 +1078,9 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
-        let rotated = repo.rotate_stack("IMG_001", Rotation::Cw180).unwrap();
+        let rotated = repo
+            .rotate_stack("IMG_001", Rotation::Cw180, RotationTarget::All)
+            .unwrap();
         assert_eq!(rotated.id, "IMG_001");
 
         // 180° preserves dimensions
@@ -1071,7 +1099,9 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001_b.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
-        let rotated = repo.rotate_stack("IMG_001", Rotation::Cw90).unwrap();
+        let rotated = repo
+            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .unwrap();
         assert_eq!(rotated.image_count(), 3);
 
         // All three files should be rotated
@@ -1086,7 +1116,7 @@ mod tests {
     fn test_rotate_stack_not_found() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        let result = repo.rotate_stack("nonexistent", Rotation::Cw90);
+        let result = repo.rotate_stack("nonexistent", Rotation::Cw90, RotationTarget::All);
         assert!(result.is_err());
         match result.unwrap_err() {
             RepositoryError::NotFound(id) => assert_eq!(id, "nonexistent"),
@@ -1102,7 +1132,9 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
-        let rotated = repo.rotate_stack("IMG_001", Rotation::Cw90).unwrap();
+        let rotated = repo
+            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .unwrap();
         // The returned stack should have the same id and paths
         assert_eq!(rotated.id, "IMG_001");
         assert!(rotated.original.is_some());

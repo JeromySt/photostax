@@ -11,8 +11,8 @@
 //! | File Pattern | Description |
 //! |--------------|-------------|
 //! | `<name>.jpg` or `<name>.tif` | Original front scan |
-//! | `<name>_a.jpg` or `<name>_a.tif` | Enhanced version (color-corrected) |
-//! | `<name>_b.jpg` or `<name>_b.tif` | Back of the photo |
+//! | `<name>_a.jpg` or `<name>_a.tif` | Enhanced version (color-corrected) **or** back of photo |
+//! | `<name>_b.jpg` or `<name>_b.tif` | Back of the photo (always) |
 //!
 //! This library groups these files into [`PhotoStack`] objects and provides a
 //! [`Repository`] trait for accessing them from various storage backends.
@@ -39,6 +39,7 @@
 //! ## Module Organization
 //!
 //! - [`photo_stack`] — Core [`PhotoStack`] and [`Metadata`] types representing grouped photos
+//! - [`classify`] — Image analysis for classifying ambiguous `_a` scans as front or back
 //! - [`repository`] — [`Repository`] trait for storage backend abstraction
 //! - [`scanner`] — Directory scanning and file grouping logic
 //! - [`search`] — Query builder for filtering photo stacks by metadata
@@ -65,6 +66,7 @@
 #![warn(missing_docs)]
 
 pub mod backends;
+pub mod classify;
 pub mod metadata;
 pub mod photo_stack;
 pub mod repository;

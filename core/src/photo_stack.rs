@@ -27,6 +27,81 @@ use serde::{Deserialize, Serialize};
 
 use crate::metadata::{detect_image_format, ImageFormat};
 
+/// Whether to classify ambiguous `_a` images using pixel analysis.
+///
+/// When the FastFoto scanner produces only an original and an `_a` image
+/// (no `_b` file), the `_a` image could be either an enhanced front scan
+/// or a back-of-photo scan. `ClassifyMode` controls whether the scanner
+/// performs image I/O to resolve this ambiguity.
+///
+/// | Mode | Behaviour |
+/// |------|-----------|
+/// | [`Auto`](Self::Auto) | Analyse ambiguous `_a` images and reclassify as `back` when appropriate (default) |
+/// | [`Skip`](Self::Skip) | Always treat `_a` as enhanced — no image I/O during scan |
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::photo_stack::ClassifyMode;
+///
+/// let mode = ClassifyMode::default(); // Auto
+/// assert_eq!(mode, ClassifyMode::Auto);
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClassifyMode {
+    /// Analyse ambiguous `_a` images using pixel variance to classify as
+    /// enhanced front or back-of-photo. This is the default.
+    #[default]
+    Auto,
+    /// Skip classification. `_a` is always treated as enhanced.
+    Skip,
+}
+
+/// Which images in a [`PhotoStack`] to rotate.
+///
+/// | Target | Images rotated |
+/// |--------|----------------|
+/// | [`All`](Self::All) | original + enhanced + back |
+/// | [`Front`](Self::Front) | original + enhanced |
+/// | [`Back`](Self::Back) | back only |
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::photo_stack::RotationTarget;
+///
+/// let target = RotationTarget::default(); // All
+/// assert_eq!(target, RotationTarget::All);
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RotationTarget {
+    /// Rotate all images in the stack (original + enhanced + back).
+    #[default]
+    All,
+    /// Rotate front-side images only (original + enhanced).
+    Front,
+    /// Rotate back-side image only.
+    Back,
+}
+
+impl RotationTarget {
+    /// Convert from an integer value for FFI.
+    ///
+    /// | Value | Target |
+    /// |-------|--------|
+    /// | `0` | [`All`](Self::All) |
+    /// | `1` | [`Front`](Self::Front) |
+    /// | `2` | [`Back`](Self::Back) |
+    pub fn from_int(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::All),
+            1 => Some(Self::Front),
+            2 => Some(Self::Back),
+            _ => None,
+        }
+    }
+}
+
 /// Rotation angle for rotating all images in a [`PhotoStack`].
 ///
 /// Each variant corresponds to a fixed rotation applied to every image

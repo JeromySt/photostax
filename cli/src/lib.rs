@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::ImageFormat;
-use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation};
+use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
@@ -157,11 +157,12 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Rotate all images in a photo stack
+    /// Rotate images in a photo stack
     #[command(
-        long_about = "Rotate every image file in a photo stack by the given angle.\n\n\
+        long_about = "Rotate image files in a photo stack by the given angle.\n\n\
         Pixel data is re-encoded on disk (lossy for JPEG). Accepted degree\n\
-        values: 90 (clockwise), -90 (counter-clockwise), 180, -180."
+        values: 90 (clockwise), -90 (counter-clockwise), 180, -180.\n\n\
+        Use --target to rotate only front or back images."
     )]
     Rotate {
         /// Directory containing FastFoto scans
@@ -174,8 +175,12 @@ pub enum Commands {
         #[arg(long, short, allow_hyphen_values = true)]
         degrees: i32,
 
+        /// Which images to rotate: all, front, or back
+        #[arg(long, short, value_enum, default_value_t = CliRotationTarget::All)]
+        target: CliRotationTarget,
+
         /// Output format
-        #[arg(long, short, value_enum, default_value_t = OutputFormat::Table)]
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
     },
 }
@@ -237,6 +242,27 @@ pub enum OutputFormat {
     Json,
     /// Comma-separated values
     Csv,
+}
+
+/// CLI-facing rotation target (maps to core `RotationTarget`).
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliRotationTarget {
+    /// Rotate all images (original + enhanced + back)
+    All,
+    /// Rotate front-side images only (original + enhanced)
+    Front,
+    /// Rotate back-side image only
+    Back,
+}
+
+impl From<CliRotationTarget> for RotationTarget {
+    fn from(t: CliRotationTarget) -> Self {
+        match t {
+            CliRotationTarget::All => RotationTarget::All,
+            CliRotationTarget::Front => RotationTarget::Front,
+            CliRotationTarget::Back => RotationTarget::Back,
+        }
+    }
 }
 
 // Exit codes
@@ -341,8 +367,17 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             directory,
             stack_id,
             degrees,
+            target,
             format,
-        } => cmd_rotate(out, err, directory, stack_id, *degrees, *format),
+        } => cmd_rotate(
+            out,
+            err,
+            directory,
+            stack_id,
+            *degrees,
+            (*target).into(),
+            *format,
+        ),
     }
 }
 
@@ -712,6 +747,7 @@ pub fn cmd_rotate(
     directory: &PathBuf,
     stack_id: &str,
     degrees: i32,
+    target: RotationTarget,
     format: OutputFormat,
 ) -> i32 {
     let rotation = match Rotation::from_degrees(degrees) {
@@ -727,7 +763,7 @@ pub fn cmd_rotate(
 
     let repo = LocalRepository::new(directory);
 
-    let stack = match repo.rotate_stack(stack_id, rotation) {
+    let stack = match repo.rotate_stack(stack_id, rotation, target) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -2710,6 +2746,7 @@ mod tests {
             &dir.path().to_path_buf(),
             "IMG_001",
             90,
+            RotationTarget::All,
             OutputFormat::Table,
         );
         assert_eq!(code, EXIT_SUCCESS);
@@ -2732,6 +2769,7 @@ mod tests {
             &dir.path().to_path_buf(),
             "IMG_001",
             -90,
+            RotationTarget::All,
             OutputFormat::Table,
         );
         assert_eq!(code, EXIT_SUCCESS);
@@ -2752,6 +2790,7 @@ mod tests {
             &dir.path().to_path_buf(),
             "IMG_001",
             180,
+            RotationTarget::All,
             OutputFormat::Table,
         );
         assert_eq!(code, EXIT_SUCCESS);
@@ -2767,6 +2806,7 @@ mod tests {
             &PathBuf::from("."),
             "test",
             45,
+            RotationTarget::All,
             OutputFormat::Table,
         );
         assert_eq!(code, EXIT_ERROR);
@@ -2785,6 +2825,7 @@ mod tests {
             &dir.path().to_path_buf(),
             "nonexistent",
             90,
+            RotationTarget::All,
             OutputFormat::Table,
         );
         assert_eq!(code, EXIT_NOT_FOUND);
@@ -2803,6 +2844,7 @@ mod tests {
             &dir.path().to_path_buf(),
             "IMG_001",
             90,
+            RotationTarget::All,
             OutputFormat::Json,
         );
         assert_eq!(code, EXIT_SUCCESS);
