@@ -61,6 +61,55 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
+    /// Scans with a <see cref="ScannerProfile"/> and optional progress callback.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <paramref name="profile"/> tells the engine how the FastFoto was configured:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="ScannerProfile.Auto"/> — unknown config, uses pixel analysis for ambiguous _a (disk I/O)</item>
+    ///   <item><see cref="ScannerProfile.EnhancedAndBack"/> — _a = enhanced, _b = back (no I/O)</item>
+    ///   <item><see cref="ScannerProfile.EnhancedOnly"/> — _a = enhanced, no back files (no I/O)</item>
+    ///   <item><see cref="ScannerProfile.OriginalOnly"/> — no _a or _b expected (no I/O)</item>
+    /// </list>
+    /// <para>
+    /// The <paramref name="onProgress"/> callback is invoked for each progress step with the
+    /// current phase, items processed, and total items.
+    /// </para>
+    /// </remarks>
+    /// <param name="profile">FastFoto scanner configuration.</param>
+    /// <param name="onProgress">Optional progress callback (phase, current, total).</param>
+    /// <returns>A list of photo stacks.</returns>
+    public IReadOnlyList<PhotoStack> ScanWithProgress(
+        ScannerProfile profile = ScannerProfile.Auto,
+        Action<ScanPhase, int, int>? onProgress = null)
+    {
+        ThrowIfDisposed();
+
+        NativeMethods.ScanProgressCallback? nativeCallback = null;
+        if (onProgress != null)
+        {
+            nativeCallback = (phase, current, total, _) =>
+                onProgress((ScanPhase)phase, (int)current, (int)total);
+        }
+
+        var array = NativeMethods.photostax_repo_scan_with_progress(
+            _handle.DangerousGetHandle(),
+            (int)profile,
+            nativeCallback,
+            IntPtr.Zero);
+        try
+        {
+            return ConvertStackArray(array);
+        }
+        finally
+        {
+            NativeMethods.photostax_stack_array_free(array);
+        }
+    }
+
+    /// <summary>
     /// Scans the repository and returns all photo stacks with full metadata loaded.
     /// </summary>
     /// <remarks>

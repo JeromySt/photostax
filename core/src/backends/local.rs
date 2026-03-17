@@ -62,7 +62,9 @@ use crate::metadata::exif;
 use crate::metadata::sidecar;
 use crate::metadata::xmp;
 use crate::metadata::ImageFormat;
-use crate::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
+use crate::photo_stack::{
+    Metadata, PhotoStack, Rotation, RotationTarget, ScanPhase, ScanProgress, ScannerProfile,
+};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, parse_folder_name, ScannerConfig};
 
@@ -327,19 +329,57 @@ impl LocalRepository {
 }
 
 impl Repository for LocalRepository {
-    fn scan_with_classification(
+    fn scan_with_progress(
         &self,
-        mode: ClassifyMode,
+        profile: ScannerProfile,
+        mut progress: Option<&mut dyn FnMut(&ScanProgress)>,
     ) -> Result<Vec<PhotoStack>, RepositoryError> {
+        // Pass 1: fast directory scan
         let mut stacks = scanner::scan_directory(&self.root, &self.config)?;
-        for stack in &mut stacks {
+        let stack_count = stacks.len();
+
+        for (i, stack) in stacks.iter_mut().enumerate() {
             self.apply_folder_metadata(stack);
-        }
-        if mode == ClassifyMode::Auto {
-            for stack in &mut stacks {
-                classify::classify_ambiguous(stack)?;
+            if let Some(ref mut cb) = progress {
+                cb(&ScanProgress {
+                    phase: ScanPhase::Scanning,
+                    current: i + 1,
+                    total: stack_count,
+                });
             }
         }
+
+        // Pass 2: classify ambiguous _a images (only when profile requires it)
+        if profile.needs_classification() {
+            let ambiguous_indices: Vec<usize> = stacks
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.enhanced.is_some() && s.back.is_none())
+                .map(|(i, _)| i)
+                .collect();
+
+            let total = ambiguous_indices.len();
+            for (step, idx) in ambiguous_indices.into_iter().enumerate() {
+                classify::classify_ambiguous(&mut stacks[idx])?;
+                if let Some(ref mut cb) = progress {
+                    cb(&ScanProgress {
+                        phase: ScanPhase::Classifying,
+                        current: step + 1,
+                        total,
+                    });
+                }
+            }
+        }
+
+        // Report completion
+        if let Some(ref mut cb) = progress {
+            cb(&ScanProgress {
+                phase: ScanPhase::Complete,
+                current: stacks.len(),
+                total: stacks.len(),
+            });
+        }
+
         Ok(stacks)
     }
 
