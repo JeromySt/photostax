@@ -10,7 +10,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation, RotationTarget as CoreRotationTarget};
+use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation, RotationTarget as CoreRotationTarget, ScannerProfile as CoreScannerProfile};
 use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
 use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
@@ -210,6 +210,60 @@ impl PhotostaxRepository {
     pub fn scan(&self) -> napi::Result<Vec<JsPhotoStack>> {
         self.inner
             .scan()
+            .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Scan with a scanner profile and progress callback.
+    ///
+    /// The `profile` tells the engine how the FastFoto was configured:
+    /// - `"auto"` — unknown config, uses pixel analysis for ambiguous `_a` (default)
+    /// - `"enhanced_and_back"` — `_a` = enhanced, `_b` = back (no I/O)
+    /// - `"enhanced_only"` — `_a` = enhanced, no back files (no I/O)
+    /// - `"original_only"` — no `_a` or `_b` expected (no I/O)
+    ///
+    /// The `callback` receives `{ phase: string, current: number, total: number }`.
+    /// Phase is one of `"scanning"`, `"classifying"`, or `"complete"`.
+    ///
+    /// @param profile - Scanner profile string (default: "auto")
+    /// @param callback - Progress callback function
+    /// @returns Array of photo stacks
+    /// @throws Error if the directory cannot be accessed
+    #[napi(ts_args_type = "profile?: string, callback?: (phase: string, current: number, total: number) => void")]
+    pub fn scan_with_progress(
+        &self,
+        profile: Option<String>,
+        callback: Option<JsFunction>,
+    ) -> napi::Result<Vec<JsPhotoStack>> {
+        let scanner_profile = match profile.as_deref() {
+            Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
+            Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
+            Some("original_only") => CoreScannerProfile::OriginalOnly,
+            _ => CoreScannerProfile::Auto,
+        };
+
+        let mut cb_wrapper;
+        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+            if let Some(ref js_fn) = callback {
+                cb_wrapper = |p: &photostax_core::photo_stack::ScanProgress| {
+                    let phase = match p.phase {
+                        photostax_core::photo_stack::ScanPhase::Scanning => "scanning",
+                        photostax_core::photo_stack::ScanPhase::Classifying => "classifying",
+                        photostax_core::photo_stack::ScanPhase::Complete => "complete",
+                    };
+                    let _ = js_fn.call3::<String, u32, u32, Unknown>(
+                        phase.to_string(),
+                        p.current as u32,
+                        p.total as u32,
+                    );
+                };
+                Some(&mut cb_wrapper)
+            } else {
+                None
+            };
+
+        self.inner
+            .scan_with_progress(scanner_profile, progress)
             .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }

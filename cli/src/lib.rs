@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::ImageFormat;
-use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget};
+use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget, ScannerProfile};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
@@ -75,6 +75,11 @@ pub enum Commands {
         /// Number of stacks to skip (0-based offset)
         #[arg(long, default_value_t = 0)]
         offset: usize,
+
+        /// FastFoto scanner profile (controls _a classification).
+        /// "auto" uses pixel analysis (disk I/O), others are instant.
+        #[arg(long, value_enum, default_value_t = CliScannerProfile::Auto)]
+        profile: CliScannerProfile,
     },
 
     /// Search photo stacks by metadata
@@ -265,6 +270,30 @@ impl From<CliRotationTarget> for RotationTarget {
     }
 }
 
+/// CLI-facing scanner profile (maps to core `ScannerProfile`).
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliScannerProfile {
+    /// Unknown config — pixel analysis for ambiguous _a (disk I/O)
+    Auto,
+    /// Enhanced + back both enabled (no I/O)
+    EnhancedAndBack,
+    /// Enhanced only, no back (no I/O)
+    EnhancedOnly,
+    /// Original only, no _a or _b (no I/O)
+    OriginalOnly,
+}
+
+impl From<CliScannerProfile> for ScannerProfile {
+    fn from(p: CliScannerProfile) -> Self {
+        match p {
+            CliScannerProfile::Auto => ScannerProfile::Auto,
+            CliScannerProfile::EnhancedAndBack => ScannerProfile::EnhancedAndBack,
+            CliScannerProfile::EnhancedOnly => ScannerProfile::EnhancedOnly,
+            CliScannerProfile::OriginalOnly => ScannerProfile::OriginalOnly,
+        }
+    }
+}
+
 // Exit codes
 pub const EXIT_SUCCESS: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
@@ -294,6 +323,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             recursive,
             limit,
             offset,
+            profile,
         } => cmd_scan(
             out,
             err,
@@ -307,6 +337,7 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             *recursive,
             *limit,
             *offset,
+            (*profile).into(),
         ),
 
         Commands::Search {
@@ -396,6 +427,7 @@ pub fn cmd_scan(
     recursive: bool,
     limit: usize,
     offset: usize,
+    profile: ScannerProfile,
 ) -> i32 {
     let config = ScannerConfig {
         recursive,
@@ -406,10 +438,22 @@ pub fn cmd_scan(
     // Auto-enable metadata loading when show_metadata is requested
     let load_metadata = metadata || show_metadata;
 
+    let mut progress_cb = |p: &photostax_core::photo_stack::ScanProgress| {
+        let phase = match p.phase {
+            photostax_core::photo_stack::ScanPhase::Scanning => "Scanning",
+            photostax_core::photo_stack::ScanPhase::Classifying => "Classifying",
+            photostax_core::photo_stack::ScanPhase::Complete => "Complete",
+        };
+        let _ = write!(err, "\r{phase}: {}/{}", p.current, p.total);
+        if p.phase == photostax_core::photo_stack::ScanPhase::Complete {
+            let _ = writeln!(err);
+        }
+    };
+
     let stacks = if load_metadata {
         repo.scan_with_metadata()
     } else {
-        repo.scan()
+        repo.scan_with_progress(profile, Some(&mut progress_cb))
     };
     let stacks = match stacks {
         Ok(s) => s,
@@ -1605,6 +1649,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1629,6 +1674,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1655,6 +1701,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1678,6 +1725,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1709,6 +1757,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1730,6 +1779,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
     }
@@ -1751,6 +1801,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1774,6 +1825,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -1797,6 +1849,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         // LocalRepository::scan may return an error for nonexistent dirs
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
@@ -2250,6 +2303,7 @@ mod tests {
             false,
             0,
             0,
+            ScannerProfile::EnhancedAndBack,
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
@@ -2341,6 +2395,7 @@ mod tests {
                 recursive: false,
                 limit: 0,
                 offset: 0,
+                profile: CliScannerProfile::Auto,
             },
         };
         let mut out = Vec::new();

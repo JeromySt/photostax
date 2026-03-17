@@ -103,6 +103,17 @@ typedef struct FfiPhotoStackArray {
 } FfiPhotoStackArray;
 
 /**
+ * C-compatible progress callback function pointer.
+ *
+ * Parameters:
+ * - `phase`: 0 = Scanning, 1 = Classifying, 2 = Complete
+ * - `current`: items processed so far in current phase
+ * - `total`: total items in current phase
+ * - `user_data`: opaque pointer passed through from the caller
+ */
+typedef void (*ScanProgressFn)(int32_t phase, uintptr_t current, uintptr_t total, void *user_data);
+
+/**
  * Paginated result of photo stacks returned across FFI.
  *
  * Contains a page of stacks along with pagination metadata needed
@@ -318,7 +329,27 @@ void photostax_repo_free(struct PhotostaxRepo *repo);
 struct FfiPhotoStackArray photostax_repo_scan(const struct PhotostaxRepo *repo);
 
 /**
- * Get a single stack by ID.
+ * Scan with a [`ScannerProfile`] and optional progress callback.
+ *
+ * # Parameters
+ *
+ * - `repo` — valid pointer from [`photostax_repo_open`]
+ * - `profile` — scanner profile (0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly)
+ * - `callback` — optional progress callback invoked per-step (may be null)
+ * - `user_data` — opaque pointer forwarded to the callback (may be null)
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `callback` and `user_data` must be valid for the duration of the call
+ * - Caller owns the returned array and must call [`photostax_stack_array_free`]
+ */
+struct FfiPhotoStackArray photostax_repo_scan_with_progress(const struct PhotostaxRepo *repo,
+                                                            int32_t profile,
+                                                            ScanProgressFn callback,
+                                                            void *user_data);
+
+/**
  *
  * # Safety
  *

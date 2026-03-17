@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
-//! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
+//! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile};
 //! use std::path::Path;
 //!
 //! struct MyCloudRepository {
@@ -25,9 +25,13 @@
 //! }
 //!
 //! impl Repository for MyCloudRepository {
-//!     fn scan_with_classification(&self, _mode: ClassifyMode) -> Result<Vec<PhotoStack>, RepositoryError> {
+//!     fn scan_with_progress(&self, _profile: ScannerProfile, _progress: Option<&mut dyn FnMut(&ScanProgress)>) -> Result<Vec<PhotoStack>, RepositoryError> {
 //!         // List objects in cloud bucket, group by naming convention
 //!         todo!()
+//!     }
+//!
+//!     fn scan_with_classification(&self, _mode: ClassifyMode) -> Result<Vec<PhotoStack>, RepositoryError> {
+//!         self.scan_with_progress(_mode.into(), None)
 //!     }
 //!
 //!     fn load_metadata(&self, _stack: &mut PhotoStack) -> Result<(), RepositoryError> {
@@ -61,7 +65,9 @@
 
 use std::path::Path;
 
-use crate::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget};
+use crate::photo_stack::{
+    ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
+};
 
 /// Errors that can occur when interacting with a photo repository.
 ///
@@ -127,28 +133,41 @@ pub enum RepositoryError {
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 pub trait Repository {
-    /// Scan the repository with the given classification mode.
+    /// Scan with a [`ScannerProfile`] and optional progress callback.
     ///
-    /// When `mode` is [`ClassifyMode::Auto`] (the default), ambiguous `_a`
-    /// images in stacks that have no `_b` file are analysed using pixel
-    /// variance. If the `_a` image looks like a back-of-photo scan (uniform,
-    /// bright) it is moved from the `enhanced` slot to the `back` slot.
+    /// This is the primary scan method. It performs a two-pass scan:
     ///
-    /// When `mode` is [`ClassifyMode::Skip`], `_a` is always treated as
-    /// enhanced — no image I/O beyond directory listing is performed.
+    /// 1. **Pass 1 (fast)**: Directory scan — discovers files, groups them into
+    ///    stacks, and applies folder metadata. Progress callbacks report stacks
+    ///    discovered.
+    /// 2. **Pass 2 (Auto only)**: Classification — analyses ambiguous `_a` images
+    ///    using pixel variance. Skipped when the profile is not [`ScannerProfile::Auto`].
+    ///    Progress callbacks report per-stack classification progress.
     ///
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the repository location cannot be accessed.
+    fn scan_with_progress(
+        &self,
+        profile: ScannerProfile,
+        progress: Option<&mut dyn FnMut(&ScanProgress)>,
+    ) -> Result<Vec<PhotoStack>, RepositoryError>;
+
+    /// Scan the repository with the given classification mode.
+    ///
+    /// Convenience wrapper around [`scan_with_progress`](Self::scan_with_progress)
+    /// with no progress callback.
     fn scan_with_classification(
         &self,
         mode: ClassifyMode,
-    ) -> Result<Vec<PhotoStack>, RepositoryError>;
+    ) -> Result<Vec<PhotoStack>, RepositoryError> {
+        self.scan_with_progress(mode.into(), None)
+    }
 
     /// Scan the repository and return all discovered photo stacks.
     ///
     /// This is equivalent to calling
-    /// [`scan_with_classification(ClassifyMode::Auto)`](Self::scan_with_classification).
+    /// [`scan_with_progress(ScannerProfile::Auto, None)`](Self::scan_with_progress).
     /// Ambiguous `_a` images are automatically classified as enhanced or back
     /// using pixel analysis.
     ///
@@ -156,7 +175,7 @@ pub trait Repository {
     ///
     /// Returns [`RepositoryError::Io`] if the repository location cannot be accessed.
     fn scan(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
-        self.scan_with_classification(ClassifyMode::Auto)
+        self.scan_with_progress(ScannerProfile::Auto, None)
     }
 
     /// Load EXIF, XMP, and sidecar metadata into an existing photo stack.

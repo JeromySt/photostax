@@ -4,16 +4,26 @@
 //! functionality. All functions handle panics and null pointer checks.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::panic;
 use std::path::PathBuf;
 use std::ptr;
 
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::photo_stack::{PhotoStack, Rotation, RotationTarget};
+use photostax_core::photo_stack::{PhotoStack, Rotation, RotationTarget, ScannerProfile};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use serde::Deserialize;
+
+/// C-compatible progress callback function pointer.
+///
+/// Parameters:
+/// - `phase`: 0 = Scanning, 1 = Classifying, 2 = Complete
+/// - `current`: items processed so far in current phase
+/// - `total`: total items in current phase
+/// - `user_data`: opaque pointer passed through from the caller
+pub type ScanProgressFn =
+    Option<unsafe extern "C" fn(phase: i32, current: usize, total: usize, user_data: *mut c_void)>;
 
 use crate::types::{
     FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo,
@@ -176,7 +186,66 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiP
     result.unwrap_or_else(|_| FfiPhotoStackArray::empty())
 }
 
-/// Get a single stack by ID.
+/// Scan with a [`ScannerProfile`] and optional progress callback.
+///
+/// # Parameters
+///
+/// - `repo` — valid pointer from [`photostax_repo_open`]
+/// - `profile` — scanner profile (0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly)
+/// - `callback` — optional progress callback invoked per-step (may be null)
+/// - `user_data` — opaque pointer forwarded to the callback (may be null)
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `callback` and `user_data` must be valid for the duration of the call
+/// - Caller owns the returned array and must call [`photostax_stack_array_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_repo_scan_with_progress(
+    repo: *const PhotostaxRepo,
+    profile: i32,
+    callback: ScanProgressFn,
+    user_data: *mut c_void,
+) -> FfiPhotoStackArray {
+    let result = panic::catch_unwind(|| {
+        if repo.is_null() {
+            return FfiPhotoStackArray::empty();
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+
+        let mut cb_wrapper;
+        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+            if let Some(cb_fn) = callback {
+                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
+                    cb_fn(p.phase as i32, p.current, p.total, user_data);
+                };
+                Some(&mut cb_wrapper)
+            } else {
+                None
+            };
+
+        match repo_ref.inner.scan_with_progress(scanner_profile, progress) {
+            Ok(stacks) => {
+                if stacks.is_empty() {
+                    return FfiPhotoStackArray::empty();
+                }
+
+                let ffi_stacks: Vec<FfiPhotoStack> =
+                    stacks.iter().map(photo_stack_to_ffi).collect();
+                let len = ffi_stacks.len();
+                let boxed_slice = ffi_stacks.into_boxed_slice();
+                let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
+
+                FfiPhotoStackArray { data, len }
+            }
+            Err(_) => FfiPhotoStackArray::empty(),
+        }
+    });
+
+    result.unwrap_or_else(|_| FfiPhotoStackArray::empty())
+}
 ///
 /// # Safety
 ///

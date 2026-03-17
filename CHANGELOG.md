@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-03-17
+
+### Added
+
+- `ScannerProfile` enum for declaring FastFoto scanner configuration
+  - `EnhancedAndBack` — `_a` = enhanced, `_b` = back (no disk I/O)
+  - `EnhancedOnly` — `_a` = enhanced only (no disk I/O)
+  - `OriginalOnly` — no `_a`/`_b` expected (no disk I/O)
+  - `Auto` — unknown config, uses pixel analysis for ambiguous `_a` (disk I/O)
+- Multi-pass scan with progress callback (`scan_with_progress`)
+  - Pass 1: fast directory scan with per-stack progress reporting
+  - Pass 2 (Auto only): classification with per-stack progress reporting
+  - FFI: `photostax_repo_scan_with_progress(repo, profile, callback, user_data)`
+  - TypeScript: `scanWithProgress(profile?, callback?)` with `{ phase, current, total }`
+  - .NET: `ScanWithProgress(ScannerProfile, Action<ScanPhase, int, int>?)`
+  - CLI: `--profile` flag on `scan` command with live progress on stderr
+
 ## [0.1.11] - 2026-03-16
 
 ### Added

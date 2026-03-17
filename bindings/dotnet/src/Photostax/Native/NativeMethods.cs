@@ -112,6 +112,23 @@ internal static partial class NativeMethods
     internal static extern FfiPhotoStackArray photostax_repo_scan(IntPtr repo);
 
     /// <summary>
+    /// Scan progress callback delegate matching the native function pointer signature.
+    /// </summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void ScanProgressCallback(int phase, nuint current, nuint total, IntPtr userData);
+
+    /// <summary>
+    /// Scan with a scanner profile and optional progress callback.
+    /// Profile: 0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiPhotoStackArray photostax_repo_scan_with_progress(
+        IntPtr repo,
+        int profile,
+        ScanProgressCallback? callback,
+        IntPtr userData);
+
+    /// <summary>
     /// Get a single stack by ID.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

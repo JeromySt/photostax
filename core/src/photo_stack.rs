@@ -39,6 +39,9 @@ use crate::metadata::{detect_image_format, ImageFormat};
 /// | [`Auto`](Self::Auto) | Analyse ambiguous `_a` images and reclassify as `back` when appropriate (default) |
 /// | [`Skip`](Self::Skip) | Always treat `_a` as enhanced — no image I/O during scan |
 ///
+/// **Note:** Prefer [`ScannerProfile`] over `ClassifyMode` — it captures
+/// your FastFoto configuration and avoids unnecessary disk I/O.
+///
 /// # Examples
 ///
 /// ```
@@ -55,6 +58,115 @@ pub enum ClassifyMode {
     Auto,
     /// Skip classification. `_a` is always treated as enhanced.
     Skip,
+}
+
+/// FastFoto scanner configuration profile.
+///
+/// Tells the scan engine how the Epson FastFoto was configured so it can
+/// correctly classify `_a` / `_b` images **without disk I/O** in most cases.
+///
+/// | Profile | `_a` meaning | `_b` meaning | Disk I/O? |
+/// |---------|--------------|--------------|-----------|
+/// | [`EnhancedAndBack`](Self::EnhancedAndBack) | enhanced | back | No |
+/// | [`EnhancedOnly`](Self::EnhancedOnly) | enhanced | — | No |
+/// | [`OriginalOnly`](Self::OriginalOnly) | — | — | No |
+/// | [`Auto`](Self::Auto) | ambiguous | back | Yes (pixel analysis) |
+///
+/// # Examples
+///
+/// ```
+/// use photostax_core::photo_stack::ScannerProfile;
+///
+/// // Caller knows their FastFoto config — no disk I/O needed
+/// let profile = ScannerProfile::EnhancedAndBack;
+///
+/// // Unknown config — will use pixel analysis for ambiguous _a files
+/// let profile = ScannerProfile::Auto;
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScannerProfile {
+    /// Enhanced image and back capture both enabled.
+    /// `_a` is always enhanced, `_b` is always back. No classification I/O.
+    EnhancedAndBack,
+    /// Enhanced image enabled, back capture disabled.
+    /// `_a` is always enhanced, no `_b` files expected. No classification I/O.
+    EnhancedOnly,
+    /// Only original capture — no enhanced or back images.
+    /// No `_a` or `_b` files expected. No classification I/O.
+    OriginalOnly,
+    /// Unknown configuration (default). Ambiguous `_a` images (present
+    /// without a `_b`) are analysed via pixel variance to determine if
+    /// they are enhanced fronts or backs of photos. Requires disk I/O.
+    #[default]
+    Auto,
+}
+
+impl ScannerProfile {
+    /// Convert from an integer value for FFI.
+    ///
+    /// | Value | Profile |
+    /// |-------|---------|
+    /// | `0` | [`Auto`](Self::Auto) |
+    /// | `1` | [`EnhancedAndBack`](Self::EnhancedAndBack) |
+    /// | `2` | [`EnhancedOnly`](Self::EnhancedOnly) |
+    /// | `3` | [`OriginalOnly`](Self::OriginalOnly) |
+    pub fn from_int(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Auto),
+            1 => Some(Self::EnhancedAndBack),
+            2 => Some(Self::EnhancedOnly),
+            3 => Some(Self::OriginalOnly),
+            _ => None,
+        }
+    }
+
+    /// Whether this profile requires disk I/O for classification.
+    pub fn needs_classification(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+}
+
+impl From<ClassifyMode> for ScannerProfile {
+    fn from(mode: ClassifyMode) -> Self {
+        match mode {
+            ClassifyMode::Auto => ScannerProfile::Auto,
+            ClassifyMode::Skip => ScannerProfile::EnhancedAndBack,
+        }
+    }
+}
+
+/// Phase of a multi-pass scan operation.
+///
+/// Used in [`ScanProgress`] to indicate which stage the scan is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScanPhase {
+    /// Pass 1: fast directory scan — discovering files and grouping stacks.
+    Scanning = 0,
+    /// Pass 2: classifying ambiguous `_a` images via pixel analysis
+    /// (only when [`ScannerProfile::Auto`]).
+    Classifying = 1,
+    /// All passes complete.
+    Complete = 2,
+}
+
+/// Progress information emitted during a scan operation.
+///
+/// Callers receive this through the progress callback passed to
+/// [`Repository::scan_with_progress`](crate::repository::Repository::scan_with_progress).
+///
+/// # Fields
+///
+/// - `phase` — which pass is currently executing
+/// - `current` — items processed so far in the current phase
+/// - `total` — total items in the current phase (0 = indeterminate)
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    /// Current scan phase.
+    pub phase: ScanPhase,
+    /// Items processed so far in this phase.
+    pub current: usize,
+    /// Total items in this phase (0 means indeterminate / not yet known).
+    pub total: usize,
 }
 
 /// Which images in a [`PhotoStack`] to rotate.
