@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::ptr;
 
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::photo_stack::{PhotoStack, Rotation};
+use photostax_core::photo_stack::{PhotoStack, Rotation, RotationTarget};
 use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use serde::Deserialize;
@@ -340,9 +340,14 @@ pub unsafe extern "C" fn photostax_write_metadata(
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
 }
 
-/// Rotate all images in a photo stack by the given number of degrees.
+/// Rotate images in a photo stack by the given number of degrees.
 ///
 /// Accepted `degrees` values: `90`, `-90`, `180`, `-180`, `270`.
+/// The `target` parameter controls which images are rotated:
+/// - `0` = all images (original + enhanced + back)
+/// - `1` = front only (original + enhanced)
+/// - `2` = back only
+///
 /// Returns the updated stack with refreshed metadata on success.
 ///
 /// # Safety
@@ -356,6 +361,7 @@ pub unsafe extern "C" fn photostax_rotate_stack(
     repo: *const PhotostaxRepo,
     stack_id: *const c_char,
     degrees: i32,
+    target: i32,
 ) -> *mut FfiPhotoStack {
     let result = panic::catch_unwind(|| {
         if repo.is_null() {
@@ -376,7 +382,15 @@ pub unsafe extern "C" fn photostax_rotate_stack(
             None => return ptr::null_mut(),
         };
 
-        match repo_ref.inner.rotate_stack(id_str, rotation) {
+        let rotation_target = match RotationTarget::from_int(target) {
+            Some(t) => t,
+            None => return ptr::null_mut(),
+        };
+
+        match repo_ref
+            .inner
+            .rotate_stack(id_str, rotation, rotation_target)
+        {
             Ok(stack) => Box::into_raw(Box::new(photo_stack_to_ffi(&stack))),
             Err(_) => ptr::null_mut(),
         }
@@ -1351,7 +1365,7 @@ mod tests {
     #[test]
     fn test_rotate_stack_null_repo() {
         let id = CString::new("test").unwrap();
-        let result = unsafe { photostax_rotate_stack(ptr::null(), id.as_ptr(), 90) };
+        let result = unsafe { photostax_rotate_stack(ptr::null(), id.as_ptr(), 90, 0) };
         assert!(result.is_null());
     }
 
@@ -1360,7 +1374,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
-        let result = unsafe { photostax_rotate_stack(repo, ptr::null(), 90) };
+        let result = unsafe { photostax_rotate_stack(repo, ptr::null(), 90, 0) };
         assert!(result.is_null());
         unsafe { photostax_repo_free(repo) };
     }
@@ -1373,7 +1387,7 @@ mod tests {
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         let id = CString::new("IMG_001").unwrap();
-        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 45) };
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 45, 0) };
         assert!(result.is_null());
         unsafe { photostax_repo_free(repo) };
     }
@@ -1384,7 +1398,7 @@ mod tests {
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         let id = CString::new("nonexistent").unwrap();
-        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90) };
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90, 0) };
         assert!(result.is_null());
         unsafe { photostax_repo_free(repo) };
     }
@@ -1398,7 +1412,7 @@ mod tests {
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         let id = CString::new("IMG_001").unwrap();
-        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90) };
+        let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90, 0) };
         assert!(!result.is_null(), "rotate_stack should return a stack");
 
         let stack = unsafe { &*result };

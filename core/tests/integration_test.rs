@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::exif;
 use photostax_core::metadata::xmp;
-use photostax_core::photo_stack::Metadata;
+use photostax_core::photo_stack::{ClassifyMode, Metadata};
 use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, SearchQuery};
 
@@ -28,9 +28,10 @@ fn test_end_to_end_scan_search_metadata() {
     // Create test repository with helper
     test_helpers::create_test_repository(dir);
 
-    // Create repository and scan
+    // Create repository and scan (skip classification so synthetic images
+    // are not reclassified — this test verifies scan grouping, not classification).
     let repo = LocalRepository::new(dir);
-    let stacks = repo.scan().unwrap();
+    let stacks = repo.scan_with_classification(ClassifyMode::Skip).unwrap();
 
     // Verify expected stacks were found
     assert!(
