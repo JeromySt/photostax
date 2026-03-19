@@ -827,4 +827,414 @@ mod tests {
         });
         assert_eq!(result, None);
     }
+
+    // ── Coverage-boost tests ────────────────────────────────────────────
+
+    fn create_real_jpeg(dir: &std::path::Path, name: &str) {
+        use image::{ImageBuffer, Rgb};
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(100, 100, |_, _| Rgb([128, 128, 128]));
+        img.save(dir.join(name)).unwrap();
+    }
+
+    #[test]
+    fn scan_with_progress_none_callback() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_001_a.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let count = mgr.scan_with_progress(None).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn load_metadata_nonexistent_stack() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let result = mgr.load_metadata("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_metadata_stack_no_repo_id() {
+        let mut mgr = StackManager::new();
+        mgr.cache
+            .insert("orphan".to_string(), PhotoStack::new("orphan"));
+
+        let result = mgr.load_metadata("orphan");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("no repo_id"));
+    }
+
+    #[test]
+    fn load_metadata_repo_id_not_registered() {
+        let mut mgr = StackManager::new();
+        let mut stack = PhotoStack::new("orphan");
+        stack.repo_id = Some("file:///nonexistent".to_string());
+        mgr.cache.insert("orphan".to_string(), stack);
+
+        let result = mgr.load_metadata("orphan");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotate_stack_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let result = mgr.rotate_stack("nonexistent", Rotation::Cw90, RotationTarget::All);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotate_stack_no_repo_id() {
+        let mut mgr = StackManager::new();
+        mgr.cache
+            .insert("orphan".to_string(), PhotoStack::new("orphan"));
+
+        let result = mgr.rotate_stack("orphan", Rotation::Cw90, RotationTarget::All);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("no repo_id"));
+    }
+
+    #[test]
+    fn rotate_stack_repo_id_not_registered() {
+        let mut mgr = StackManager::new();
+        let mut stack = PhotoStack::new("orphan");
+        stack.repo_id = Some("file:///nonexistent".to_string());
+        mgr.cache.insert("orphan".to_string(), stack);
+
+        let result = mgr.rotate_stack("orphan", Rotation::Cw90, RotationTarget::All);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_metadata_nonexistent_stack() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mgr = StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let result = mgr.write_metadata("nonexistent", &Metadata::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_metadata_no_repo_id() {
+        let mut mgr = StackManager::new();
+        mgr.cache
+            .insert("orphan".to_string(), PhotoStack::new("orphan"));
+
+        let result = mgr.write_metadata("orphan", &Metadata::default());
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("no repo_id"));
+    }
+
+    #[test]
+    fn write_metadata_repo_id_not_registered() {
+        let mut mgr = StackManager::new();
+        let mut stack = PhotoStack::new("orphan");
+        stack.repo_id = Some("file:///nonexistent".to_string());
+        mgr.cache.insert("orphan".to_string(), stack);
+
+        let result = mgr.write_metadata("orphan", &Metadata::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_metadata_routes_to_repo() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let id = mgr.stacks()[0].id.clone();
+        let tags = Metadata::default();
+        let result = mgr.write_metadata(&id, &tags);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rotate_stack_front_only() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let id = mgr.stacks()[0].id.clone();
+        let rotated = mgr
+            .rotate_stack(&id, Rotation::Cw90, RotationTarget::Front)
+            .unwrap();
+        assert_eq!(rotated.name, "IMG_001");
+    }
+
+    #[test]
+    fn rotate_stack_back_only() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let id = mgr.stacks()[0].id.clone();
+        let rotated = mgr
+            .rotate_stack(&id, Rotation::Ccw90, RotationTarget::Back)
+            .unwrap();
+        assert_eq!(rotated.name, "IMG_001");
+    }
+
+    #[test]
+    fn rotate_stack_180() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let id = mgr.stacks()[0].id.clone();
+        let rotated = mgr
+            .rotate_stack(&id, Rotation::Cw180, RotationTarget::All)
+            .unwrap();
+        assert_eq!(rotated.name, "IMG_001");
+    }
+
+    #[test]
+    fn snapshot_repo_nonexistent_repo() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let snap = mgr.snapshot_repo("file:///nonexistent");
+        assert_eq!(snap.total_count(), 0);
+    }
+
+    #[test]
+    fn check_status_after_removal() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(
+            &tmp,
+            &["IMG_001.jpg", "IMG_002.jpg"],
+        );
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+        assert_eq!(mgr.len(), 2);
+
+        let snapshot = mgr.snapshot();
+
+        // Remove a file and rescan
+        fs::remove_file(tmp.path().join("IMG_002.jpg")).unwrap();
+        let repo2 = LocalRepository::new(tmp.path());
+        let mut mgr2 =
+            StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr2.scan().unwrap();
+
+        let status = mgr2.check_status(&snapshot);
+        assert!(status.is_stale);
+        assert_eq!(status.removed, 1);
+        assert_eq!(status.current_count, 1);
+    }
+
+    #[test]
+    fn read_image_routes_to_repo() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let stack = mgr.stacks()[0];
+        let path = stack.original.as_ref().unwrap().path.clone();
+        let reader = mgr.read_image(&path);
+        assert!(reader.is_ok());
+    }
+
+    #[test]
+    fn read_image_no_repo_can_read() {
+        let mgr = StackManager::new();
+        let result = mgr.read_image("/nonexistent/IMG_001.jpg");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        let err_msg = format!("{}", err);
+        assert!(err_msg.contains("No repository can read"));
+    }
+
+    #[test]
+    fn scan_with_metadata_loads_all() {
+        let tmp = TempDir::new().unwrap();
+        create_real_jpeg(tmp.path(), "IMG_001.jpg");
+        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
+        create_real_jpeg(tmp.path(), "IMG_002.jpg");
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let count = mgr.scan_with_metadata().unwrap();
+        assert_eq!(count, 2);
+
+        // All stacks should be in the cache
+        for stack in mgr.stacks() {
+            assert!(mgr.get_stack(&stack.id).is_some());
+        }
+    }
+
+    #[test]
+    fn watch_returns_receiver() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mgr = StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let rx = mgr.watch();
+        assert!(rx.is_ok());
+    }
+
+    #[test]
+    fn same_scheme_edge_cases() {
+        // Both empty
+        assert!(!same_scheme("", ""));
+        // One has scheme, other doesn't
+        assert!(!same_scheme("file:///a", "no-scheme"));
+        // Same scheme
+        assert!(same_scheme("azure://a/b", "azure://c/d"));
+        // Different schemes
+        assert!(!same_scheme("file:///a", "http:///b"));
+        // No :// — split("://").next() returns full string, both equal → true
+        assert!(same_scheme("plain", "plain"));
+        // No :// — different strings → false
+        assert!(!same_scheme("abc", "def"));
+    }
+
+    #[test]
+    fn apply_event_back_variant() {
+        let mut mgr = StackManager::new();
+        let event = StackEvent::FileChanged {
+            stack_id: "test_stack".to_string(),
+            variant: FileVariant::Back,
+            path: "/photos/IMG_001_b.jpg".to_string(),
+            size: 500,
+        };
+        let result = mgr.apply_event(&event);
+        assert_eq!(
+            result,
+            Some(CacheEvent::StackAdded("test_stack".to_string()))
+        );
+        let stack = mgr.get_stack("test_stack").unwrap();
+        assert!(stack.back.is_some());
+        assert!(stack.original.is_none());
+        assert!(stack.enhanced.is_none());
+    }
+
+    #[test]
+    fn apply_event_remove_enhanced_slot() {
+        let mut mgr = StackManager::new();
+        mgr.apply_event(&StackEvent::FileChanged {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Original,
+            path: "/p/o.jpg".to_string(),
+            size: 100,
+        });
+        mgr.apply_event(&StackEvent::FileChanged {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Enhanced,
+            path: "/p/e.jpg".to_string(),
+            size: 200,
+        });
+        mgr.apply_event(&StackEvent::FileChanged {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Back,
+            path: "/p/b.jpg".to_string(),
+            size: 300,
+        });
+
+        // Remove enhanced
+        let result = mgr.apply_event(&StackEvent::FileRemoved {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Enhanced,
+        });
+        assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
+        let stack = mgr.get_stack("s1").unwrap();
+        assert!(stack.enhanced.is_none());
+        assert!(stack.original.is_some());
+        assert!(stack.back.is_some());
+
+        // Remove back
+        let result = mgr.apply_event(&StackEvent::FileRemoved {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Back,
+        });
+        assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
+        let stack = mgr.get_stack("s1").unwrap();
+        assert!(stack.back.is_none());
+    }
+
+    #[test]
+    fn error_display_overlapping_repo() {
+        let err = StackManagerError::OverlappingRepo {
+            new: "file:///a".to_string(),
+            existing: "file:///b".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("overlap"));
+    }
+
+    #[test]
+    fn error_display_repo_not_found() {
+        let err = StackManagerError::RepoNotFound("missing".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("missing"));
+    }
+
+    #[test]
+    fn error_from_repository_error() {
+        let repo_err = RepositoryError::NotFound("stack1".to_string());
+        let mgr_err: StackManagerError = repo_err.into();
+        let display = format!("{}", mgr_err);
+        assert!(display.contains("stack1"));
+    }
 }

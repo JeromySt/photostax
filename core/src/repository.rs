@@ -364,4 +364,13 @@ mod tests {
         let debug = format!("{:?}", err);
         assert!(debug.contains("NotFound"));
     }
+
+    #[test]
+    fn test_default_watch_returns_receiver() {
+        use crate::backends::local::LocalRepository;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = LocalRepository::new(tmp.path());
+        let rx = repo.watch();
+        assert!(rx.is_ok());
+    }
 }

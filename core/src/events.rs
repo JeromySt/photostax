@@ -59,3 +59,58 @@ pub enum CacheEvent {
     /// A stack was removed from the cache (all slots empty).
     StackRemoved(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::Variant;
+
+    #[test]
+    fn test_variant_to_file_variant() {
+        assert_eq!(FileVariant::from(Variant::Original), FileVariant::Original);
+        assert_eq!(FileVariant::from(Variant::Enhanced), FileVariant::Enhanced);
+        assert_eq!(FileVariant::from(Variant::Back), FileVariant::Back);
+    }
+
+    #[test]
+    fn test_file_variant_debug_clone() {
+        let v = FileVariant::Original;
+        let cloned = v;
+        assert_eq!(format!("{:?}", cloned), "Original");
+    }
+
+    #[test]
+    fn test_stack_event_debug_clone() {
+        let event = StackEvent::FileChanged {
+            stack_id: "s1".to_string(),
+            variant: FileVariant::Enhanced,
+            path: "/p.jpg".to_string(),
+            size: 42,
+        };
+        let cloned = event.clone();
+        let debug = format!("{:?}", cloned);
+        assert!(debug.contains("FileChanged"));
+        assert!(debug.contains("s1"));
+
+        let removed = StackEvent::FileRemoved {
+            stack_id: "s2".to_string(),
+            variant: FileVariant::Back,
+        };
+        let debug = format!("{:?}", removed.clone());
+        assert!(debug.contains("FileRemoved"));
+    }
+
+    #[test]
+    fn test_cache_event_debug_clone_eq() {
+        let a = CacheEvent::StackAdded("x".to_string());
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let c = CacheEvent::StackUpdated("y".to_string());
+        assert_ne!(a, c);
+
+        let d = CacheEvent::StackRemoved("z".to_string());
+        let debug = format!("{:?}", d);
+        assert!(debug.contains("StackRemoved"));
+    }
+}
