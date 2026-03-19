@@ -12,9 +12,9 @@ use napi_derive::napi;
 
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation, RotationTarget as CoreRotationTarget, ScannerProfile as CoreScannerProfile};
-use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
 use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
+use photostax_core::stack_manager::StackManager;
 
 /// Metadata associated with a photo stack.
 ///
@@ -177,7 +177,7 @@ pub struct RepositoryOptions {
 /// Provides methods to scan, retrieve, and modify photo stacks and their metadata.
 #[napi]
 pub struct PhotostaxRepository {
-    inner: LocalRepository,
+    inner: std::cell::RefCell<StackManager>,
 }
 
 #[napi]
@@ -188,15 +188,18 @@ impl PhotostaxRepository {
     /// @param options - Optional configuration (e.g. `{ recursive: true }`)
     /// @throws Error if the path is invalid
     #[napi(constructor)]
-    pub fn new(directory_path: String, options: Option<RepositoryOptions>) -> Self {
+    pub fn new(directory_path: String, options: Option<RepositoryOptions>) -> napi::Result<Self> {
         let recursive = options.as_ref().and_then(|o| o.recursive).unwrap_or(false);
         let config = photostax_core::scanner::ScannerConfig {
             recursive,
             ..photostax_core::scanner::ScannerConfig::default()
         };
-        Self {
-            inner: LocalRepository::with_config(PathBuf::from(directory_path), config),
-        }
+        let repo = LocalRepository::with_config(PathBuf::from(directory_path), config);
+        let mgr = StackManager::single(Box::new(repo), CoreScannerProfile::Auto)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Self {
+            inner: std::cell::RefCell::new(mgr),
+        })
     }
 
     /// Scan the repository and return all discovered photo stacks (fast, no file-based metadata).
@@ -209,10 +212,10 @@ impl PhotostaxRepository {
     /// @throws Error if the directory cannot be accessed
     #[napi]
     pub fn scan(&self) -> napi::Result<Vec<JsPhotoStack>> {
-        self.inner
-            .scan()
-            .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
     }
 
     /// Scan with a scanner profile and progress callback.
@@ -236,7 +239,7 @@ impl PhotostaxRepository {
         profile: Option<String>,
         callback: Option<JsFunction>,
     ) -> napi::Result<Vec<JsPhotoStack>> {
-        let scanner_profile = match profile.as_deref() {
+        let _scanner_profile = match profile.as_deref() {
             Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
             Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
             Some("original_only") => CoreScannerProfile::OriginalOnly,
@@ -263,10 +266,10 @@ impl PhotostaxRepository {
                 None
             };
 
-        self.inner
-            .scan_with_progress(scanner_profile, progress)
-            .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan_with_progress(progress)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
     }
 
     /// Scan the repository and return all photo stacks with full metadata loaded.
@@ -278,10 +281,10 @@ impl PhotostaxRepository {
     /// @throws Error if the directory cannot be accessed
     #[napi]
     pub fn scan_with_metadata(&self) -> napi::Result<Vec<JsPhotoStack>> {
-        self.inner
-            .scan_with_metadata()
-            .map(|stacks| stacks.into_iter().map(JsPhotoStack::from).collect())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan_with_metadata()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
     }
 
     /// Retrieve a single photo stack by its ID.
@@ -291,10 +294,14 @@ impl PhotostaxRepository {
     /// @throws Error if the stack is not found or cannot be accessed
     #[napi]
     pub fn get_stack(&self, id: String) -> napi::Result<JsPhotoStack> {
-        self.inner
-            .get_stack(&id)
+        let mut mgr = self.inner.borrow_mut();
+        if mgr.is_empty() {
+            mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
+        mgr.get_stack(&id)
+            .cloned()
             .map(JsPhotoStack::from)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+            .ok_or_else(|| napi::Error::from_reason(format!("Stack not found: {id}")))
     }
 
     /// Load full metadata (EXIF, XMP, sidecar) for a specific stack.
@@ -307,16 +314,15 @@ impl PhotostaxRepository {
     /// @throws Error if the stack is not found or metadata cannot be read
     #[napi]
     pub fn load_metadata(&self, stack_id: String) -> napi::Result<JsMetadata> {
-        let mut stack = self
-            .inner
-            .get_stack(&stack_id)
+        let mut mgr = self.inner.borrow_mut();
+        if mgr.is_empty() {
+            mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
+        mgr.load_metadata(&stack_id)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-
-        self.inner
-            .load_metadata(&mut stack)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-
-        Ok(stack.metadata.into())
+        let stack = mgr.get_stack(&stack_id)
+            .ok_or_else(|| napi::Error::from_reason(format!("Stack not found: {stack_id}")))?;
+        Ok(stack.metadata.clone().into())
     }
 
     /// Read the raw bytes of an image file.
@@ -326,8 +332,8 @@ impl PhotostaxRepository {
     /// @throws Error if the file cannot be read
     #[napi]
     pub fn read_image(&self, path: String) -> napi::Result<Buffer> {
-        let mut reader = self
-            .inner
+        let mgr = self.inner.borrow();
+        let mut reader = mgr
             .read_image(&path)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let mut buf = Vec::new();
@@ -347,15 +353,12 @@ impl PhotostaxRepository {
     /// @throws Error if the stack is not found or metadata cannot be written
     #[napi]
     pub fn write_metadata(&self, stack_id: String, metadata: JsMetadata) -> napi::Result<()> {
-        let stack = self
-            .inner
-            .get_stack(&stack_id)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-
+        let mut mgr = self.inner.borrow_mut();
+        if mgr.is_empty() {
+            mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
         let core_metadata: CoreMetadata = metadata.into();
-
-        self.inner
-            .write_metadata(&stack, &core_metadata)
+        mgr.write_metadata(&stack_id, &core_metadata)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
@@ -366,10 +369,11 @@ impl PhotostaxRepository {
     /// @throws Error if the repository cannot be scanned
     #[napi]
     pub fn search(&self, query: JsSearchQuery) -> napi::Result<Vec<JsPhotoStack>> {
-        let stacks = self
-            .inner
-            .scan_with_metadata()
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         let core_query: CoreSearchQuery = query.into();
         let results = filter_stacks(&stacks, &core_query);
@@ -386,10 +390,16 @@ impl PhotostaxRepository {
     /// @throws Error if the directory cannot be accessed
     #[napi]
     pub fn scan_paginated(&self, offset: u32, limit: u32, load_metadata: Option<bool>) -> napi::Result<JsPaginatedResult> {
-        let stacks = self
-            .inner
-            .scan()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let mut mgr = self.inner.borrow_mut();
+        if load_metadata.unwrap_or(false) {
+            mgr.scan_with_metadata()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        } else {
+            mgr.scan()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
+        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         let paginated = paginate_stacks(
             &stacks,
@@ -399,19 +409,7 @@ impl PhotostaxRepository {
             },
         );
 
-        let items: Vec<JsPhotoStack> = if load_metadata.unwrap_or(false) {
-            paginated
-                .items
-                .into_iter()
-                .map(|s| {
-                    let mut owned = s.clone();
-                    let _ = self.inner.load_metadata(&mut owned);
-                    JsPhotoStack::from(owned)
-                })
-                .collect()
-        } else {
-            paginated.items.into_iter().map(JsPhotoStack::from).collect()
-        };
+        let items: Vec<JsPhotoStack> = paginated.items.into_iter().map(JsPhotoStack::from).collect();
 
         Ok(JsPaginatedResult {
             items,
@@ -436,10 +434,11 @@ impl PhotostaxRepository {
         offset: u32,
         limit: u32,
     ) -> napi::Result<JsPaginatedResult> {
-        let stacks = self
-            .inner
-            .scan_with_metadata()
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         let core_query: CoreSearchQuery = query.into();
         let filtered = filter_stacks(&stacks, &core_query);
@@ -495,9 +494,12 @@ impl PhotostaxRepository {
             }
         };
 
-        self.inner
-            .rotate_stack(&stack_id, rotation, rotation_target)
-            .map(JsPhotoStack::from)
+        let mut mgr = self.inner.borrow_mut();
+        if mgr.is_empty() {
+            mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
+        mgr.rotate_stack(&stack_id, rotation, rotation_target)
+            .map(|s| JsPhotoStack::from(s.clone()))
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
@@ -512,15 +514,16 @@ impl PhotostaxRepository {
     /// @throws Error if the scan fails
     #[napi]
     pub fn create_snapshot(&self, load_metadata: Option<bool>) -> napi::Result<JsScanSnapshot> {
-        let snapshot = if load_metadata.unwrap_or(false) {
-            CoreScanSnapshot::from_scan_with_metadata(&self.inner)
+        let mut mgr = self.inner.borrow_mut();
+        if load_metadata.unwrap_or(false) {
+            mgr.scan_with_metadata()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         } else {
-            CoreScanSnapshot::from_scan(&self.inner)
-        };
-
-        snapshot
-            .map(|s| JsScanSnapshot { inner: s })
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+            mgr.scan()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        }
+        let snapshot = mgr.snapshot();
+        Ok(JsScanSnapshot { inner: snapshot })
     }
 
     /// Create a snapshot with a scanner profile and progress callback.
@@ -540,7 +543,7 @@ impl PhotostaxRepository {
         load_metadata: Option<bool>,
         callback: Option<JsFunction>,
     ) -> napi::Result<JsScanSnapshot> {
-        let scanner_profile = match profile.as_deref() {
+        let _scanner_profile = match profile.as_deref() {
             Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
             Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
             Some("original_only") => CoreScannerProfile::OriginalOnly,
@@ -567,14 +570,17 @@ impl PhotostaxRepository {
                 None
             };
 
-        CoreScanSnapshot::from_scan_with_progress(
-            &self.inner,
-            scanner_profile,
-            load_metadata.unwrap_or(false),
-            progress,
-        )
-        .map(|s| JsScanSnapshot { inner: s })
-        .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan_with_progress(progress)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        if load_metadata.unwrap_or(false) {
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in ids {
+                let _ = mgr.load_metadata(&id);
+            }
+        }
+        let snapshot = mgr.snapshot();
+        Ok(JsScanSnapshot { inner: snapshot })
     }
 
     /// Check whether a snapshot is still current.
@@ -587,17 +593,17 @@ impl PhotostaxRepository {
     /// @throws Error if the re-scan fails
     #[napi]
     pub fn check_snapshot_status(&self, snapshot: &JsScanSnapshot) -> napi::Result<JsSnapshotStatus> {
-        snapshot
-            .inner
-            .check_status(&self.inner)
-            .map(|s| JsSnapshotStatus {
-                is_stale: s.is_stale,
-                snapshot_count: s.snapshot_count as u32,
-                current_count: s.current_count as u32,
-                added: s.added as u32,
-                removed: s.removed as u32,
-            })
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut mgr = self.inner.borrow_mut();
+        mgr.scan()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let status = mgr.check_status(&snapshot.inner);
+        Ok(JsSnapshotStatus {
+            is_stale: status.is_stale,
+            snapshot_count: status.snapshot_count as u32,
+            current_count: status.current_count as u32,
+            added: status.added as u32,
+            removed: status.removed as u32,
+        })
     }
 }
 

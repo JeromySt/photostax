@@ -274,6 +274,31 @@ impl StackManager {
         self.repos.len()
     }
 
+    /// Read an image file, trying each registered repo until one succeeds.
+    pub fn read_image(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+        for reg in self.repos.values() {
+            if let Ok(reader) = reg.repo.read_image(path) {
+                return Ok(reader);
+            }
+        }
+        Err(RepositoryError::NotFound(format!(
+            "No repository can read: {path}"
+        )))
+    }
+
+    /// Scan all repos and load metadata for every stack (slow path).
+    pub fn scan_with_metadata(&mut self) -> Result<usize, StackManagerError> {
+        self.scan()?;
+        let ids: Vec<String> = self.cache.keys().cloned().collect();
+        for id in ids {
+            self.load_metadata(&id)?;
+        }
+        Ok(self.cache.len())
+    }
+
     /// Start watching all registered repos for changes.
     /// Returns a receiver for CacheEvents that consumers can listen to.
     pub fn watch(&self) -> Result<std::sync::mpsc::Receiver<CacheEvent>, StackManagerError> {

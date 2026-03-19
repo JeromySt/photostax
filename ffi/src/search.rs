@@ -4,7 +4,7 @@
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
 use serde::Deserialize;
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn photostax_search(
     repo: *const PhotostaxRepo,
     query_json: *const c_char,
 ) -> FfiPhotoStackArray {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
             return FfiPhotoStackArray::empty();
         }
@@ -141,10 +141,13 @@ pub unsafe extern "C" fn photostax_search(
         }
 
         // Get all stacks with metadata (search needs metadata to filter)
-        let stacks = match repo_ref.inner.scan_with_metadata() {
-            Ok(s) => s,
-            Err(_) => return FfiPhotoStackArray::empty(),
-        };
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan_with_metadata().is_err() {
+            return FfiPhotoStackArray::empty();
+        }
+        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
+            mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         // Apply the filter
         let filtered = filter_stacks(&stacks, &query);
@@ -159,7 +162,7 @@ pub unsafe extern "C" fn photostax_search(
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
 
         FfiPhotoStackArray { data, len }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiPhotoStackArray::empty())
 }
@@ -186,7 +189,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
     offset: usize,
     limit: usize,
 ) -> FfiPaginatedResult {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
             return FfiPaginatedResult::empty(offset, limit);
         }
@@ -238,10 +241,13 @@ pub unsafe extern "C" fn photostax_search_paginated(
             query = query.with_ids(ids);
         }
 
-        let stacks = match repo_ref.inner.scan_with_metadata() {
-            Ok(s) => s,
-            Err(_) => return FfiPaginatedResult::empty(offset, limit),
-        };
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan_with_metadata().is_err() {
+            return FfiPaginatedResult::empty(offset, limit);
+        }
+        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
+            mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         let filtered = filter_stacks(&stacks, &query);
         let paginated = paginate_stacks(&filtered, &PaginationParams { offset, limit });
@@ -271,7 +277,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
             limit: paginated.limit,
             has_more: paginated.has_more,
         }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
 }

@@ -4,18 +4,24 @@
 //! across the FFI boundary. Pointers returned from FFI functions must be freed
 //! using the corresponding `*_free` functions.
 
+use std::cell::RefCell;
 use std::os::raw::c_char;
 
-/// Opaque handle to a LocalRepository.
+/// Opaque handle to a [`StackManager`].
 ///
 /// This type is opaque to C code and should only be manipulated through
 /// the FFI functions. Create with [`photostax_repo_open`] and free with
 /// [`photostax_repo_free`].
 ///
+/// Internally uses [`RefCell`] because `StackManager` mutation methods
+/// (`scan`, `load_metadata`, `rotate_stack`, etc.) require `&mut self`,
+/// while the FFI functions receive `*const PhotostaxRepo`.
+///
+/// [`StackManager`]: photostax_core::stack_manager::StackManager
 /// [`photostax_repo_open`]: crate::repository::photostax_repo_open
 /// [`photostax_repo_free`]: crate::repository::photostax_repo_free
 pub struct PhotostaxRepo {
-    pub(crate) inner: photostax_core::backends::local::LocalRepository,
+    pub(crate) inner: RefCell<photostax_core::stack_manager::StackManager>,
 }
 
 /// A photo stack returned across FFI.

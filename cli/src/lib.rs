@@ -12,9 +12,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::ImageFormat;
 use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget, ScannerProfile};
-use photostax_core::repository::Repository;
 use photostax_core::scanner::ScannerConfig;
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
+use photostax_core::stack_manager::StackManager;
 
 /// CLI tool for inspecting and managing Epson FastFoto photo stacks
 #[derive(Parser)]
@@ -434,6 +434,13 @@ pub fn cmd_scan(
         ..ScannerConfig::default()
     };
     let repo = LocalRepository::with_config(directory, config);
+    let mut mgr = match StackManager::single(Box::new(repo), profile) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
 
     // Auto-enable metadata loading when show_metadata is requested
     let load_metadata = metadata || show_metadata;
@@ -450,18 +457,16 @@ pub fn cmd_scan(
         }
     };
 
-    let stacks = if load_metadata {
-        repo.scan_with_metadata()
+    let scan_result = if load_metadata {
+        mgr.scan_with_metadata()
     } else {
-        repo.scan_with_progress(profile, Some(&mut progress_cb))
+        mgr.scan_with_progress(Some(&mut progress_cb))
     };
-    let stacks = match stacks {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
-            return EXIT_ERROR;
-        }
-    };
+    if let Err(e) = scan_result {
+        let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+        return EXIT_ERROR;
+    }
+    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
 
     // Apply filters
     let filtered: Vec<_> = stacks
@@ -527,13 +532,18 @@ pub fn cmd_search(
     offset: usize,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stacks = match repo.scan_with_metadata() {
-        Ok(s) => s,
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
         Err(e) => {
-            let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+            let _ = writeln!(err, "Error: {e}");
             return EXIT_ERROR;
         }
     };
+    if let Err(e) = mgr.scan_with_metadata() {
+        let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+        return EXIT_ERROR;
+    }
+    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
 
     // Build search query
     let mut search = SearchQuery::new().with_text(query);
@@ -590,25 +600,22 @@ pub fn cmd_search(
 /// matching by display name. This lets users pass either the hash-based ID
 /// or the human-readable stem name on the command line.
 fn resolve_stack(
-    repo: &LocalRepository,
+    mgr: &mut StackManager,
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
-    match repo.get_stack(id_or_name) {
-        Ok(s) => Ok(s),
-        Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
-            // Fall back: scan and find by name
-            let stacks = repo.scan()?;
-            stacks
-                .into_iter()
-                .find(|s| s.name == id_or_name)
-                .ok_or_else(|| {
-                    photostax_core::repository::RepositoryError::NotFound(
-                        id_or_name.to_string(),
-                    )
-                })
-        }
-        Err(e) => Err(e),
+    if mgr.is_empty() {
+        mgr.scan().map_err(|e| {
+            photostax_core::repository::RepositoryError::Other(e.to_string())
+        })?;
     }
+    if let Some(s) = mgr.get_stack(id_or_name) {
+        return Ok(s.clone());
+    }
+    // Fall back: find by name
+    let found = mgr.stacks().into_iter().find(|s| s.name == id_or_name).cloned();
+    found.ok_or_else(|| {
+        photostax_core::repository::RepositoryError::NotFound(id_or_name.to_string())
+    })
 }
 
 /// Info command implementation
@@ -620,7 +627,14 @@ pub fn cmd_info(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match resolve_stack(&repo, stack_id) {
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let stack = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -632,10 +646,11 @@ pub fn cmd_info(
         }
     };
 
-    if let Err(e) = repo.load_metadata(&mut stack) {
+    if let Err(e) = mgr.load_metadata(&stack.id) {
         let _ = writeln!(err, "Error loading metadata: {e}");
         return EXIT_ERROR;
     }
+    let stack = mgr.get_stack(&stack.id).cloned().unwrap();
 
     match format {
         OutputFormat::Json => {
@@ -661,7 +676,14 @@ pub fn cmd_metadata_read(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match resolve_stack(&repo, stack_id) {
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let stack = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -673,10 +695,11 @@ pub fn cmd_metadata_read(
         }
     };
 
-    if let Err(e) = repo.load_metadata(&mut stack) {
+    if let Err(e) = mgr.load_metadata(&stack.id) {
         let _ = writeln!(err, "Error loading metadata: {e}");
         return EXIT_ERROR;
     }
+    let stack = mgr.get_stack(&stack.id).cloned().unwrap();
 
     match format {
         OutputFormat::Json => {
@@ -706,7 +729,14 @@ pub fn cmd_metadata_write(
     tags: &[(String, String)],
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match resolve_stack(&repo, stack_id) {
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let stack = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -718,7 +748,7 @@ pub fn cmd_metadata_write(
         }
     };
 
-    if let Err(e) = repo.load_metadata(&mut stack) {
+    if let Err(e) = mgr.load_metadata(&stack.id) {
         let _ = writeln!(err, "Error loading metadata: {e}");
         return EXIT_ERROR;
     }
@@ -730,7 +760,7 @@ pub fn cmd_metadata_write(
             .insert(key.clone(), serde_json::Value::String(value.clone()));
     }
 
-    if let Err(e) = repo.write_metadata(&stack, &new_tags) {
+    if let Err(e) = mgr.write_metadata(&stack.id, &new_tags) {
         let _ = writeln!(err, "Error writing metadata: {e}");
         return EXIT_ERROR;
     }
@@ -748,9 +778,16 @@ pub fn cmd_metadata_delete(
     tags: &[String],
 ) -> i32 {
     let repo = LocalRepository::new(directory);
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
 
     // Verify stack exists
-    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) = resolve_stack(&repo, stack_id)
+    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) = resolve_stack(&mut mgr, stack_id)
     {
         let _ = writeln!(err, "Stack not found: {stack_id}");
         return EXIT_NOT_FOUND;
@@ -778,13 +815,18 @@ pub fn cmd_export(
     output: Option<&Path>,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let stacks = match repo.scan_with_metadata() {
-        Ok(s) => s,
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
         Err(e) => {
-            let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+            let _ = writeln!(err, "Error: {e}");
             return EXIT_ERROR;
         }
     };
+    if let Err(e) = mgr.scan_with_metadata() {
+        let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+        return EXIT_ERROR;
+    }
+    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
 
     let json = serde_json::to_string_pretty(&stacks).unwrap();
 
@@ -831,9 +873,16 @@ pub fn cmd_rotate(
     };
 
     let repo = LocalRepository::new(directory);
+    let mut mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
 
     // Resolve the stack ID (supports both opaque IDs and display names)
-    let resolved_id = match resolve_stack(&repo, stack_id) {
+    let resolved_id = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s.id,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -845,9 +894,11 @@ pub fn cmd_rotate(
         }
     };
 
-    let stack = match repo.rotate_stack(&resolved_id, rotation, target) {
-        Ok(s) => s,
-        Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
+    let stack = match mgr.rotate_stack(&resolved_id, rotation, target) {
+        Ok(s) => s.clone(),
+        Err(photostax_core::stack_manager::StackManagerError::Repository(
+            photostax_core::repository::RepositoryError::NotFound(_),
+        )) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
             return EXIT_NOT_FOUND;
         }
