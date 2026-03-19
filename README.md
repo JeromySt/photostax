@@ -40,20 +40,23 @@ Epson FastFoto scanners produce multiple files per scanned photo:
 
 ```rust
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::repository::Repository;
+use photostax_core::manager::StackManager;
+use photostax_core::scanner::ScannerProfile;
 
 let repo = LocalRepository::new("/path/to/photos");
-let stacks = repo.scan().unwrap();
+let manager = StackManager::single(repo, ScannerProfile::Auto);
+manager.scan().unwrap();
 
-for stack in &stacks {
-    println!("Photo: {}", stack.id);
-    if let Some(ref back) = stack.back {
-        println!("  Has back scan: {}", back.display());
+for stack in manager.all_stacks() {
+    println!("Photo: {} ({})", stack.name, stack.id);
+    if let Some(ref original) = stack.original {
+        println!("  Original: {}", original.path);
     }
 }
 
 // Paginate results (e.g. page 2 with 20 items per page)
 use photostax_core::search::{paginate_stacks, PaginationParams};
+let stacks = manager.all_stacks();
 let page = paginate_stacks(&stacks, &PaginationParams { offset: 20, limit: 20 });
 println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
 ```
@@ -63,12 +66,13 @@ println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
 ```csharp
 using Photostax;
 
+// Binding constructors wrap StackManager automatically
 using var repo = new PhotostaxRepository("/path/to/photos");
 var stacks = repo.Scan();
 
 foreach (var stack in stacks)
 {
-    Console.WriteLine($"Photo: {stack.Id}");
+    Console.WriteLine($"Photo: {stack.Name} ({stack.Id})");
     Console.WriteLine($"  Original: {stack.OriginalPath}");
     Console.WriteLine($"  Enhanced: {stack.EnhancedPath}");
     Console.WriteLine($"  Back: {stack.BackPath}");
@@ -84,12 +88,13 @@ Console.WriteLine($"Showing {page.Items.Count} of {page.TotalCount} total");
 ```typescript
 import { PhotostaxRepository } from '@photostax/core';
 
+// Binding constructors wrap StackManager automatically
 const repo = new PhotostaxRepository('/path/to/photos');
 const stacks = repo.scan();
 
 for (const stack of stacks) {
-  console.log(`Photo: ${stack.id}`);
-  console.log(`  Original: ${stack.original}`);
+  console.log(`Photo: ${stack.name} (${stack.id})`);
+  console.log(`  Original: ${stack.original?.path}`);
   console.log(`  EXIF Make: ${stack.metadata.exifTags['Make']}`);
 }
 
@@ -137,7 +142,17 @@ See [cli/README.md](cli/README.md) for complete CLI documentation.
 │                     (C-compatible FFI layer)                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                        photostax-core                            │
-│           (Rust core: scanning, metadata, storage, search)       │
+│  ┌─────────────┐  ┌────────────┐  ┌──────────────────────────┐ │
+│  │StackManager │  │ FileAccess │  │ Content Hashing          │ │
+│  │(multi-repo  │  │ (I/O trait)│  │ (SHA-256, Merkle, lazy)  │ │
+│  │ cache, O(1))│  │            │  │                          │ │
+│  └─────────────┘  └────────────┘  └──────────────────────────┘ │
+│  ┌─────────────┐  ┌────────────┐  ┌──────────────────────────┐ │
+│  │ FS Watching │  │ Opaque IDs │  │ Scanner & Metadata       │ │
+│  │ (notify rx) │  │ (hash-based│  │ (EXIF, XMP, sidecars)    │ │
+│  │             │  │  globally  │  │                          │ │
+│  │             │  │  unique)   │  │                          │ │
+│  └─────────────┘  └────────────┘  └──────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │                       Storage Backends                           │
 │        ┌──────────────┬──────────────┬──────────────┐           │
@@ -147,10 +162,15 @@ See [cli/README.md](cli/README.md) for complete CLI documentation.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **Rust core** (`photostax-core`) — single source of truth with high-performance scanning, metadata, and storage backend support
+- **StackManager** — primary API; unified multi-repository cache with O(1) stack lookups, overlap detection, and filesystem watch integration
+- **FileAccess trait** — backend-polymorphic file I/O with `open_read()`/`open_write()` and `HashingReader` for zero-overhead content hashing
+- **Opaque stack IDs** — deterministic SHA-256 hashes (16 hex chars) that are globally unique across subfolders; `stack.name` and `stack.folder` for display
+- **Content hashing** — lazy per-file SHA-256 via `ImageFile::content_hash()` and Merkle-style `PhotoStack::content_hash()` for duplicate detection
+- **Filesystem watching** — `Repository::watch()` returns a `Receiver<StackEvent>` for reactive cache updates via `CacheEvent` (`StackAdded`/`StackUpdated`/`StackRemoved`)
+- **Rust core** (`photostax-core`) — scanning, metadata, storage backend support
 - **FFI layer** (`photostax-ffi`) — C-compatible interface for language bindings
-- **Client bindings** — idiomatic libraries for C# (.NET), TypeScript (Node.js), and more
-- **Storage backends** — pluggable `Repository` trait (local filesystem now; OneDrive, Google Drive planned)
+- **Client bindings** — idiomatic libraries for C# (.NET), TypeScript (Node.js), and more (constructors wrap `StackManager` automatically)
+- **Storage backends** — pluggable `Repository: FileAccess` trait (local filesystem now; OneDrive, Google Drive planned)
 
 **Metadata strategy**: EXIF tags are read from images, XMP tags are read/written for interoperability with other photo apps, and XMP sidecar files (`.xmp`) store custom tags and EXIF overrides alongside your images. See [docs/metadata-strategy.md](docs/metadata-strategy.md) for details.
 
@@ -259,6 +279,7 @@ photostax/
 
 ## Documentation
 
+- [Migration Guide (v0.1.x → v0.2.0)](docs/MIGRATION.md) — Breaking changes and upgrade instructions
 - [Architecture Overview](docs/architecture.md) — System design and component responsibilities
 - [FastFoto Naming Convention](docs/fastfoto-convention.md) — How scanner files are named and grouped
 - [Metadata Strategy](docs/metadata-strategy.md) — EXIF, XMP, and sidecar database handling
