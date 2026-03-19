@@ -58,6 +58,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::file_access::{FileAccess, ReadSeek};
 use crate::classify;
 use crate::metadata::exif;
 use crate::metadata::sidecar;
@@ -357,6 +358,27 @@ impl LocalRepository {
     }
 }
 
+impl FileAccess for LocalRepository {
+    fn open_read(&self, path: &str) -> std::io::Result<Box<dyn ReadSeek>> {
+        let file = std::fs::File::open(path)?;
+        // On Windows, files opened read-only allow concurrent reads by default
+        // On Unix, flock LOCK_SH would be used for explicit shared locking
+        let reader = std::io::BufReader::with_capacity(64 * 1024, file);
+        Ok(Box::new(reader))
+    }
+
+    fn open_write(&self, path: &str) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        // On Windows, opening for write with default sharing mode provides
+        // exclusive access. On Unix, flock LOCK_EX would be used.
+        Ok(Box::new(file))
+    }
+}
+
 impl Repository for LocalRepository {
     fn location(&self) -> &str {
         &self.location
@@ -435,8 +457,8 @@ impl Repository for LocalRepository {
         Ok(stack)
     }
 
-    fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError> {
-        Ok(std::fs::read(path)?)
+    fn read_image(&self, path: &str) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+        Ok(self.open_read(path)?)
     }
 
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
@@ -532,6 +554,7 @@ fn rotate_image_file(path: &Path, rotation: Rotation) -> Result<(), RepositoryEr
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Read;
     use tempfile::TempDir;
 
     /// Get a stack by its display name (scans the repo, finds by name, then fetches by opaque ID).
@@ -710,7 +733,11 @@ mod tests {
         fs::write(&img_path, &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let data = repo.read_image(&img_path).unwrap();
+        let mut data = Vec::new();
+        repo.read_image(img_path.to_str().unwrap())
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
 
         assert_eq!(data, jpeg_data);
     }
@@ -719,7 +746,8 @@ mod tests {
     fn test_read_image_nonexistent() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        let result = repo.read_image(&tmp.path().join("nonexistent.jpg"));
+        let nonexistent = tmp.path().join("nonexistent.jpg");
+        let result = repo.read_image(nonexistent.to_str().unwrap());
 
         assert!(matches!(result, Err(RepositoryError::Io(_))));
     }

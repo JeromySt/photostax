@@ -4,6 +4,7 @@
 
 mod test_helpers;
 
+use std::io::Read;
 use std::path::PathBuf;
 
 use photostax_core::backends::local::LocalRepository;
@@ -279,7 +280,11 @@ fn test_read_image_content() {
     let repo = LocalRepository::new(dir);
 
     // Read the image
-    let content = repo.read_image(&paths[0]).unwrap();
+    let mut content = Vec::new();
+    repo.read_image(paths[0].to_str().unwrap())
+        .unwrap()
+        .read_to_end(&mut content)
+        .unwrap();
 
     // Verify it's a valid JPEG (starts with SOI marker)
     assert_eq!(&content[0..2], &[0xFF, 0xD8]);

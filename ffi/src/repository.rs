@@ -325,10 +325,14 @@ pub unsafe extern "C" fn photostax_read_image(
             Err(_) => return FfiResult::error("Invalid UTF-8 in path"),
         };
 
-        match repo_ref.inner.read_image(std::path::Path::new(path_str)) {
-            Ok(bytes) => {
-                let len = bytes.len();
-                let boxed = bytes.into_boxed_slice();
+        match repo_ref.inner.read_image(path_str) {
+            Ok(mut reader) => {
+                let mut buf = Vec::new();
+                if let Err(e) = std::io::Read::read_to_end(&mut reader, &mut buf) {
+                    return FfiResult::error(&e.to_string());
+                }
+                let len = buf.len();
+                let boxed = buf.into_boxed_slice();
                 let data = Box::into_raw(boxed) as *mut u8;
                 unsafe {
                     *out_data = data;

@@ -4,7 +4,8 @@
 //! enabling Node.js applications to work with Epson FastFoto photo stacks.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::PathBuf;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -325,10 +326,15 @@ impl PhotostaxRepository {
     /// @throws Error if the file cannot be read
     #[napi]
     pub fn read_image(&self, path: String) -> napi::Result<Buffer> {
-        self.inner
-            .read_image(Path::new(&path))
-            .map(|bytes| bytes.into())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        let mut reader = self
+            .inner
+            .read_image(&path)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let mut buf = Vec::new();
+        reader
+            .read_to_end(&mut buf)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(buf.into())
     }
 
     /// Write metadata tags to a photo stack.

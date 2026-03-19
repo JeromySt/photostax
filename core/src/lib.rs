@@ -67,6 +67,7 @@
 
 pub mod backends;
 pub mod classify;
+pub mod file_access;
 pub mod hashing;
 pub mod metadata;
 pub mod photo_stack;

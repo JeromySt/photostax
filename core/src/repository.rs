@@ -18,12 +18,25 @@
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
 //! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile};
-//! use std::path::Path;
+//! use photostax_core::file_access::{FileAccess, ReadSeek};
+//! use std::io::{self, Write};
 //!
 //! struct MyCloudRepository {
 //!     bucket: String,
 //!     location: String,
 //!     repo_id: String,
+//! }
+//!
+//! impl FileAccess for MyCloudRepository {
+//!     fn open_read(&self, path: &str) -> io::Result<Box<dyn ReadSeek>> {
+//!         // Open cloud object for reading
+//!         todo!()
+//!     }
+//!
+//!     fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>> {
+//!         // Open cloud object for writing
+//!         todo!()
+//!     }
 //! }
 //!
 //! impl Repository for MyCloudRepository {
@@ -54,8 +67,8 @@
 //!         todo!()
 //!     }
 //!
-//!     fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError> {
-//!         // Download image bytes from cloud
+//!     fn read_image(&self, path: &str) -> Result<Box<dyn photostax_core::file_access::ReadSeek>, RepositoryError> {
+//!         // Stream image bytes from cloud
 //!         todo!()
 //!     }
 //!
@@ -73,8 +86,7 @@
 //!
 //! [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 
-use std::path::Path;
-
+use crate::file_access::FileAccess;
 use crate::photo_stack::{
     ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
 };
@@ -146,7 +158,7 @@ pub enum RepositoryError {
 /// ```
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
-pub trait Repository {
+pub trait Repository: FileAccess {
     /// Returns the canonical URI of this repository.
     ///
     /// For local repositories this is a `file:///` URI derived from the
@@ -236,14 +248,15 @@ pub trait Repository {
     /// - [`RepositoryError::Io`] if the repository cannot be accessed
     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError>;
 
-    /// Read the raw bytes of an image file within the repository.
+    /// Read an image file as a seekable stream.
     ///
     /// The path should be one of the paths from a [`PhotoStack`] (original, enhanced, or back).
+    /// Returns a boxed stream that supports both reading and seeking.
     ///
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the file cannot be read.
-    fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError>;
+    fn read_image(&self, path: &str) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError>;
 
     /// Write metadata tags to the files in a photo stack.
     ///
