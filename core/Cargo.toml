@@ -19,6 +19,7 @@ kamadak-exif = "0.6"
 img-parts = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "tiff"] }
 sha2 = "0.10"
+notify = "7"
 
 [dev-dependencies]
 tempfile = "3"

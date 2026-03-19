@@ -86,6 +86,7 @@
 //!
 //! [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 
+use crate::events::StackEvent;
 use crate::file_access::FileAccess;
 use crate::photo_stack::{
     ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
@@ -302,6 +303,15 @@ pub trait Repository: FileAccess {
         rotation: Rotation,
         target: RotationTarget,
     ) -> Result<PhotoStack, RepositoryError>;
+
+    /// Start watching for file changes. Returns a receiver for StackEvents.
+    /// Default implementation returns a receiver that never produces events.
+    ///
+    /// The watcher runs in a background thread. Drop the receiver to stop watching.
+    fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        Ok(rx)
+    }
 }
 
 #[cfg(test)]

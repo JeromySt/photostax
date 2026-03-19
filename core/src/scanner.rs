@@ -261,9 +261,9 @@ fn scan_directory_inner(
     Ok(())
 }
 
-/// Internal classification of file variants.
-#[derive(Debug)]
-enum Variant {
+/// Classification of file variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
     /// Original scan (no suffix)
     Original,
     /// Enhanced/color-corrected (`_a` suffix)
@@ -273,7 +273,7 @@ enum Variant {
 }
 
 /// Classify a file stem into its base name and variant type.
-fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
+pub fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
     if let Some(base) = stem.strip_suffix(&config.enhanced_suffix) {
         (base.to_string(), Variant::Enhanced)
     } else if let Some(base) = stem.strip_suffix(&config.back_suffix) {

@@ -58,6 +58,9 @@
 
 use std::path::{Path, PathBuf};
 
+use notify::{EventKind, RecursiveMode, Watcher};
+
+use crate::events::{FileVariant, StackEvent};
 use crate::file_access::{FileAccess, ReadSeek};
 use crate::classify;
 use crate::metadata::exif;
@@ -68,7 +71,7 @@ use crate::photo_stack::{
     Metadata, PhotoStack, Rotation, RotationTarget, ScanPhase, ScanProgress, ScannerProfile,
 };
 use crate::repository::{Repository, RepositoryError};
-use crate::scanner::{self, parse_folder_name, ScannerConfig};
+use crate::scanner::{self, classify_stem, parse_folder_name, ScannerConfig};
 
 /// A repository backed by a local filesystem directory.
 ///
@@ -527,6 +530,107 @@ impl Repository for LocalRepository {
         let mut refreshed = self.get_stack(id)?;
         self.load_metadata(&mut refreshed)?;
         Ok(refreshed)
+    }
+
+    fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = self.root.clone();
+        let location = self.location.clone();
+        let config = self.config.clone();
+
+        std::thread::spawn(move || {
+            let (notify_tx, notify_rx) = std::sync::mpsc::channel();
+
+            let mut watcher =
+                match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        let _ = notify_tx.send(event);
+                    }
+                }) {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+
+            let mode = if config.recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+
+            if watcher.watch(&root, mode).is_err() {
+                return;
+            }
+
+            for event in notify_rx {
+                let is_relevant = matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                );
+                if !is_relevant {
+                    continue;
+                }
+
+                for path in &event.paths {
+                    if path.is_dir() {
+                        continue;
+                    }
+
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase());
+
+                    let is_valid = ext
+                        .as_ref()
+                        .map(|e| config.extensions.contains(e))
+                        .unwrap_or(false);
+
+                    if !is_valid {
+                        continue;
+                    }
+
+                    let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                        Some(s) => s.to_string(),
+                        None => continue,
+                    };
+
+                    let (base_name, variant) = classify_stem(&stem, &config);
+                    let file_variant = FileVariant::from(variant);
+
+                    let relative_dir = path
+                        .parent()
+                        .and_then(|p| p.strip_prefix(&root).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+
+                    let stack_id =
+                        crate::hashing::make_stack_id(&location, &relative_dir, &base_name);
+
+                    let stack_event = match event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) => {
+                            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            StackEvent::FileChanged {
+                                stack_id,
+                                variant: file_variant,
+                                path: path.to_string_lossy().to_string(),
+                                size,
+                            }
+                        }
+                        EventKind::Remove(_) => StackEvent::FileRemoved {
+                            stack_id,
+                            variant: file_variant,
+                        },
+                        _ => continue,
+                    };
+
+                    if tx.send(stack_event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 

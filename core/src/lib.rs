@@ -66,6 +66,7 @@
 #![warn(missing_docs)]
 
 pub mod backends;
+pub mod events;
 pub mod classify;
 pub mod file_access;
 pub mod hashing;
@@ -75,3 +76,4 @@ pub mod repository;
 pub mod scanner;
 pub mod search;
 pub mod snapshot;
+pub mod stack_manager;
