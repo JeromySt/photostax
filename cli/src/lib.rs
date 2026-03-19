@@ -586,6 +586,31 @@ pub fn cmd_search(
     EXIT_SUCCESS
 }
 
+/// Resolve a stack identifier — try as opaque ID first, then fall back to
+/// matching by display name. This lets users pass either the hash-based ID
+/// or the human-readable stem name on the command line.
+fn resolve_stack(
+    repo: &LocalRepository,
+    id_or_name: &str,
+) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
+    match repo.get_stack(id_or_name) {
+        Ok(s) => Ok(s),
+        Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
+            // Fall back: scan and find by name
+            let stacks = repo.scan()?;
+            stacks
+                .into_iter()
+                .find(|s| s.name == id_or_name)
+                .ok_or_else(|| {
+                    photostax_core::repository::RepositoryError::NotFound(
+                        id_or_name.to_string(),
+                    )
+                })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Info command implementation
 pub fn cmd_info(
     out: &mut dyn Write,
@@ -595,7 +620,7 @@ pub fn cmd_info(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match repo.get_stack(stack_id) {
+    let mut stack = match resolve_stack(&repo, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -636,7 +661,7 @@ pub fn cmd_metadata_read(
     format: OutputFormat,
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match repo.get_stack(stack_id) {
+    let mut stack = match resolve_stack(&repo, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -681,7 +706,7 @@ pub fn cmd_metadata_write(
     tags: &[(String, String)],
 ) -> i32 {
     let repo = LocalRepository::new(directory);
-    let mut stack = match repo.get_stack(stack_id) {
+    let mut stack = match resolve_stack(&repo, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -725,7 +750,7 @@ pub fn cmd_metadata_delete(
     let repo = LocalRepository::new(directory);
 
     // Verify stack exists
-    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) = repo.get_stack(stack_id)
+    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) = resolve_stack(&repo, stack_id)
     {
         let _ = writeln!(err, "Stack not found: {stack_id}");
         return EXIT_NOT_FOUND;
@@ -807,7 +832,20 @@ pub fn cmd_rotate(
 
     let repo = LocalRepository::new(directory);
 
-    let stack = match repo.rotate_stack(stack_id, rotation, target) {
+    // Resolve the stack ID (supports both opaque IDs and display names)
+    let resolved_id = match resolve_stack(&repo, stack_id) {
+        Ok(s) => s.id,
+        Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
+            let _ = writeln!(err, "Stack not found: {stack_id}");
+            return EXIT_NOT_FOUND;
+        }
+        Err(e) => {
+            let _ = writeln!(err, "Error: {e}");
+            return EXIT_ERROR;
+        }
+    };
+
+    let stack = match repo.rotate_stack(&resolved_id, rotation, target) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -823,7 +861,7 @@ pub fn cmd_rotate(
         out,
         "Rotated {} image(s) in stack '{}' by {}°",
         stack.image_count(),
-        stack.id,
+        stack.name,
         rotation.as_degrees()
     );
 
@@ -881,7 +919,7 @@ pub fn output_stacks_table(
     // Calculate column widths
     let max_id = stacks
         .iter()
-        .map(|s| s.id.len())
+        .map(|s| s.name.len())
         .max()
         .unwrap_or(10)
         .max(10);
@@ -917,7 +955,7 @@ pub fn output_stacks_table(
         let _ = writeln!(
             out,
             "│ {:<max_id$} │ {:<7} │    {:<5} │  {:<3} │  {:<3} │ {:>6} │",
-            stack.id, format_str, orig, enh, back, tags
+            stack.name, format_str, orig, enh, back, tags
         );
 
         if show_metadata {
@@ -996,7 +1034,7 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
             let _ = writeln!(
                 out,
                 "{},{},\"{}\",\"{}\",\"{}\",{},{}",
-                stack.id,
+                stack.name,
                 format_str,
                 orig,
                 enh,
@@ -1009,7 +1047,7 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
             let _ = writeln!(
                 out,
                 "{},{},{},{},{},{}",
-                stack.id,
+                stack.name,
                 format_str,
                 stack.original.is_some(),
                 stack.enhanced.is_some(),
@@ -1032,7 +1070,7 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         out,
         "┌──────────────────────────────────────────────────────────────────┐"
     );
-    let _ = writeln!(out, "│ Stack: {:<57} │", stack.id);
+    let _ = writeln!(out, "│ Stack: {:<57} │", stack.name);
     let _ = writeln!(
         out,
         "├──────────────────────────────────────────────────────────────────┤"
@@ -1142,7 +1180,7 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
 /// Output stack info as CSV
 pub fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
     let _ = writeln!(out, "type,key,value");
-    let _ = writeln!(out, "id,,{}", stack.id);
+    let _ = writeln!(out, "id,,{}", stack.name);
 
     if let Some(ref f) = stack.original {
         let _ = writeln!(out, "file,original,{}", f.path);
@@ -2865,6 +2903,6 @@ mod tests {
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
-        assert!(output.contains("\"id\": \"IMG_001\""));
+        assert!(output.contains("\"name\": \"IMG_001\""));
     }
 }

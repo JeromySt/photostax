@@ -248,8 +248,8 @@ impl SearchQuery {
 
     /// Set a free-text search across all metadata.
     ///
-    /// Searches the stack ID, all EXIF tag values, and all custom tag values
-    /// for the given text (case-insensitive).
+    /// Searches the stack ID, display name, folder, all EXIF tag values, and
+    /// all custom tag values for the given text (case-insensitive).
     ///
     /// # Examples
     ///
@@ -365,9 +365,9 @@ pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoSta
 
 /// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
-    // Check stack ID allowlist
+    // Check stack ID/name allowlist
     if let Some(ref ids) = query.stack_ids {
-        if !ids.iter().any(|id| id == &stack.id) {
+        if !ids.iter().any(|id| id == &stack.id || id == &stack.name) {
             return false;
         }
     }
@@ -413,6 +413,13 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
     if let Some(ref text) = query.text_query {
         let text_lower = text.to_lowercase();
         let found_in_id = stack.id.to_lowercase().contains(&text_lower);
+        let found_in_name = stack.name.to_lowercase().contains(&text_lower);
+        let found_in_folder = stack
+            .folder
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(&text_lower);
         let found_in_exif = stack
             .metadata
             .exif_tags
@@ -426,7 +433,7 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             s.to_lowercase().contains(&text_lower)
         });
 
-        if !found_in_id && !found_in_exif && !found_in_custom {
+        if !found_in_id && !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom {
             return false;
         }
     }

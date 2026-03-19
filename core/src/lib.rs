@@ -31,7 +31,7 @@
 //! for stack in &stacks {
 //!     println!("Photo: {}", stack.id);
 //!     if let Some(ref back) = stack.back {
-//!         println!("  Has back scan: {}", back.path.display());
+//!         println!("  Has back scan: {}", back.path);
 //!     }
 //! }
 //! ```

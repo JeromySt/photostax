@@ -22,9 +22,19 @@
 //!
 //! struct MyCloudRepository {
 //!     bucket: String,
+//!     location: String,
+//!     repo_id: String,
 //! }
 //!
 //! impl Repository for MyCloudRepository {
+//!     fn location(&self) -> &str {
+//!         &self.location
+//!     }
+//!
+//!     fn id(&self) -> &str {
+//!         &self.repo_id
+//!     }
+//!
 //!     fn scan_with_progress(&self, _profile: ScannerProfile, _progress: Option<&mut dyn FnMut(&ScanProgress)>) -> Result<Vec<PhotoStack>, RepositoryError> {
 //!         // List objects in cloud bucket, group by naming convention
 //!         todo!()
@@ -120,19 +130,39 @@ pub enum RepositoryError {
 ///
 /// let repo = LocalRepository::new("/photos");
 ///
+/// // Each repository has a canonical URI and a short ID
+/// println!("Location: {}", repo.location());
+/// println!("ID: {}", repo.id());
+///
 /// // Fast scan — just file paths and folder metadata, no file I/O
 /// let stacks = repo.scan()?;
 /// println!("Found {} stacks", stacks.len());
 ///
 /// // Load metadata only when needed
-/// let mut stack = repo.get_stack("IMG_0001")?;
+/// let mut stack = stacks.into_iter().next().unwrap();
 /// repo.load_metadata(&mut stack)?;
-/// println!("{}: {} EXIF tags", stack.id, stack.metadata.exif_tags.len());
+/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, stack.metadata.exif_tags.len());
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 pub trait Repository {
+    /// Returns the canonical URI of this repository.
+    ///
+    /// For local repositories this is a `file:///` URI derived from the
+    /// canonicalized root path. Cloud backends would return their own scheme
+    /// (e.g., `azure://account/container`).
+    ///
+    /// The location is used to generate deterministic, opaque stack IDs via
+    /// [`make_stack_id`](crate::hashing::make_stack_id).
+    fn location(&self) -> &str;
+
+    /// Returns a short, deterministic identifier derived from the location.
+    ///
+    /// Useful as a cache key or database partition key. The value is a
+    /// truncated SHA-256 hex string (16 characters).
+    fn id(&self) -> &str;
+
     /// Scan with a [`ScannerProfile`] and optional progress callback.
     ///
     /// This is the primary scan method. It performs a two-pass scan:

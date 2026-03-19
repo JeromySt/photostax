@@ -59,9 +59,13 @@ typedef struct FfiResult {
  */
 typedef struct FfiPhotoStack {
   /**
-   * Stack identifier (never null).
+   * Stack identifier (never null). This is an opaque hash.
    */
   char *id;
+  /**
+   * Human-readable stack name, typically the file stem (never null).
+   */
+  char *name;
   /**
    * Path to original image (null if absent).
    */

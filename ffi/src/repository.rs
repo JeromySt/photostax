@@ -49,6 +49,10 @@ fn photo_stack_to_ffi(stack: &PhotoStack) -> FfiPhotoStack {
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
+    let name = CString::new(stack.name.clone())
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
+
     let metadata_json = serde_json::json!({
         "exif_tags": stack.metadata.exif_tags,
         "xmp_tags": stack.metadata.xmp_tags,
@@ -61,6 +65,7 @@ fn photo_stack_to_ffi(stack: &PhotoStack) -> FfiPhotoStack {
 
     FfiPhotoStack {
         id,
+        name,
         original: image_path_to_c_string(&stack.original),
         enhanced: image_path_to_c_string(&stack.enhanced),
         back: image_path_to_c_string(&stack.back),
@@ -663,6 +668,9 @@ fn free_stack_strings(stack: &FfiPhotoStack) {
         if !stack.id.is_null() {
             drop(CString::from_raw(stack.id));
         }
+        if !stack.name.is_null() {
+            drop(CString::from_raw(stack.name));
+        }
         if !stack.original.is_null() {
             drop(CString::from_raw(stack.original));
         }
@@ -729,6 +737,23 @@ mod tests {
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         assert!(!repo.is_null());
         repo
+    }
+
+    /// Helper: scan repo and return the opaque ID for the stack with the given name.
+    fn find_stack_id_by_name(repo: *const PhotostaxRepo, name: &str) -> String {
+        let array = unsafe { photostax_repo_scan(repo) };
+        assert!(array.len > 0, "scan should return stacks");
+        let slice = unsafe { std::slice::from_raw_parts(array.data, array.len) };
+        let found = slice.iter().find(|s| {
+            let n = unsafe { CStr::from_ptr(s.name) }.to_str().unwrap();
+            n == name
+        });
+        let id = unsafe { CStr::from_ptr(found.expect("stack not found by name").id) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { photostax_stack_array_free(array) };
+        id
     }
 
     #[test]
@@ -827,13 +852,14 @@ mod tests {
     fn test_repo_get_stack_happy_path() {
         let repo = open_testdata_repo();
 
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let stack_ptr = unsafe { photostax_repo_get_stack(repo, id.as_ptr()) };
         assert!(!stack_ptr.is_null(), "Stack FamilyPhotos_0001 should exist");
 
         let stack = unsafe { &*stack_ptr };
-        let id_str = unsafe { CStr::from_ptr(stack.id) }.to_str().unwrap();
-        assert_eq!(id_str, "FamilyPhotos_0001");
+        let name_str = unsafe { CStr::from_ptr(stack.name) }.to_str().unwrap();
+        assert_eq!(name_str, "FamilyPhotos_0001");
 
         // Should have original path
         assert!(!stack.original.is_null());
@@ -1004,7 +1030,8 @@ mod tests {
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         assert!(!repo.is_null());
 
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let json = CString::new(r#"{"custom_tags":{"album":"Family"}}"#).unwrap();
         let result = unsafe { photostax_write_metadata(repo, id.as_ptr(), json.as_ptr()) };
         assert!(result.success, "write_metadata should succeed");
@@ -1331,7 +1358,8 @@ mod tests {
     #[test]
     fn test_stack_load_metadata_happy_path() {
         let repo = open_testdata_repo();
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let result = unsafe { photostax_stack_load_metadata(repo, id.as_ptr()) };
         assert!(
             !result.is_null(),
@@ -1483,13 +1511,14 @@ mod tests {
 
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
-        let id = CString::new("IMG_001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "IMG_001");
+        let id = CString::new(opaque_id).unwrap();
         let result = unsafe { photostax_rotate_stack(repo, id.as_ptr(), 90, 0) };
         assert!(!result.is_null(), "rotate_stack should return a stack");
 
         let stack = unsafe { &*result };
-        let id_str = unsafe { CStr::from_ptr(stack.id) }.to_str().unwrap();
-        assert_eq!(id_str, "IMG_001");
+        let name_str = unsafe { CStr::from_ptr(stack.name) }.to_str().unwrap();
+        assert_eq!(name_str, "IMG_001");
 
         // Verify file dimensions changed (4×2 → 2×4 after 90° CW)
         let img = image::open(dir.path().join("IMG_001.jpg")).unwrap();

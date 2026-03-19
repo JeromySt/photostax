@@ -32,8 +32,10 @@ pub struct PhotostaxRepo {
 /// [`photostax_stack_free`]: crate::repository::photostax_stack_free
 #[repr(C)]
 pub struct FfiPhotoStack {
-    /// Stack identifier (never null).
+    /// Stack identifier (never null). This is an opaque hash.
     pub id: *mut c_char,
+    /// Human-readable stack name, typically the file stem (never null).
+    pub name: *mut c_char,
     /// Path to original image (null if absent).
     pub original: *mut c_char,
     /// Path to enhanced image (null if absent).
@@ -215,12 +217,14 @@ mod tests {
         // Verify the struct has the expected fields and layout
         let stack = FfiPhotoStack {
             id: std::ptr::null_mut(),
+            name: std::ptr::null_mut(),
             original: std::ptr::null_mut(),
             enhanced: std::ptr::null_mut(),
             back: std::ptr::null_mut(),
             metadata_json: std::ptr::null_mut(),
         };
         assert!(stack.id.is_null());
+        assert!(stack.name.is_null());
         assert!(stack.original.is_null());
         assert!(stack.enhanced.is_null());
         assert!(stack.back.is_null());

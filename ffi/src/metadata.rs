@@ -269,6 +269,22 @@ mod tests {
         repo
     }
 
+    fn find_stack_id_by_name(repo: *const crate::types::PhotostaxRepo, name: &str) -> String {
+        let array = unsafe { crate::repository::photostax_repo_scan(repo) };
+        assert!(array.len > 0);
+        let slice = unsafe { std::slice::from_raw_parts(array.data, array.len) };
+        let found = slice.iter().find(|s| {
+            let n = unsafe { CStr::from_ptr(s.name) }.to_str().unwrap();
+            n == name
+        });
+        let id = unsafe { CStr::from_ptr(found.expect("stack not found by name").id) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { crate::repository::photostax_stack_array_free(array) };
+        id
+    }
+
     #[test]
     fn test_get_metadata_null_pointers() {
         let result = unsafe { photostax_get_metadata(ptr::null(), ptr::null()) };
@@ -290,7 +306,8 @@ mod tests {
     #[test]
     fn test_get_metadata_happy_path() {
         let repo = open_testdata_repo();
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let result = unsafe { photostax_get_metadata(repo, id.as_ptr()) };
         assert!(
             !result.is_null(),
@@ -475,7 +492,8 @@ mod tests {
         let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
         assert!(!repo.is_null());
 
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let tag = CString::new("album").unwrap();
         let value = CString::new(r#""Family Vacation""#).unwrap();
         let result =

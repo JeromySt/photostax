@@ -20,6 +20,10 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
+    let name = CString::new(stack.name.clone())
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
+
     let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
         match img {
             Some(f) => {
@@ -44,6 +48,7 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
 
     FfiPhotoStack {
         id,
+        name,
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),

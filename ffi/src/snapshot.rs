@@ -45,6 +45,10 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
+    let name = CString::new(stack.name.clone())
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
+
     let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
         match img {
             Some(f) => {
@@ -69,6 +73,7 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
 
     FfiPhotoStack {
         id,
+        name,
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),
@@ -548,8 +553,8 @@ mod tests {
         let page = unsafe { photostax_snapshot_get_page(filtered, 0, 100) };
         for i in 0..page.len {
             let item = unsafe { &*page.data.add(i) };
-            let id = unsafe { CStr::from_ptr(item.id) }.to_str().unwrap();
-            assert!(id.contains("FamilyPhotos"), "expected FamilyPhotos in {id}");
+            let name = unsafe { CStr::from_ptr(item.name) }.to_str().unwrap();
+            assert!(name.contains("FamilyPhotos"), "expected FamilyPhotos in {name}");
         }
 
         unsafe { photostax_paginated_result_free(page) };
