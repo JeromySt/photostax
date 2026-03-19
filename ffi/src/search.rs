@@ -4,7 +4,7 @@
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 
 use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
 use serde::Deserialize;
@@ -20,10 +20,14 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
-    let path_to_c_string = |path: &Option<std::path::PathBuf>| -> *mut c_char {
-        match path {
-            Some(p) => {
-                let s = p.to_string_lossy().into_owned();
+    let name = CString::new(stack.name.clone())
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
+
+    let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
+        match img {
+            Some(f) => {
+                let s = f.path.clone();
                 CString::new(s)
                     .map(|cs| cs.into_raw())
                     .unwrap_or(ptr::null_mut())
@@ -44,6 +48,7 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
 
     FfiPhotoStack {
         id,
+        name,
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),
@@ -81,7 +86,7 @@ pub unsafe extern "C" fn photostax_search(
     repo: *const PhotostaxRepo,
     query_json: *const c_char,
 ) -> FfiPhotoStackArray {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
             return FfiPhotoStackArray::empty();
         }
@@ -136,10 +141,13 @@ pub unsafe extern "C" fn photostax_search(
         }
 
         // Get all stacks with metadata (search needs metadata to filter)
-        let stacks = match repo_ref.inner.scan_with_metadata() {
-            Ok(s) => s,
-            Err(_) => return FfiPhotoStackArray::empty(),
-        };
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan_with_metadata().is_err() {
+            return FfiPhotoStackArray::empty();
+        }
+        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
+            mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         // Apply the filter
         let filtered = filter_stacks(&stacks, &query);
@@ -154,7 +162,7 @@ pub unsafe extern "C" fn photostax_search(
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
 
         FfiPhotoStackArray { data, len }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiPhotoStackArray::empty())
 }
@@ -181,7 +189,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
     offset: usize,
     limit: usize,
 ) -> FfiPaginatedResult {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
             return FfiPaginatedResult::empty(offset, limit);
         }
@@ -233,10 +241,13 @@ pub unsafe extern "C" fn photostax_search_paginated(
             query = query.with_ids(ids);
         }
 
-        let stacks = match repo_ref.inner.scan_with_metadata() {
-            Ok(s) => s,
-            Err(_) => return FfiPaginatedResult::empty(offset, limit),
-        };
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan_with_metadata().is_err() {
+            return FfiPaginatedResult::empty(offset, limit);
+        }
+        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
+            mgr.stacks().into_iter().cloned().collect();
+        drop(mgr);
 
         let filtered = filter_stacks(&stacks, &query);
         let paginated = paginate_stacks(&filtered, &PaginationParams { offset, limit });
@@ -266,7 +277,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
             limit: paginated.limit,
             has_more: paginated.has_more,
         }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
 }
@@ -463,13 +474,13 @@ mod tests {
             .custom_tags
             .insert("rating".to_string(), serde_json::json!(5));
 
-        let stack = photostax_core::photo_stack::PhotoStack {
-            id: "search_test".to_string(),
-            original: Some(std::path::PathBuf::from("/test/original.jpg")),
-            enhanced: None,
-            back: Some(std::path::PathBuf::from("/test/back.jpg")),
-            metadata,
-        };
+        let mut stack = photostax_core::photo_stack::PhotoStack::new("search_test");
+        stack.original = Some(photostax_core::hashing::ImageFile::new(
+            "/test/original.jpg",
+            0,
+        ));
+        stack.back = Some(photostax_core::hashing::ImageFile::new("/test/back.jpg", 0));
+        stack.metadata = metadata;
 
         let ffi = photo_stack_to_ffi(&stack);
         assert!(!ffi.id.is_null());

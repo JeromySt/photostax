@@ -4,10 +4,8 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
-
-use photostax_core::repository::Repository;
 
 use crate::types::{FfiResult, PhotostaxRepo};
 
@@ -29,7 +27,7 @@ pub unsafe extern "C" fn photostax_get_metadata(
     repo: *const PhotostaxRepo,
     stack_id: *const c_char,
 ) -> *mut c_char {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || stack_id.is_null() {
             return ptr::null_mut();
         }
@@ -40,14 +38,19 @@ pub unsafe extern "C" fn photostax_get_metadata(
             Err(_) => return ptr::null_mut(),
         };
 
-        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
-            Ok(s) => s,
-            Err(_) => return ptr::null_mut(),
-        };
-
-        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+        let mut mgr = repo_ref.inner.borrow_mut();
+        // Ensure cache is populated
+        if mgr.is_empty() && mgr.scan().is_err() {
             return ptr::null_mut();
         }
+        if mgr.load_metadata(stack_id_str).is_err() {
+            return ptr::null_mut();
+        }
+
+        let stack = match mgr.get_stack(stack_id_str) {
+            Some(s) => s,
+            None => return ptr::null_mut(),
+        };
 
         let metadata_json = serde_json::json!({
             "exif_tags": stack.metadata.exif_tags,
@@ -60,7 +63,7 @@ pub unsafe extern "C" fn photostax_get_metadata(
         CString::new(json_str)
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut())
-    });
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -82,7 +85,7 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
     stack_id: *const c_char,
     tag_name: *const c_char,
 ) -> *mut c_char {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || stack_id.is_null() || tag_name.is_null() {
             return ptr::null_mut();
         }
@@ -97,14 +100,18 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
             Err(_) => return ptr::null_mut(),
         };
 
-        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
-            Ok(s) => s,
-            Err(_) => return ptr::null_mut(),
-        };
-
-        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.is_empty() && mgr.scan().is_err() {
             return ptr::null_mut();
         }
+        if mgr.load_metadata(stack_id_str).is_err() {
+            return ptr::null_mut();
+        }
+
+        let stack = match mgr.get_stack(stack_id_str) {
+            Some(s) => s,
+            None => return ptr::null_mut(),
+        };
 
         match stack.metadata.exif_tags.get(tag_name_str) {
             Some(value) => CString::new(value.as_str())
@@ -112,7 +119,7 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
                 .unwrap_or(ptr::null_mut()),
             None => ptr::null_mut(),
         }
-    });
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -134,7 +141,7 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
     stack_id: *const c_char,
     tag_name: *const c_char,
 ) -> *mut c_char {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || stack_id.is_null() || tag_name.is_null() {
             return ptr::null_mut();
         }
@@ -149,14 +156,15 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
             Err(_) => return ptr::null_mut(),
         };
 
-        let mut stack = match repo_ref.inner.get_stack(stack_id_str) {
-            Ok(s) => s,
-            Err(_) => return ptr::null_mut(),
-        };
-
-        if repo_ref.inner.load_metadata(&mut stack).is_err() {
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.load_metadata(stack_id_str).is_err() {
             return ptr::null_mut();
         }
+
+        let stack = match mgr.get_stack(stack_id_str) {
+            Some(s) => s,
+            None => return ptr::null_mut(),
+        };
 
         match stack.metadata.custom_tags.get(tag_name_str) {
             Some(value) => {
@@ -167,7 +175,7 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
             }
             None => ptr::null_mut(),
         }
-    });
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -188,7 +196,7 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
     tag_name: *const c_char,
     value_json: *const c_char,
 ) -> FfiResult {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() {
             return FfiResult::error("Repository pointer is null");
         }
@@ -222,12 +230,6 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
             Err(e) => return FfiResult::error(&format!("Invalid JSON value: {e}")),
         };
 
-        // Get the stack first
-        let stack = match repo_ref.inner.get_stack(stack_id_str) {
-            Ok(s) => s,
-            Err(e) => return FfiResult::error(&format!("Failed to get stack: {e}")),
-        };
-
         // Create metadata with just the one custom tag
         let mut custom_tags = std::collections::HashMap::new();
         custom_tags.insert(tag_name_str.to_string(), value);
@@ -238,11 +240,18 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
             custom_tags,
         };
 
-        match repo_ref.inner.write_metadata(&stack, &metadata) {
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.is_empty() && mgr.scan().is_err() {
+            return FfiResult::error("Failed to scan repository");
+        }
+        drop(mgr);
+
+        let mgr = repo_ref.inner.borrow();
+        match mgr.write_metadata(stack_id_str, &metadata) {
             Ok(()) => FfiResult::success(),
             Err(e) => FfiResult::error(&e.to_string()),
         }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
 }
@@ -269,6 +278,22 @@ mod tests {
         repo
     }
 
+    fn find_stack_id_by_name(repo: *const crate::types::PhotostaxRepo, name: &str) -> String {
+        let array = unsafe { crate::repository::photostax_repo_scan(repo) };
+        assert!(array.len > 0);
+        let slice = unsafe { std::slice::from_raw_parts(array.data, array.len) };
+        let found = slice.iter().find(|s| {
+            let n = unsafe { CStr::from_ptr(s.name) }.to_str().unwrap();
+            n == name
+        });
+        let id = unsafe { CStr::from_ptr(found.expect("stack not found by name").id) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { crate::repository::photostax_stack_array_free(array) };
+        id
+    }
+
     #[test]
     fn test_get_metadata_null_pointers() {
         let result = unsafe { photostax_get_metadata(ptr::null(), ptr::null()) };
@@ -290,7 +315,8 @@ mod tests {
     #[test]
     fn test_get_metadata_happy_path() {
         let repo = open_testdata_repo();
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let result = unsafe { photostax_get_metadata(repo, id.as_ptr()) };
         assert!(
             !result.is_null(),
@@ -475,7 +501,8 @@ mod tests {
         let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
         assert!(!repo.is_null());
 
-        let id = CString::new("FamilyPhotos_0001").unwrap();
+        let opaque_id = find_stack_id_by_name(repo, "FamilyPhotos_0001");
+        let id = CString::new(opaque_id).unwrap();
         let tag = CString::new("album").unwrap();
         let value = CString::new(r#""Family Vacation""#).unwrap();
         let result =

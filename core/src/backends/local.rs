@@ -40,9 +40,10 @@
 //! println!("Found {} stacks", stacks.len());
 //!
 //! // Load metadata only when needed
-//! let mut stack = repo.get_stack("IMG_0001")?;
+//! let mut stack = stacks.into_iter().next().unwrap();
 //! repo.load_metadata(&mut stack)?;
-//! println!("{}: {} EXIF tags, {} custom tags",
+//! println!("{} (id={}): {} EXIF tags, {} custom tags",
+//!     stack.name,
 //!     stack.id,
 //!     stack.metadata.exif_tags.len(),
 //!     stack.metadata.custom_tags.len());
@@ -57,7 +58,11 @@
 
 use std::path::{Path, PathBuf};
 
+use notify::{EventKind, RecursiveMode, Watcher};
+
 use crate::classify;
+use crate::events::{FileVariant, StackEvent};
+use crate::file_access::{FileAccess, ReadSeek};
 use crate::metadata::exif;
 use crate::metadata::sidecar;
 use crate::metadata::xmp;
@@ -66,7 +71,7 @@ use crate::photo_stack::{
     Metadata, PhotoStack, Rotation, RotationTarget, ScanPhase, ScanProgress, ScannerProfile,
 };
 use crate::repository::{Repository, RepositoryError};
-use crate::scanner::{self, parse_folder_name, ScannerConfig};
+use crate::scanner::{self, classify_stem, parse_folder_name, ScannerConfig};
 
 /// A repository backed by a local filesystem directory.
 ///
@@ -84,6 +89,8 @@ use crate::scanner::{self, parse_folder_name, ScannerConfig};
 pub struct LocalRepository {
     root: PathBuf,
     config: ScannerConfig,
+    location: String,
+    repo_id: String,
 }
 
 impl LocalRepository {
@@ -104,9 +111,14 @@ impl LocalRepository {
     /// let repo2 = LocalRepository::new(std::path::PathBuf::from("/archive"));
     /// ```
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root: PathBuf = root.into();
+        let location = Self::compute_location(&root);
+        let repo_id = crate::hashing::make_stack_id(&location, "", "");
         Self {
-            root: root.into(),
+            root,
             config: ScannerConfig::default(),
+            location,
+            repo_id,
         }
     }
 
@@ -127,9 +139,14 @@ impl LocalRepository {
     /// let repo = LocalRepository::with_config("/archive", config);
     /// ```
     pub fn with_config(root: impl Into<PathBuf>, config: ScannerConfig) -> Self {
+        let root: PathBuf = root.into();
+        let location = Self::compute_location(&root);
+        let repo_id = crate::hashing::make_stack_id(&location, "", "");
         Self {
-            root: root.into(),
+            root,
             config,
+            location,
+            repo_id,
         }
     }
 
@@ -147,6 +164,16 @@ impl LocalRepository {
         &self.root
     }
 
+    /// Compute the `file:///` location URI from a root path.
+    ///
+    /// Canonicalizes the path when possible, normalises to forward slashes,
+    /// and prepends `file:///`.
+    fn compute_location(root: &Path) -> String {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let s = canonical.to_string_lossy().replace('\\', "/");
+        format!("file:///{}", s.trim_start_matches('/'))
+    }
+
     /// Load EXIF tags from the best available image in the stack.
     ///
     /// Prefers the enhanced image for EXIF data since it typically has
@@ -155,7 +182,7 @@ impl LocalRepository {
     fn load_exif_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
         let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
-            Some(path) => exif::read_exif_tags(path).unwrap_or_default(),
+            Some(f) => exif::read_exif_tags(Path::new(&f.path)).unwrap_or_default(),
             None => std::collections::HashMap::new(),
         }
     }
@@ -167,13 +194,13 @@ impl LocalRepository {
     fn load_embedded_xmp(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
         let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
-            Some(path) => {
+            Some(f) => {
                 // Only read embedded XMP from JPEG; TIFF XMP is in the stack sidecar
                 if matches!(
-                    crate::metadata::detect_image_format(path),
+                    crate::metadata::detect_image_format(Path::new(&f.path)),
                     Some(ImageFormat::Jpeg)
                 ) {
-                    xmp::read_xmp_from_jpeg(path).unwrap_or_default()
+                    xmp::read_xmp_from_jpeg(Path::new(&f.path)).unwrap_or_default()
                 } else {
                     std::collections::HashMap::new()
                 }
@@ -204,7 +231,7 @@ impl LocalRepository {
         // 3. Read stack-level XMP sidecar (from the stack's containing dir,
         //    which may differ from root during recursive scans)
         let sidecar_dir = stack.containing_dir().unwrap_or_else(|| self.root.clone());
-        let sidecar_data = sidecar::read_sidecar(&sidecar_dir, &stack.id).unwrap_or_default();
+        let sidecar_data = sidecar::read_sidecar(&sidecar_dir, &stack.name).unwrap_or_default();
 
         // 4. Merge sidecar XMP into embedded XMP (sidecar overrides)
         for (k, v) in sidecar_data.xmp_tags {
@@ -328,14 +355,43 @@ impl LocalRepository {
     }
 }
 
+impl FileAccess for LocalRepository {
+    fn open_read(&self, path: &str) -> std::io::Result<Box<dyn ReadSeek>> {
+        let file = std::fs::File::open(path)?;
+        // On Windows, files opened read-only allow concurrent reads by default
+        // On Unix, flock LOCK_SH would be used for explicit shared locking
+        let reader = std::io::BufReader::with_capacity(64 * 1024, file);
+        Ok(Box::new(reader))
+    }
+
+    fn open_write(&self, path: &str) -> std::io::Result<Box<dyn std::io::Write + Send>> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        // On Windows, opening for write with default sharing mode provides
+        // exclusive access. On Unix, flock LOCK_EX would be used.
+        Ok(Box::new(file))
+    }
+}
+
 impl Repository for LocalRepository {
+    fn location(&self) -> &str {
+        &self.location
+    }
+
+    fn id(&self) -> &str {
+        &self.repo_id
+    }
+
     fn scan_with_progress(
         &self,
         profile: ScannerProfile,
         mut progress: Option<&mut dyn FnMut(&ScanProgress)>,
     ) -> Result<Vec<PhotoStack>, RepositoryError> {
         // Pass 1: fast directory scan
-        let mut stacks = scanner::scan_directory(&self.root, &self.config)?;
+        let mut stacks = scanner::scan_directory(&self.root, &self.config, &self.location)?;
         let stack_count = stacks.len();
 
         for (i, stack) in stacks.iter_mut().enumerate() {
@@ -389,7 +445,7 @@ impl Repository for LocalRepository {
     }
 
     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError> {
-        let stacks = scanner::scan_directory(&self.root, &self.config)?;
+        let stacks = scanner::scan_directory(&self.root, &self.config, &self.location)?;
         let mut stack = stacks
             .into_iter()
             .find(|s| s.id == id)
@@ -398,8 +454,11 @@ impl Repository for LocalRepository {
         Ok(stack)
     }
 
-    fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError> {
-        Ok(std::fs::read(path)?)
+    fn read_image(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+        Ok(self.open_read(path)?)
     }
 
     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
@@ -408,9 +467,9 @@ impl Repository for LocalRepository {
         //    can read the tags even without the sidecar file.
         if !tags.xmp_tags.is_empty() {
             let target = stack.enhanced.as_ref().or(stack.original.as_ref());
-            if let Some(path) = target {
+            if let Some(f) = target {
                 // Best-effort: embed into file; sidecar is authoritative
-                let _ = xmp::write_xmp(path, &tags.xmp_tags);
+                let _ = xmp::write_xmp(Path::new(&f.path), &tags.xmp_tags);
             }
         }
 
@@ -420,7 +479,7 @@ impl Repository for LocalRepository {
         let sidecar_dir = stack.containing_dir().unwrap_or_else(|| self.root.clone());
         sidecar::merge_and_write(
             &sidecar_dir,
-            &stack.id,
+            &stack.name,
             &tags.xmp_tags,
             &tags.custom_tags,
             &tags.exif_tags,
@@ -439,15 +498,15 @@ impl Repository for LocalRepository {
         let paths: Vec<&Path> = match target {
             RotationTarget::All => [&stack.original, &stack.enhanced, &stack.back]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
             RotationTarget::Front => [&stack.original, &stack.enhanced]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
             RotationTarget::Back => [&stack.back]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
         };
 
@@ -465,6 +524,108 @@ impl Repository for LocalRepository {
         let mut refreshed = self.get_stack(id)?;
         self.load_metadata(&mut refreshed)?;
         Ok(refreshed)
+    }
+
+    fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = self.root.clone();
+        let location = self.location.clone();
+        let config = self.config.clone();
+
+        std::thread::spawn(move || {
+            let (notify_tx, notify_rx) = std::sync::mpsc::channel();
+
+            let mut watcher = match notify::recommended_watcher(
+                move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        let _ = notify_tx.send(event);
+                    }
+                },
+            ) {
+                Ok(w) => w,
+                Err(_) => return,
+            };
+
+            let mode = if config.recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+
+            if watcher.watch(&root, mode).is_err() {
+                return;
+            }
+
+            for event in notify_rx {
+                let is_relevant = matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                );
+                if !is_relevant {
+                    continue;
+                }
+
+                for path in &event.paths {
+                    if path.is_dir() {
+                        continue;
+                    }
+
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase());
+
+                    let is_valid = ext
+                        .as_ref()
+                        .map(|e| config.extensions.contains(e))
+                        .unwrap_or(false);
+
+                    if !is_valid {
+                        continue;
+                    }
+
+                    let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                        Some(s) => s.to_string(),
+                        None => continue,
+                    };
+
+                    let (base_name, variant) = classify_stem(&stem, &config);
+                    let file_variant = FileVariant::from(variant);
+
+                    let relative_dir = path
+                        .parent()
+                        .and_then(|p| p.strip_prefix(&root).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+
+                    let stack_id =
+                        crate::hashing::make_stack_id(&location, &relative_dir, &base_name);
+
+                    let stack_event = match event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) => {
+                            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            StackEvent::FileChanged {
+                                stack_id,
+                                variant: file_variant,
+                                path: path.to_string_lossy().to_string(),
+                                size,
+                            }
+                        }
+                        EventKind::Remove(_) => StackEvent::FileRemoved {
+                            stack_id,
+                            variant: file_variant,
+                        },
+                        _ => continue,
+                    };
+
+                    if tx.send(stack_event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 
@@ -492,7 +653,23 @@ fn rotate_image_file(path: &Path, rotation: Rotation) -> Result<(), RepositoryEr
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Read;
     use tempfile::TempDir;
+
+    /// Get a stack by its display name (scans the repo, finds by name, then fetches by opaque ID).
+    fn get_stack_by_name(
+        repo: &LocalRepository,
+        name: &str,
+    ) -> Result<PhotoStack, RepositoryError> {
+        let stacks = repo.scan()?;
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| RepositoryError::NotFound(name.to_string()))?
+            .id
+            .clone();
+        repo.get_stack(&opaque_id)
+    }
 
     // Helper to create minimal valid JPEG for testing
     fn create_test_jpeg() -> Vec<u8> {
@@ -567,8 +744,8 @@ mod tests {
         let stacks = repo.scan().unwrap();
 
         assert_eq!(stacks.len(), 2);
-        assert!(stacks.iter().any(|s| s.id == "IMG_001"));
-        assert!(stacks.iter().any(|s| s.id == "IMG_002"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_001"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_002"));
         // Scan is lazy — metadata should be empty (no EXIF in test JPEG)
         for stack in &stacks {
             assert!(stack.metadata.exif_tags.is_empty());
@@ -623,9 +800,18 @@ mod tests {
         fs::write(dir.join("IMG_001_a.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        // Scan to discover the opaque ID
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
-        assert_eq!(stack.id, "IMG_001");
+        let stack = repo.get_stack(&opaque_id).unwrap();
+
+        assert_eq!(stack.name, "IMG_001");
         assert!(stack.original.is_some());
         assert!(stack.enhanced.is_some());
     }
@@ -654,7 +840,11 @@ mod tests {
         fs::write(&img_path, &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let data = repo.read_image(&img_path).unwrap();
+        let mut data = Vec::new();
+        repo.read_image(img_path.to_str().unwrap())
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
 
         assert_eq!(data, jpeg_data);
     }
@@ -663,7 +853,8 @@ mod tests {
     fn test_read_image_nonexistent() {
         let tmp = TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
-        let result = repo.read_image(&tmp.path().join("nonexistent.jpg"));
+        let nonexistent = tmp.path().join("nonexistent.jpg");
+        let result = repo.read_image(nonexistent.to_str().unwrap());
 
         assert!(matches!(result, Err(RepositoryError::Io(_))));
     }
@@ -677,7 +868,7 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let stack = get_stack_by_name(&repo, "IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
         metadata
@@ -710,7 +901,7 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let stack = get_stack_by_name(&repo, "IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
         metadata
@@ -736,7 +927,7 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let stack = get_stack_by_name(&repo, "IMG_001").unwrap();
 
         let mut metadata = Metadata::default();
         metadata
@@ -762,7 +953,7 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = repo.get_stack("IMG_001").unwrap();
+        let stack = get_stack_by_name(&repo, "IMG_001").unwrap();
 
         let metadata = Metadata::default();
         let result = repo.write_metadata(&stack, &metadata);
@@ -790,7 +981,7 @@ mod tests {
         crate::metadata::sidecar::write_sidecar(dir, "IMG_001", &data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let mut stack = repo.get_stack("IMG_001").unwrap();
+        let mut stack = get_stack_by_name(&repo, "IMG_001").unwrap();
 
         // Before load_metadata, sidecar tags should NOT be loaded
         assert!(!stack.metadata.custom_tags.contains_key("custom_tag"));
@@ -815,7 +1006,7 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
         // Just verify the stack has both files - the load_exif_tags method should prefer enhanced
         assert!(stack.original.is_some());
@@ -832,7 +1023,7 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let mut stack = repo.get_stack("IMG_001").unwrap();
+        let mut stack = get_stack_by_name(&repo, "IMG_001").unwrap();
         repo.load_metadata(&mut stack).unwrap();
 
         // Should have no sidecar-derived custom tags.
@@ -1078,10 +1269,18 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001_a.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
+
         let rotated = repo
-            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)
             .unwrap();
-        assert_eq!(rotated.id, "IMG_001");
+        assert_eq!(rotated.name, "IMG_001");
 
         // After 90° CW rotation, 4×2 → 2×4
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
@@ -1100,10 +1299,18 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
+
         let rotated = repo
-            .rotate_stack("IMG_001", Rotation::Ccw90, RotationTarget::All)
+            .rotate_stack(&opaque_id, Rotation::Ccw90, RotationTarget::All)
             .unwrap();
-        assert_eq!(rotated.id, "IMG_001");
+        assert_eq!(rotated.name, "IMG_001");
 
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
         assert_eq!(img.width(), 2);
@@ -1118,10 +1325,18 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
+
         let rotated = repo
-            .rotate_stack("IMG_001", Rotation::Cw180, RotationTarget::All)
+            .rotate_stack(&opaque_id, Rotation::Cw180, RotationTarget::All)
             .unwrap();
-        assert_eq!(rotated.id, "IMG_001");
+        assert_eq!(rotated.name, "IMG_001");
 
         // 180° preserves dimensions
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
@@ -1139,8 +1354,16 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001_b.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
+
         let rotated = repo
-            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)
             .unwrap();
         assert_eq!(rotated.image_count(), 3);
 
@@ -1172,11 +1395,19 @@ mod tests {
         create_test_image_jpeg(&dir.join("IMG_001.jpg"), 4, 2);
 
         let repo = LocalRepository::new(dir);
+        let stacks = repo.scan().unwrap();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
+
         let rotated = repo
-            .rotate_stack("IMG_001", Rotation::Cw90, RotationTarget::All)
+            .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)
             .unwrap();
-        // The returned stack should have the same id and paths
-        assert_eq!(rotated.id, "IMG_001");
+        // The returned stack should have the same name and paths
+        assert_eq!(rotated.name, "IMG_001");
         assert!(rotated.original.is_some());
     }
 
@@ -1303,9 +1534,9 @@ mod tests {
         assert_eq!(page.total_count, filtered.total_count());
         for item in &page.items {
             assert!(
-                item.id.contains("FamilyPhotos"),
+                item.name.contains("FamilyPhotos"),
                 "filtered item {} should match",
-                item.id
+                item.name
             );
         }
     }

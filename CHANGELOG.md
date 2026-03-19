@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-19
+
+### Added
+
+- `ImageFile` struct with lazy content hashing for duplicate detection
+- `HashingReader` for opportunistic hash computation during reads
+- `FileAccess` trait for backend-polymorphic file I/O with locking semantics
+- `StackManager` for unified multi-repository cache with O(1) lookups
+- `Repository::watch()` for filesystem change notifications
+- `StackEvent`/`CacheEvent` enums for reactive notification cascade
+- `Repository::location()` and `id()` for URI-based repo identification
+- `PhotoStack::content_hash()` for Merkle-style stack duplicate detection
+- `PhotoStack::name` and `folder` fields for human-readable display
+- `make_stack_id()` for deterministic opaque stack ID generation
+- Overlap detection when registering repos with StackManager
+
+### Changed
+
+- **BREAKING**: Stack IDs are now opaque SHA-256 hashes (16 hex chars) instead of file stems
+- **BREAKING**: `PhotoStack` image fields changed from `Option<PathBuf>` to `Option<ImageFile>`
+- **BREAKING**: `ImageFile.path` is `String` (not `PathBuf`) to support cloud URIs
+- **BREAKING**: `read_image()` returns `Box<dyn ReadSeek>` instead of `Vec<u8>`
+- **BREAKING**: `read_image()` takes `&str` instead of `&Path`
+- **BREAKING**: `Repository` trait now requires `FileAccess` supertrait
+- **BREAKING**: `Repository` trait gained `location()` and `id()` methods
+- All binding layers (FFI, TypeScript, CLI) now wrap `StackManager` internally
+- Recursive scanning no longer produces colliding IDs for same-named files in different subfolders
+- Scanner `Variant` and `classify_stem` are now public
+
 ## [0.1.13] - 2026-03-17
 
 ### Added
@@ -171,6 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.2.0]: https://github.com/JeromySt/photostax/compare/v0.1.13...v0.2.0
 [0.1.10]: https://github.com/JeromySt/photostax/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/JeromySt/photostax/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/JeromySt/photostax/compare/v0.1.7...v0.1.8

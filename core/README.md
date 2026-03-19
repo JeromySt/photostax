@@ -88,8 +88,10 @@ let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 20 });
 println!("Page has {} items, {} total", page.items.len(), page.total_count);
 assert_eq!(page.has_more, stacks.len() > 20);
 
-// Read image bytes
-let bytes = repo.read_image(&stack.original.unwrap())?;
+// Read image stream
+use std::io::Read;
+let mut bytes = Vec::new();
+repo.read_image(&stack.original.unwrap().path)?.read_to_end(&mut bytes)?;
 ```
 
 ## Building from Source

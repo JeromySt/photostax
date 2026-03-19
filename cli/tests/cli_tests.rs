@@ -193,10 +193,10 @@ fn test_scan_json_output() {
     assert_eq!(stacks.len(), 3);
 
     // Check that stacks have expected fields
-    let ids: Vec<&str> = stacks.iter().map(|s| s["id"].as_str().unwrap()).collect();
-    assert!(ids.contains(&"IMG_001"));
-    assert!(ids.contains(&"IMG_002"));
-    assert!(ids.contains(&"IMG_003"));
+    let names: Vec<&str> = stacks.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"IMG_001"));
+    assert!(names.contains(&"IMG_002"));
+    assert!(names.contains(&"IMG_003"));
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn test_info_json_output() {
 
     // Should be valid JSON
     let stack: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(stack["id"].as_str().unwrap(), "IMG_001");
+    assert_eq!(stack["name"].as_str().unwrap(), "IMG_001");
 }
 
 // ============================================================================

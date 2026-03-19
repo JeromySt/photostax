@@ -31,7 +31,7 @@
 //! for stack in &stacks {
 //!     println!("Photo: {}", stack.id);
 //!     if let Some(ref back) = stack.back {
-//!         println!("  Has back scan: {}", back.display());
+//!         println!("  Has back scan: {}", back.path);
 //!     }
 //! }
 //! ```
@@ -67,9 +67,13 @@
 
 pub mod backends;
 pub mod classify;
+pub mod events;
+pub mod file_access;
+pub mod hashing;
 pub mod metadata;
 pub mod photo_stack;
 pub mod repository;
 pub mod scanner;
 pub mod search;
 pub mod snapshot;
+pub mod stack_manager;

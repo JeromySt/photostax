@@ -4,18 +4,24 @@
 //! across the FFI boundary. Pointers returned from FFI functions must be freed
 //! using the corresponding `*_free` functions.
 
+use std::cell::RefCell;
 use std::os::raw::c_char;
 
-/// Opaque handle to a LocalRepository.
+/// Opaque handle to a [`StackManager`].
 ///
 /// This type is opaque to C code and should only be manipulated through
 /// the FFI functions. Create with [`photostax_repo_open`] and free with
 /// [`photostax_repo_free`].
 ///
+/// Internally uses [`RefCell`] because `StackManager` mutation methods
+/// (`scan`, `load_metadata`, `rotate_stack`, etc.) require `&mut self`,
+/// while the FFI functions receive `*const PhotostaxRepo`.
+///
+/// [`StackManager`]: photostax_core::stack_manager::StackManager
 /// [`photostax_repo_open`]: crate::repository::photostax_repo_open
 /// [`photostax_repo_free`]: crate::repository::photostax_repo_free
 pub struct PhotostaxRepo {
-    pub(crate) inner: photostax_core::backends::local::LocalRepository,
+    pub(crate) inner: RefCell<photostax_core::stack_manager::StackManager>,
 }
 
 /// A photo stack returned across FFI.
@@ -32,8 +38,10 @@ pub struct PhotostaxRepo {
 /// [`photostax_stack_free`]: crate::repository::photostax_stack_free
 #[repr(C)]
 pub struct FfiPhotoStack {
-    /// Stack identifier (never null).
+    /// Stack identifier (never null). This is an opaque hash.
     pub id: *mut c_char,
+    /// Human-readable stack name, typically the file stem (never null).
+    pub name: *mut c_char,
     /// Path to original image (null if absent).
     pub original: *mut c_char,
     /// Path to enhanced image (null if absent).
@@ -215,12 +223,14 @@ mod tests {
         // Verify the struct has the expected fields and layout
         let stack = FfiPhotoStack {
             id: std::ptr::null_mut(),
+            name: std::ptr::null_mut(),
             original: std::ptr::null_mut(),
             enhanced: std::ptr::null_mut(),
             back: std::ptr::null_mut(),
             metadata_json: std::ptr::null_mut(),
         };
         assert!(stack.id.is_null());
+        assert!(stack.name.is_null());
         assert!(stack.original.is_null());
         assert!(stack.enhanced.is_null());
         assert!(stack.back.is_null());

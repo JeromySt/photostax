@@ -30,10 +30,10 @@
 //! use std::path::Path;
 //!
 //! let config = ScannerConfig::default();
-//! let stacks = scan_directory(Path::new("/photos"), &config)?;
+//! let stacks = scan_directory(Path::new("/photos"), &config, "file:///photos")?;
 //!
 //! for stack in stacks {
-//!     println!("{}: {} files", stack.id, [
+//!     println!("{} (id={}): {} files", stack.name, stack.id, [
 //!         stack.original.as_ref(),
 //!         stack.enhanced.as_ref(),
 //!         stack.back.as_ref(),
@@ -46,6 +46,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 
+use crate::hashing::ImageFile;
 use crate::photo_stack::PhotoStack;
 
 /// Configuration for the FastFoto file scanner.
@@ -95,8 +96,9 @@ pub struct ScannerConfig {
     /// Whether to recurse into subdirectories.
     ///
     /// When `true`, all nested subdirectories are scanned for photo stacks.
-    /// Stack IDs remain unique per file stem — if the same stem exists in
-    /// multiple subdirectories, the last one found wins.
+    /// Stacks receive opaque IDs derived from the repository location,
+    /// relative subfolder path, and file stem, so the same stem appearing
+    /// in different subdirectories is correctly kept as separate stacks.
     ///
     /// Default: `false`
     pub recursive: bool,
@@ -122,12 +124,16 @@ impl Default for ScannerConfig {
 ///
 /// Files are grouped by their base name (without suffix or extension). The function
 /// recognizes the `_a` (enhanced) and `_b` (back) suffixes from the FastFoto naming
-/// convention.
+/// convention. Each stack receives an opaque ID derived from the repository
+/// `location`, relative subfolder path, and file stem, ensuring uniqueness even
+/// when the same stem appears in different subdirectories during recursive scans.
 ///
 /// # Arguments
 ///
 /// * `dir` - The directory path to scan
 /// * `config` - Scanner configuration specifying suffixes and extensions
+/// * `location` - Repository location URI (e.g., `"file:///C:/photos"`) used to
+///   generate deterministic opaque stack IDs via [`make_stack_id`](crate::hashing::make_stack_id)
 ///
 /// # Returns
 ///
@@ -150,7 +156,7 @@ impl Default for ScannerConfig {
 /// use photostax_core::scanner::{scan_directory, ScannerConfig};
 /// use std::path::Path;
 ///
-/// let stacks = scan_directory(Path::new("/photos"), &ScannerConfig::default())?;
+/// let stacks = scan_directory(Path::new("/photos"), &ScannerConfig::default(), "file:///photos")?;
 /// println!("Found {} photo stacks", stacks.len());
 /// # Ok::<(), std::io::Error>(())
 /// ```
@@ -165,12 +171,16 @@ impl Default for ScannerConfig {
 ///     extensions: vec!["tif".to_string()], // TIFF only
 ///     ..ScannerConfig::default()
 /// };
-/// let stacks = scan_directory(Path::new("/archive"), &config)?;
+/// let stacks = scan_directory(Path::new("/archive"), &config, "file:///archive")?;
 /// # Ok::<(), std::io::Error>(())
 /// ```
-pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec<PhotoStack>> {
+pub fn scan_directory(
+    dir: &Path,
+    config: &ScannerConfig,
+    location: &str,
+) -> std::io::Result<Vec<PhotoStack>> {
     let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
-    scan_directory_inner(dir, config, &mut stacks)?;
+    scan_directory_inner(dir, dir, config, location, &mut stacks)?;
 
     let mut result: Vec<PhotoStack> = stacks.into_values().collect();
     result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -180,7 +190,9 @@ pub fn scan_directory(dir: &Path, config: &ScannerConfig) -> std::io::Result<Vec
 /// Inner recursive helper for [`scan_directory`].
 fn scan_directory_inner(
     dir: &Path,
+    root: &Path,
     config: &ScannerConfig,
+    location: &str,
     stacks: &mut HashMap<String, PhotoStack>,
 ) -> std::io::Result<()> {
     let entries = std::fs::read_dir(dir)?;
@@ -190,7 +202,7 @@ fn scan_directory_inner(
 
         if path.is_dir() {
             if config.recursive {
-                scan_directory_inner(&path, config, stacks)?;
+                scan_directory_inner(&path, root, config, location, stacks)?;
             }
             continue;
         }
@@ -220,22 +232,40 @@ fn scan_directory_inner(
 
         let (base_name, variant) = classify_stem(&stem, config);
 
-        let stack = stacks
-            .entry(base_name.clone())
-            .or_insert_with(|| PhotoStack::new(&base_name));
+        let relative_dir = dir
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+
+        let opaque_id = crate::hashing::make_stack_id(location, &relative_dir, &base_name);
+
+        let stack = stacks.entry(opaque_id.clone()).or_insert_with(|| {
+            let mut s = PhotoStack::new(&opaque_id);
+            s.name = base_name.clone();
+            s.folder = if relative_dir.is_empty() {
+                None
+            } else {
+                Some(relative_dir.to_string())
+            };
+            s.repo_id = Some(location.to_string());
+            s
+        });
+
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let path_str = path.to_string_lossy().into_owned();
 
         match variant {
-            Variant::Original => stack.original = Some(path),
-            Variant::Enhanced => stack.enhanced = Some(path),
-            Variant::Back => stack.back = Some(path),
+            Variant::Original => stack.original = Some(ImageFile::new(path_str, size)),
+            Variant::Enhanced => stack.enhanced = Some(ImageFile::new(path_str, size)),
+            Variant::Back => stack.back = Some(ImageFile::new(path_str, size)),
         }
     }
     Ok(())
 }
 
-/// Internal classification of file variants.
-#[derive(Debug)]
-enum Variant {
+/// Classification of file variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
     /// Original scan (no suffix)
     Original,
     /// Enhanced/color-corrected (`_a` suffix)
@@ -245,7 +275,7 @@ enum Variant {
 }
 
 /// Classify a file stem into its base name and variant type.
-fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
+pub fn classify_stem(stem: &str, config: &ScannerConfig) -> (String, Variant) {
     if let Some(base) = stem.strip_suffix(&config.enhanced_suffix) {
         (base.to_string(), Variant::Enhanced)
     } else if let Some(base) = stem.strip_suffix(&config.back_suffix) {
@@ -432,6 +462,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    const TEST_LOC: &str = "file:///test";
+
     #[test]
     fn test_scan_groups_photo_stack() {
         let tmp = TempDir::new().unwrap();
@@ -444,16 +476,16 @@ mod tests {
         fs::write(dir.join("IMG_002.jpg"), b"original2").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 2);
 
-        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert!(s1.original.is_some());
         assert!(s1.enhanced.is_some());
         assert!(s1.back.is_some());
 
-        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
         assert!(s2.original.is_some());
         assert!(s2.enhanced.is_none());
         assert!(s2.back.is_none());
@@ -488,16 +520,16 @@ mod tests {
         fs::write(dir.join("IMG_002.tiff"), b"original2").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 2);
 
-        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert!(s1.original.is_some());
         assert!(s1.enhanced.is_some());
         assert!(s1.back.is_some());
 
-        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
         assert!(s2.original.is_some());
     }
 
@@ -513,15 +545,15 @@ mod tests {
         fs::write(dir.join("IMG_002_a.tif"), b"enhanced2").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 2);
 
-        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert!(s1.original.is_some());
         assert!(s1.enhanced.is_some());
 
-        let s2 = stacks.iter().find(|s| s.id == "IMG_002").unwrap();
+        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
         assert!(s2.original.is_some());
         assert!(s2.enhanced.is_some());
     }
@@ -536,16 +568,20 @@ mod tests {
         fs::write(dir.join("IMG_001_b.tif"), b"back").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 1);
 
-        let s1 = stacks.iter().find(|s| s.id == "IMG_001").unwrap();
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert!(s1.original.is_some());
         assert!(s1.back.is_some());
         // Verify they have different extensions
-        let orig_ext = s1.original.as_ref().unwrap().extension().unwrap();
-        let back_ext = s1.back.as_ref().unwrap().extension().unwrap();
+        let orig_ext = Path::new(&s1.original.as_ref().unwrap().path)
+            .extension()
+            .unwrap();
+        let back_ext = Path::new(&s1.back.as_ref().unwrap().path)
+            .extension()
+            .unwrap();
         assert_eq!(orig_ext, "jpg");
         assert_eq!(back_ext, "tif");
     }
@@ -554,7 +590,7 @@ mod tests {
     fn test_scan_empty_directory() {
         let tmp = TempDir::new().unwrap();
         let config = ScannerConfig::default();
-        let stacks = scan_directory(tmp.path(), &config).unwrap();
+        let stacks = scan_directory(tmp.path(), &config, TEST_LOC).unwrap();
         assert!(stacks.is_empty());
     }
 
@@ -569,7 +605,7 @@ mod tests {
         fs::write(dir.join("data.bmp"), b"bmp").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
         assert!(stacks.is_empty());
     }
 
@@ -585,11 +621,11 @@ mod tests {
         fs::write(dir.join("IMG_002_a.Tif"), b"enhanced2").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 2);
-        assert!(stacks.iter().any(|s| s.id == "IMG_001"));
-        assert!(stacks.iter().any(|s| s.id == "IMG_002"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_001"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_002"));
     }
 
     #[test]
@@ -601,11 +637,11 @@ mod tests {
         fs::write(dir.join("IMG_001_a.jpg"), b"enhanced").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
-        assert_eq!(s.id, "IMG_001");
+        assert_eq!(s.name, "IMG_001");
         assert!(s.original.is_none());
         assert!(s.enhanced.is_some());
         assert!(s.back.is_none());
@@ -620,11 +656,11 @@ mod tests {
         fs::write(dir.join("IMG_001_b.jpg"), b"back").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
-        assert_eq!(s.id, "IMG_001");
+        assert_eq!(s.name, "IMG_001");
         assert!(s.original.is_none());
         assert!(s.enhanced.is_none());
         assert!(s.back.is_some());
@@ -646,7 +682,7 @@ mod tests {
             extensions: vec!["jpg".to_string()],
             ..ScannerConfig::default()
         };
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
@@ -666,11 +702,11 @@ mod tests {
         fs::write(dir.join("фото_002.tif"), b"original2").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 2);
-        assert!(stacks.iter().any(|s| s.id == "写真_001"));
-        assert!(stacks.iter().any(|s| s.id == "фото_002"));
+        assert!(stacks.iter().any(|s| s.name == "写真_001"));
+        assert!(stacks.iter().any(|s| s.name == "фото_002"));
     }
 
     #[test]
@@ -724,11 +760,11 @@ mod tests {
         fs::write(subdir.join("IMG_002.jpg"), b"sub_original").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         // Should only find IMG_001, not the one in subdir
         assert_eq!(stacks.len(), 1);
-        assert_eq!(stacks[0].id, "IMG_001");
+        assert_eq!(stacks[0].name, "IMG_001");
     }
 
     #[test]
@@ -742,12 +778,16 @@ mod tests {
         fs::write(dir.join("MMM_001.jpg"), b"m").unwrap();
 
         let config = ScannerConfig::default();
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 3);
-        assert_eq!(stacks[0].id, "AAA_001");
-        assert_eq!(stacks[1].id, "MMM_001");
-        assert_eq!(stacks[2].id, "ZZZ_001");
+        // Verify sorted by opaque ID
+        assert!(stacks[0].id <= stacks[1].id);
+        assert!(stacks[1].id <= stacks[2].id);
+        // Verify all names present
+        assert!(stacks.iter().any(|s| s.name == "AAA_001"));
+        assert!(stacks.iter().any(|s| s.name == "MMM_001"));
+        assert!(stacks.iter().any(|s| s.name == "ZZZ_001"));
     }
 
     #[test]
@@ -774,23 +814,26 @@ mod tests {
             recursive: true,
             ..ScannerConfig::default()
         };
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 3);
-        assert_eq!(stacks[0].id, "IMG_001");
-        assert_eq!(stacks[1].id, "IMG_002");
-        assert_eq!(stacks[2].id, "IMG_003");
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
+        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
+        let s3 = stacks.iter().find(|s| s.name == "IMG_003").unwrap();
 
         // Verify the root stack has enhanced image
-        assert!(stacks[0].original.is_some());
-        assert!(stacks[0].enhanced.is_some());
+        assert!(s1.original.is_some());
+        assert!(s1.enhanced.is_some());
+        assert!(s1.folder.is_none());
 
         // Verify the subdirectory stack has back image
-        assert!(stacks[1].original.is_some());
-        assert!(stacks[1].back.is_some());
+        assert!(s2.original.is_some());
+        assert!(s2.back.is_some());
+        assert_eq!(s2.folder.as_deref(), Some("batch2"));
 
         // Verify the nested stack exists
-        assert!(stacks[2].original.is_some());
+        assert!(s3.original.is_some());
+        assert_eq!(s3.folder.as_deref(), Some("batch2/deep"));
     }
 
     #[test]
@@ -805,10 +848,10 @@ mod tests {
         fs::write(subdir.join("IMG_002.jpg"), b"sub_original").unwrap();
 
         let config = ScannerConfig::default(); // recursive: false by default
-        let stacks = scan_directory(dir, &config).unwrap();
+        let stacks = scan_directory(dir, &config, TEST_LOC).unwrap();
 
         assert_eq!(stacks.len(), 1);
-        assert_eq!(stacks[0].id, "IMG_001");
+        assert_eq!(stacks[0].name, "IMG_001");
     }
 
     #[test]

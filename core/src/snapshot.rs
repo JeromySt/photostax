@@ -199,17 +199,12 @@ impl ScanSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::photo_stack::Metadata;
-    use std::path::PathBuf;
+    use crate::hashing::ImageFile;
 
     fn make_stack(id: &str) -> PhotoStack {
-        PhotoStack {
-            id: id.to_string(),
-            original: Some(PathBuf::from(format!("{id}.jpg"))),
-            enhanced: None,
-            back: None,
-            metadata: Metadata::default(),
-        }
+        let mut stack = PhotoStack::new(id);
+        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
+        stack
     }
 
     fn make_stacks(n: usize) -> Vec<PhotoStack> {
@@ -280,8 +275,8 @@ mod tests {
     #[test]
     fn test_filter_returns_subset() {
         let mut stacks = make_stacks(4);
-        stacks[0].back = Some(PathBuf::from("IMG_000_b.jpg"));
-        stacks[2].back = Some(PathBuf::from("IMG_002_b.jpg"));
+        stacks[0].back = Some(ImageFile::new("IMG_000_b.jpg", 0));
+        stacks[2].back = Some(ImageFile::new("IMG_002_b.jpg", 0));
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));
@@ -295,7 +290,7 @@ mod tests {
     fn test_filter_then_page() {
         let mut stacks = make_stacks(10);
         for s in &mut stacks {
-            s.back = Some(PathBuf::from(format!("{}_b.jpg", s.id)));
+            s.back = Some(ImageFile::new(format!("{}_b.jpg", s.id), 0));
         }
         // Remove back from two stacks
         stacks[3].back = None;

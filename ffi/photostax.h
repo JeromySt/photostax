@@ -4,12 +4,17 @@
 #include <stdlib.h>
 
 /**
- * Opaque handle to a LocalRepository.
+ * Opaque handle to a [`StackManager`].
  *
  * This type is opaque to C code and should only be manipulated through
  * the FFI functions. Create with [`photostax_repo_open`] and free with
  * [`photostax_repo_free`].
  *
+ * Internally uses [`RefCell`] because `StackManager` mutation methods
+ * (`scan`, `load_metadata`, `rotate_stack`, etc.) require `&mut self`,
+ * while the FFI functions receive `*const PhotostaxRepo`.
+ *
+ * [`StackManager`]: photostax_core::stack_manager::StackManager
  * [`photostax_repo_open`]: crate::repository::photostax_repo_open
  * [`photostax_repo_free`]: crate::repository::photostax_repo_free
  */
@@ -59,9 +64,13 @@ typedef struct FfiResult {
  */
 typedef struct FfiPhotoStack {
   /**
-   * Stack identifier (never null).
+   * Stack identifier (never null). This is an opaque hash.
    */
   char *id;
+  /**
+   * Human-readable stack name, typically the file stem (never null).
+   */
+  char *name;
   /**
    * Path to original image (null if absent).
    */

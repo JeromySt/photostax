@@ -18,13 +18,36 @@
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
 //! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile};
-//! use std::path::Path;
+//! use photostax_core::file_access::{FileAccess, ReadSeek};
+//! use std::io::{self, Write};
 //!
 //! struct MyCloudRepository {
 //!     bucket: String,
+//!     location: String,
+//!     repo_id: String,
+//! }
+//!
+//! impl FileAccess for MyCloudRepository {
+//!     fn open_read(&self, path: &str) -> io::Result<Box<dyn ReadSeek>> {
+//!         // Open cloud object for reading
+//!         todo!()
+//!     }
+//!
+//!     fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>> {
+//!         // Open cloud object for writing
+//!         todo!()
+//!     }
 //! }
 //!
 //! impl Repository for MyCloudRepository {
+//!     fn location(&self) -> &str {
+//!         &self.location
+//!     }
+//!
+//!     fn id(&self) -> &str {
+//!         &self.repo_id
+//!     }
+//!
 //!     fn scan_with_progress(&self, _profile: ScannerProfile, _progress: Option<&mut dyn FnMut(&ScanProgress)>) -> Result<Vec<PhotoStack>, RepositoryError> {
 //!         // List objects in cloud bucket, group by naming convention
 //!         todo!()
@@ -44,8 +67,8 @@
 //!         todo!()
 //!     }
 //!
-//!     fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError> {
-//!         // Download image bytes from cloud
+//!     fn read_image(&self, path: &str) -> Result<Box<dyn photostax_core::file_access::ReadSeek>, RepositoryError> {
+//!         // Stream image bytes from cloud
 //!         todo!()
 //!     }
 //!
@@ -63,8 +86,8 @@
 //!
 //! [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
 
-use std::path::Path;
-
+use crate::events::StackEvent;
+use crate::file_access::FileAccess;
 use crate::photo_stack::{
     ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
 };
@@ -120,19 +143,39 @@ pub enum RepositoryError {
 ///
 /// let repo = LocalRepository::new("/photos");
 ///
+/// // Each repository has a canonical URI and a short ID
+/// println!("Location: {}", repo.location());
+/// println!("ID: {}", repo.id());
+///
 /// // Fast scan — just file paths and folder metadata, no file I/O
 /// let stacks = repo.scan()?;
 /// println!("Found {} stacks", stacks.len());
 ///
 /// // Load metadata only when needed
-/// let mut stack = repo.get_stack("IMG_0001")?;
+/// let mut stack = stacks.into_iter().next().unwrap();
 /// repo.load_metadata(&mut stack)?;
-/// println!("{}: {} EXIF tags", stack.id, stack.metadata.exif_tags.len());
+/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, stack.metadata.exif_tags.len());
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
-pub trait Repository {
+pub trait Repository: FileAccess {
+    /// Returns the canonical URI of this repository.
+    ///
+    /// For local repositories this is a `file:///` URI derived from the
+    /// canonicalized root path. Cloud backends would return their own scheme
+    /// (e.g., `azure://account/container`).
+    ///
+    /// The location is used to generate deterministic, opaque stack IDs via
+    /// [`make_stack_id`](crate::hashing::make_stack_id).
+    fn location(&self) -> &str;
+
+    /// Returns a short, deterministic identifier derived from the location.
+    ///
+    /// Useful as a cache key or database partition key. The value is a
+    /// truncated SHA-256 hex string (16 characters).
+    fn id(&self) -> &str;
+
     /// Scan with a [`ScannerProfile`] and optional progress callback.
     ///
     /// This is the primary scan method. It performs a two-pass scan:
@@ -206,14 +249,18 @@ pub trait Repository {
     /// - [`RepositoryError::Io`] if the repository cannot be accessed
     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError>;
 
-    /// Read the raw bytes of an image file within the repository.
+    /// Read an image file as a seekable stream.
     ///
     /// The path should be one of the paths from a [`PhotoStack`] (original, enhanced, or back).
+    /// Returns a boxed stream that supports both reading and seeking.
     ///
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the file cannot be read.
-    fn read_image(&self, path: &Path) -> Result<Vec<u8>, RepositoryError>;
+    fn read_image(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError>;
 
     /// Write metadata tags to the files in a photo stack.
     ///
@@ -259,6 +306,15 @@ pub trait Repository {
         rotation: Rotation,
         target: RotationTarget,
     ) -> Result<PhotoStack, RepositoryError>;
+
+    /// Start watching for file changes. Returns a receiver for StackEvents.
+    /// Default implementation returns a receiver that never produces events.
+    ///
+    /// The watcher runs in a background thread. Drop the receiver to stop watching.
+    fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        Ok(rx)
+    }
 }
 
 #[cfg(test)]
@@ -307,5 +363,14 @@ mod tests {
         let err = RepositoryError::NotFound("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("NotFound"));
+    }
+
+    #[test]
+    fn test_default_watch_returns_receiver() {
+        use crate::backends::local::LocalRepository;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = LocalRepository::new(tmp.path());
+        let rx = repo.watch();
+        assert!(rx.is_ok());
     }
 }

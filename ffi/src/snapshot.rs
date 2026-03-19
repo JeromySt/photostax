@@ -5,7 +5,7 @@
 //! requests always see the same total count and ordering.
 
 use std::os::raw::{c_char, c_void};
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 
 use photostax_core::photo_stack::ScannerProfile;
@@ -45,10 +45,14 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
-    let path_to_c_string = |path: &Option<std::path::PathBuf>| -> *mut c_char {
-        match path {
-            Some(p) => {
-                let s = p.to_string_lossy().into_owned();
+    let name = CString::new(stack.name.clone())
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
+
+    let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
+        match img {
+            Some(f) => {
+                let s = f.path.clone();
                 CString::new(s)
                     .map(|cs| cs.into_raw())
                     .unwrap_or(ptr::null_mut())
@@ -69,6 +73,7 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
 
     FfiPhotoStack {
         id,
+        name,
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),
@@ -92,23 +97,26 @@ pub unsafe extern "C" fn photostax_create_snapshot(
     repo: *const PhotostaxRepo,
     load_metadata: bool,
 ) -> *mut PhotostaxSnapshot {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() {
             return ptr::null_mut();
         }
 
         let repo_ref = unsafe { &*repo };
-        let snapshot = if load_metadata {
-            ScanSnapshot::from_scan_with_metadata(&repo_ref.inner)
+        let mut mgr = repo_ref.inner.borrow_mut();
+        let scan_result = if load_metadata {
+            mgr.scan_with_metadata()
         } else {
-            ScanSnapshot::from_scan(&repo_ref.inner)
+            mgr.scan()
         };
-
-        match snapshot {
-            Ok(snap) => Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap })),
-            Err(_) => ptr::null_mut(),
+        if scan_result.is_err() {
+            return ptr::null_mut();
         }
-    });
+        let snap = mgr.snapshot();
+        drop(mgr);
+
+        Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -139,13 +147,13 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
     callback: ScanProgressFn,
     user_data: *mut c_void,
 ) -> *mut PhotostaxSnapshot {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() {
             return ptr::null_mut();
         }
 
         let repo_ref = unsafe { &*repo };
-        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+        let _scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mut cb_wrapper;
         let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
@@ -158,18 +166,21 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
                 None
             };
 
-        let snapshot = ScanSnapshot::from_scan_with_progress(
-            &repo_ref.inner,
-            scanner_profile,
-            load_metadata,
-            progress,
-        );
-
-        match snapshot {
-            Ok(snap) => Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap })),
-            Err(_) => ptr::null_mut(),
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan_with_progress(progress).is_err() {
+            return ptr::null_mut();
         }
-    });
+        if load_metadata {
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in ids {
+                let _ = mgr.load_metadata(&id);
+            }
+        }
+        let snap = mgr.snapshot();
+        drop(mgr);
+
+        Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -209,7 +220,7 @@ pub unsafe extern "C" fn photostax_snapshot_get_page(
     offset: usize,
     limit: usize,
 ) -> FfiPaginatedResult {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() {
             return FfiPaginatedResult::empty(offset, limit);
         }
@@ -242,7 +253,7 @@ pub unsafe extern "C" fn photostax_snapshot_get_page(
             limit: paginated.limit,
             has_more: paginated.has_more,
         }
-    });
+    }));
 
     result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
 }
@@ -272,7 +283,7 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
         removed: 0,
     };
 
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || snapshot.is_null() {
             return error_status;
         }
@@ -280,17 +291,22 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
         let repo_ref = unsafe { &*repo };
         let snap = unsafe { &*snapshot };
 
-        match snap.inner.check_status(&repo_ref.inner) {
-            Ok(status) => FfiSnapshotStatus {
-                is_stale: status.is_stale,
-                snapshot_count: status.snapshot_count,
-                current_count: status.current_count,
-                added: status.added,
-                removed: status.removed,
-            },
-            Err(_) => error_status,
+        // Re-scan to get the current state for comparison
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.scan().is_err() {
+            return error_status;
         }
-    });
+        let status = mgr.check_status(&snap.inner);
+        drop(mgr);
+
+        FfiSnapshotStatus {
+            is_stale: status.is_stale,
+            snapshot_count: status.snapshot_count,
+            current_count: status.current_count,
+            added: status.added,
+            removed: status.removed,
+        }
+    }));
 
     result.unwrap_or(error_status)
 }
@@ -313,7 +329,7 @@ pub unsafe extern "C" fn photostax_snapshot_filter(
     snapshot: *const PhotostaxSnapshot,
     query_json: *const c_char,
 ) -> *mut PhotostaxSnapshot {
-    let result = panic::catch_unwind(|| {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() || query_json.is_null() {
             return ptr::null_mut();
         }
@@ -367,7 +383,7 @@ pub unsafe extern "C" fn photostax_snapshot_filter(
 
         let filtered = snap.inner.filter(&query);
         Box::into_raw(Box::new(PhotostaxSnapshot { inner: filtered }))
-    });
+    }));
 
     result.unwrap_or(ptr::null_mut())
 }
@@ -548,8 +564,11 @@ mod tests {
         let page = unsafe { photostax_snapshot_get_page(filtered, 0, 100) };
         for i in 0..page.len {
             let item = unsafe { &*page.data.add(i) };
-            let id = unsafe { CStr::from_ptr(item.id) }.to_str().unwrap();
-            assert!(id.contains("FamilyPhotos"), "expected FamilyPhotos in {id}");
+            let name = unsafe { CStr::from_ptr(item.name) }.to_str().unwrap();
+            assert!(
+                name.contains("FamilyPhotos"),
+                "expected FamilyPhotos in {name}"
+            );
         }
 
         unsafe { photostax_paginated_result_free(page) };
