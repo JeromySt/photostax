@@ -29,11 +29,11 @@ use crate::types::{
     FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo,
 };
 
-/// Helper to convert a PathBuf option to a C string (null if None).
-fn path_to_c_string(path: &Option<PathBuf>) -> *mut c_char {
-    match path {
-        Some(p) => {
-            let s = p.to_string_lossy().into_owned();
+/// Helper to convert an `Option<ImageFile>` path to a C string (null if None).
+fn image_path_to_c_string(img: &Option<photostax_core::hashing::ImageFile>) -> *mut c_char {
+    match img {
+        Some(f) => {
+            let s = f.path.clone();
             match CString::new(s) {
                 Ok(cs) => cs.into_raw(),
                 Err(_) => ptr::null_mut(),
@@ -61,9 +61,9 @@ fn photo_stack_to_ffi(stack: &PhotoStack) -> FfiPhotoStack {
 
     FfiPhotoStack {
         id,
-        original: path_to_c_string(&stack.original),
-        enhanced: path_to_c_string(&stack.enhanced),
-        back: path_to_c_string(&stack.back),
+        original: image_path_to_c_string(&stack.original),
+        enhanced: image_path_to_c_string(&stack.enhanced),
+        back: image_path_to_c_string(&stack.back),
         metadata_json: metadata_json_ptr,
     }
 }
@@ -1080,14 +1080,17 @@ mod tests {
 
     #[test]
     fn test_path_to_c_string_none() {
-        let result = path_to_c_string(&None);
+        let result = image_path_to_c_string(&None);
         assert!(result.is_null());
     }
 
     #[test]
     fn test_path_to_c_string_some() {
-        let path = Some(PathBuf::from("/test/path.jpg"));
-        let result = path_to_c_string(&path);
+        let img = Some(photostax_core::hashing::ImageFile::new(
+            "/test/path.jpg",
+            0,
+        ));
+        let result = image_path_to_c_string(&img);
         assert!(!result.is_null());
         let s = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert!(s.contains("path.jpg"));
@@ -1096,13 +1099,15 @@ mod tests {
 
     #[test]
     fn test_photo_stack_to_ffi_basic() {
-        let stack = PhotoStack {
-            id: "test_stack".to_string(),
-            original: Some(PathBuf::from("/test/original.jpg")),
-            enhanced: Some(PathBuf::from("/test/enhanced.jpg")),
-            back: None,
-            metadata: Default::default(),
-        };
+        let mut stack = PhotoStack::new("test_stack");
+        stack.original = Some(photostax_core::hashing::ImageFile::new(
+            "/test/original.jpg",
+            0,
+        ));
+        stack.enhanced = Some(photostax_core::hashing::ImageFile::new(
+            "/test/enhanced.jpg",
+            0,
+        ));
         let ffi = photo_stack_to_ffi(&stack);
         assert!(!ffi.id.is_null());
         let id_str = unsafe { CStr::from_ptr(ffi.id) }.to_str().unwrap();
@@ -1131,13 +1136,8 @@ mod tests {
             .custom_tags
             .insert("album".to_string(), serde_json::json!("Family"));
 
-        let stack = PhotoStack {
-            id: "meta_test".to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata,
-        };
+        let mut stack = PhotoStack::new("meta_test");
+        stack.metadata = metadata;
         let ffi = photo_stack_to_ffi(&stack);
         let meta_str = unsafe { CStr::from_ptr(ffi.metadata_json) }
             .to_str()
@@ -1237,8 +1237,11 @@ mod tests {
     #[test]
     fn test_path_to_c_string_with_null_byte() {
         // A path containing a null byte should cause CString::new to fail
-        let path_with_null = PathBuf::from("path\0with_null.jpg");
-        let result = path_to_c_string(&Some(path_with_null));
+        let img = Some(photostax_core::hashing::ImageFile::new(
+            "path\0with_null.jpg",
+            0,
+        ));
+        let result = image_path_to_c_string(&img);
         assert!(result.is_null());
     }
 

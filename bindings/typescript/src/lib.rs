@@ -73,9 +73,9 @@ impl From<CorePhotoStack> for JsPhotoStack {
     fn from(s: CorePhotoStack) -> Self {
         Self {
             id: s.id,
-            original: s.original.map(|p| p.to_string_lossy().to_string()),
-            enhanced: s.enhanced.map(|p| p.to_string_lossy().to_string()),
-            back: s.back.map(|p| p.to_string_lossy().to_string()),
+            original: s.original.as_ref().map(|f| f.path.clone()),
+            enhanced: s.enhanced.as_ref().map(|f| f.path.clone()),
+            back: s.back.as_ref().map(|f| f.path.clone()),
             metadata: s.metadata.into(),
         }
     }

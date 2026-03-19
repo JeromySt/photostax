@@ -21,10 +21,13 @@
 //! (e.g., `IMG_0001` in the example above).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use crate::hashing::ImageFile;
 use crate::metadata::{detect_image_format, ImageFormat};
 
 /// Whether to classify ambiguous `_a` images using pixel analysis.
@@ -296,11 +299,11 @@ impl Rotation {
 ///
 /// ```
 /// use photostax_core::photo_stack::PhotoStack;
-/// use std::path::PathBuf;
+/// use photostax_core::hashing::ImageFile;
 ///
 /// let mut stack = PhotoStack::new("Vacation_042");
-/// stack.original = Some(PathBuf::from("/photos/Vacation_042.jpg"));
-/// stack.enhanced = Some(PathBuf::from("/photos/Vacation_042_a.jpg"));
+/// stack.original = Some(ImageFile::new("/photos/Vacation_042.jpg", 0));
+/// stack.enhanced = Some(ImageFile::new("/photos/Vacation_042_a.jpg", 0));
 ///
 /// assert!(stack.has_any_image());
 /// ```
@@ -312,22 +315,33 @@ pub struct PhotoStack {
     /// all share the ID `IMG_001`.
     pub id: String,
 
-    /// Path to the original front scan (e.g., `IMG_001.jpg` or `IMG_001.tif`).
+    /// Human-readable stem name (e.g., `"IMG_001"`).
+    pub name: String,
+
+    /// Subfolder name this stack was scanned from (e.g., `"1984_Mexico"`).
+    #[serde(default)]
+    pub folder: Option<String>,
+
+    /// Which repository this stack belongs to.
+    #[serde(default)]
+    pub repo_id: Option<String>,
+
+    /// Original front scan (e.g., `IMG_001.jpg` or `IMG_001.tif`).
     ///
     /// This is the unprocessed scan directly from the FastFoto scanner.
-    pub original: Option<PathBuf>,
+    pub original: Option<ImageFile>,
 
-    /// Path to the enhanced front scan (e.g., `IMG_001_a.jpg` or `IMG_001_a.tif`).
+    /// Enhanced front scan (e.g., `IMG_001_a.jpg` or `IMG_001_a.tif`).
     ///
     /// This is the color-corrected, enhanced version produced by FastFoto software.
     /// The `_a` suffix indicates the "auto-enhanced" variant.
-    pub enhanced: Option<PathBuf>,
+    pub enhanced: Option<ImageFile>,
 
-    /// Path to the back-of-photo scan (e.g., `IMG_001_b.jpg` or `IMG_001_b.tif`).
+    /// Back-of-photo scan (e.g., `IMG_001_b.jpg` or `IMG_001_b.tif`).
     ///
     /// Captures any handwriting, dates, or notes on the photo's reverse side.
     /// Useful for OCR workflows to extract written metadata.
-    pub back: Option<PathBuf>,
+    pub back: Option<ImageFile>,
 
     /// Unified metadata from EXIF, XMP, and XMP sidecar file sources.
     #[serde(default)]
@@ -473,14 +487,18 @@ impl PhotoStack {
     ///
     /// ```
     /// use photostax_core::photo_stack::PhotoStack;
-    /// use std::path::PathBuf;
+    /// use photostax_core::hashing::ImageFile;
     ///
     /// let mut stack = PhotoStack::new("Wedding_001");
-    /// stack.original = Some(PathBuf::from("/photos/Wedding_001.jpg"));
+    /// stack.original = Some(ImageFile::new("/photos/Wedding_001.jpg", 0));
     /// ```
     pub fn new(id: impl Into<String>) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            name: id.clone(),
+            id,
+            folder: None,
+            repo_id: None,
             original: None,
             enhanced: None,
             back: None,
@@ -496,13 +514,13 @@ impl PhotoStack {
     ///
     /// ```
     /// use photostax_core::photo_stack::PhotoStack;
-    /// use std::path::PathBuf;
+    /// use photostax_core::hashing::ImageFile;
     ///
     /// let empty = PhotoStack::new("test");
     /// assert!(!empty.has_any_image());
     ///
     /// let mut with_image = PhotoStack::new("test");
-    /// with_image.back = Some(PathBuf::from("test_b.jpg"));
+    /// with_image.back = Some(ImageFile::new("test_b.jpg", 0));
     /// assert!(with_image.has_any_image());
     /// ```
     pub fn has_any_image(&self) -> bool {
@@ -520,17 +538,21 @@ impl PhotoStack {
     /// ```
     /// use photostax_core::photo_stack::PhotoStack;
     /// use photostax_core::metadata::ImageFormat;
-    /// use std::path::PathBuf;
+    /// use photostax_core::hashing::ImageFile;
     ///
     /// let mut stack = PhotoStack::new("test");
-    /// stack.original = Some(PathBuf::from("photo.tif"));
+    /// stack.original = Some(ImageFile::new("photo.tif", 0));
     /// assert_eq!(stack.format(), Some(ImageFormat::Tiff));
     /// ```
     pub fn format(&self) -> Option<ImageFormat> {
         self.original
             .as_ref()
-            .and_then(|p| detect_image_format(p))
-            .or_else(|| self.enhanced.as_ref().and_then(|p| detect_image_format(p)))
+            .and_then(|f| detect_image_format(Path::new(&f.path)))
+            .or_else(|| {
+                self.enhanced
+                    .as_ref()
+                    .and_then(|f| detect_image_format(Path::new(&f.path)))
+            })
     }
 
     /// Returns the name of the directory containing this stack's image files.
@@ -549,10 +571,10 @@ impl PhotoStack {
     ///
     /// ```
     /// use photostax_core::photo_stack::PhotoStack;
-    /// use std::path::PathBuf;
+    /// use photostax_core::hashing::ImageFile;
     ///
     /// let mut stack = PhotoStack::new("1984_Mexico_0001");
-    /// stack.original = Some(PathBuf::from("/photos/1984_Mexico/1984_Mexico_0001.jpg"));
+    /// stack.original = Some(ImageFile::new("/photos/1984_Mexico/1984_Mexico_0001.jpg", 0));
     /// assert_eq!(stack.containing_folder(), Some("1984_Mexico".to_string()));
     /// ```
     pub fn containing_folder(&self) -> Option<String> {
@@ -574,7 +596,7 @@ impl PhotoStack {
             .as_ref()
             .or(self.enhanced.as_ref())
             .or(self.back.as_ref())
-            .and_then(|p| p.parent())
+            .and_then(|f| Path::new(&f.path).parent())
             .map(|p| p.to_path_buf())
     }
 
@@ -587,13 +609,13 @@ impl PhotoStack {
     ///
     /// ```
     /// use photostax_core::photo_stack::PhotoStack;
-    /// use std::path::PathBuf;
+    /// use photostax_core::hashing::ImageFile;
     ///
     /// let mut stack = PhotoStack::new("test");
     /// assert_eq!(stack.image_count(), 0);
     ///
-    /// stack.original = Some(PathBuf::from("photo.jpg"));
-    /// stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+    /// stack.original = Some(ImageFile::new("photo.jpg", 0));
+    /// stack.enhanced = Some(ImageFile::new("photo_a.jpg", 0));
     /// assert_eq!(stack.image_count(), 2);
     /// ```
     pub fn image_count(&self) -> usize {
@@ -623,42 +645,84 @@ impl PhotoStack {
                 .keys()
                 .any(|k| !k.starts_with("folder_"))
     }
+
+    /// Compute a Merkle-style content hash over all present image files.
+    ///
+    /// Iterates over `original`, `enhanced`, and `back` (in order), computes
+    /// each file's content hash (lazy — cached after first call), then feeds
+    /// all individual hashes into a single SHA-256 to produce a combined hash.
+    ///
+    /// Returns `Ok(None)` when the stack contains no image files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if any image file cannot be read.
+    pub fn content_hash(&mut self) -> io::Result<Option<String>> {
+        let mut hashes: Vec<String> = Vec::new();
+
+        for f in [&mut self.original, &mut self.enhanced, &mut self.back]
+            .into_iter()
+            .flatten()
+        {
+            hashes.push(f.content_hash()?.to_string());
+        }
+
+        if hashes.is_empty() {
+            return Ok(None);
+        }
+
+        let mut hasher = Sha256::new();
+        for h in &hashes {
+            hasher.update(h.as_bytes());
+        }
+        let digest = hasher.finalize();
+        let hex: String = digest
+            .iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Ok(Some(hex))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn img(path: &str) -> ImageFile {
+        ImageFile::new(path, 0)
+    }
+
     #[test]
     fn test_format_from_original_jpeg() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.jpg"));
+        stack.original = Some(img("photo.jpg"));
         assert_eq!(stack.format(), Some(ImageFormat::Jpeg));
     }
 
     #[test]
     fn test_format_from_original_tiff() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.tif"));
+        stack.original = Some(img("photo.tif"));
         assert_eq!(stack.format(), Some(ImageFormat::Tiff));
 
         let mut stack2 = PhotoStack::new("test2");
-        stack2.original = Some(PathBuf::from("photo.tiff"));
+        stack2.original = Some(img("photo.tiff"));
         assert_eq!(stack2.format(), Some(ImageFormat::Tiff));
     }
 
     #[test]
     fn test_format_fallback_to_enhanced() {
         let mut stack = PhotoStack::new("test");
-        stack.enhanced = Some(PathBuf::from("photo_a.tiff"));
+        stack.enhanced = Some(img("photo_a.tiff"));
         assert_eq!(stack.format(), Some(ImageFormat::Tiff));
     }
 
     #[test]
     fn test_format_original_takes_precedence() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.jpg"));
-        stack.enhanced = Some(PathBuf::from("photo_a.tif"));
+        stack.original = Some(img("photo.jpg"));
+        stack.enhanced = Some(img("photo_a.tif"));
         assert_eq!(stack.format(), Some(ImageFormat::Jpeg));
     }
 
@@ -671,7 +735,7 @@ mod tests {
     #[test]
     fn test_format_none_when_only_back_set() {
         let mut stack = PhotoStack::new("test");
-        stack.back = Some(PathBuf::from("photo_b.jpg"));
+        stack.back = Some(img("photo_b.jpg"));
         assert_eq!(stack.format(), None);
     }
 
@@ -679,6 +743,9 @@ mod tests {
     fn test_photo_stack_new_defaults() {
         let stack = PhotoStack::new("test_id");
         assert_eq!(stack.id, "test_id");
+        assert_eq!(stack.name, "test_id");
+        assert!(stack.folder.is_none());
+        assert!(stack.repo_id.is_none());
         assert!(stack.original.is_none());
         assert!(stack.enhanced.is_none());
         assert!(stack.back.is_none());
@@ -696,38 +763,38 @@ mod tests {
     #[test]
     fn test_has_any_image_original_only() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.jpg"));
+        stack.original = Some(img("photo.jpg"));
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_enhanced_only() {
         let mut stack = PhotoStack::new("test");
-        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+        stack.enhanced = Some(img("photo_a.jpg"));
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_back_only() {
         let mut stack = PhotoStack::new("test");
-        stack.back = Some(PathBuf::from("photo_b.jpg"));
+        stack.back = Some(img("photo_b.jpg"));
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_all() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.jpg"));
-        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
-        stack.back = Some(PathBuf::from("photo_b.jpg"));
+        stack.original = Some(img("photo.jpg"));
+        stack.enhanced = Some(img("photo_a.jpg"));
+        stack.back = Some(img("photo_b.jpg"));
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_serialization_roundtrip() {
         let mut stack = PhotoStack::new("test_stack");
-        stack.original = Some(PathBuf::from("photo.jpg"));
-        stack.enhanced = Some(PathBuf::from("photo_a.jpg"));
+        stack.original = Some(img("photo.jpg"));
+        stack.enhanced = Some(img("photo_a.jpg"));
         stack
             .metadata
             .exif_tags
@@ -879,11 +946,14 @@ mod tests {
     #[test]
     fn test_photo_stack_clone() {
         let mut stack = PhotoStack::new("test");
-        stack.original = Some(PathBuf::from("photo.jpg"));
+        stack.original = Some(img("photo.jpg"));
 
         let cloned = stack.clone();
         assert_eq!(cloned.id, stack.id);
-        assert_eq!(cloned.original, stack.original);
+        assert_eq!(
+            cloned.original.as_ref().unwrap().path,
+            stack.original.as_ref().unwrap().path
+        );
     }
 
     #[test]
@@ -897,21 +967,21 @@ mod tests {
     #[test]
     fn test_containing_folder_from_original() {
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(PathBuf::from("/photos/1984_Mexico/IMG_001.jpg"));
+        stack.original = Some(img("/photos/1984_Mexico/IMG_001.jpg"));
         assert_eq!(stack.containing_folder(), Some("1984_Mexico".to_string()));
     }
 
     #[test]
     fn test_containing_folder_from_enhanced_fallback() {
         let mut stack = PhotoStack::new("IMG_001");
-        stack.enhanced = Some(PathBuf::from("/photos/1984_Mexico/IMG_001_a.jpg"));
+        stack.enhanced = Some(img("/photos/1984_Mexico/IMG_001_a.jpg"));
         assert_eq!(stack.containing_folder(), Some("1984_Mexico".to_string()));
     }
 
     #[test]
     fn test_containing_folder_from_back_fallback() {
         let mut stack = PhotoStack::new("IMG_001");
-        stack.back = Some(PathBuf::from("/photos/SteveJones/IMG_001_b.jpg"));
+        stack.back = Some(img("/photos/SteveJones/IMG_001_b.jpg"));
         assert_eq!(stack.containing_folder(), Some("SteveJones".to_string()));
     }
 
@@ -924,8 +994,8 @@ mod tests {
     #[test]
     fn test_containing_folder_prefers_original() {
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(PathBuf::from("/photos/1984/IMG_001.jpg"));
-        stack.enhanced = Some(PathBuf::from("/photos/other/IMG_001_a.jpg"));
+        stack.original = Some(img("/photos/1984/IMG_001.jpg"));
+        stack.enhanced = Some(img("/photos/other/IMG_001_a.jpg"));
         assert_eq!(stack.containing_folder(), Some("1984".to_string()));
     }
 

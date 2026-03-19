@@ -438,7 +438,6 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 mod tests {
     use super::*;
     use crate::photo_stack::{Metadata, PhotoStack};
-    use std::path::PathBuf;
 
     fn make_stack(
         id: &str,
@@ -446,6 +445,8 @@ mod tests {
         exif: Vec<(&str, &str)>,
         custom: Vec<(&str, &str)>,
     ) -> PhotoStack {
+        use crate::hashing::ImageFile;
+
         let mut metadata = Metadata::default();
         for (k, v) in exif {
             metadata.exif_tags.insert(k.to_string(), v.to_string());
@@ -455,17 +456,16 @@ mod tests {
                 .custom_tags
                 .insert(k.to_string(), serde_json::json!(v));
         }
-        PhotoStack {
-            id: id.to_string(),
-            original: Some(PathBuf::from(format!("{id}.jpg"))),
-            enhanced: Some(PathBuf::from(format!("{id}_a.jpg"))),
-            back: if has_back {
-                Some(PathBuf::from(format!("{id}_b.jpg")))
-            } else {
-                None
-            },
-            metadata,
-        }
+        let mut stack = PhotoStack::new(id);
+        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
+        stack.enhanced = Some(ImageFile::new(format!("{id}_a.jpg"), 0));
+        stack.back = if has_back {
+            Some(ImageFile::new(format!("{id}_b.jpg"), 0))
+        } else {
+            None
+        };
+        stack.metadata = metadata;
+        stack
     }
 
     #[test]
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn test_custom_tag_with_non_string_values() {
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(PathBuf::from("IMG_001.jpg"));
+        stack.original = Some(crate::hashing::ImageFile::new("IMG_001.jpg", 0));
         stack
             .metadata
             .custom_tags

@@ -135,8 +135,8 @@ fn test_xmp_readable_by_exif_tools() {
     repo.write_metadata(&stack, &metadata).unwrap();
 
     // write_metadata prefers enhanced image, so read from enhanced
-    let target = stack.enhanced.as_ref().or(stack.original.as_ref()).unwrap();
-    let xmp_tags = xmp::read_xmp(target).unwrap();
+    let target_path = stack.enhanced.as_ref().or(stack.original.as_ref()).map(|f| &f.path).unwrap();
+    let xmp_tags = xmp::read_xmp(std::path::Path::new(target_path)).unwrap();
     assert_eq!(
         xmp_tags.get("description"),
         Some(&"XMP test description".to_string())
@@ -162,8 +162,8 @@ fn test_with_committed_testdata() {
 
     // Verify EXIF data is readable from committed files
     for stack in &stacks {
-        if let Some(ref path) = stack.original {
-            let tags = exif::read_exif_tags(path).unwrap();
+        if let Some(ref f) = stack.original {
+            let tags = exif::read_exif_tags(std::path::Path::new(&f.path)).unwrap();
             // Our test fixtures should have Make and Model
             if !tags.is_empty() {
                 assert!(
@@ -251,8 +251,8 @@ fn test_tiff_workflow() {
     repo.write_metadata(stack, &metadata).unwrap();
 
     // Verify sidecar was created - write_metadata uses enhanced or original
-    let target = stack.enhanced.as_ref().or(stack.original.as_ref()).unwrap();
-    let sidecar_path = target.with_extension("xmp");
+    let target = stack.enhanced.as_ref().or(stack.original.as_ref()).map(|f| &f.path).unwrap();
+    let sidecar_path = std::path::Path::new(target).with_extension("xmp");
     assert!(
         sidecar_path.exists(),
         "XMP sidecar should be created for TIFF"
@@ -292,12 +292,16 @@ fn test_mixed_format_stack() {
 
     // Original should be JPEG
     assert!(stack.original.is_some());
-    let orig_ext = stack.original.as_ref().unwrap().extension().unwrap();
+    let orig_ext = std::path::Path::new(&stack.original.as_ref().unwrap().path)
+        .extension()
+        .unwrap();
     assert_eq!(orig_ext, "jpg");
 
     // Back should be TIFF
     assert!(stack.back.is_some());
-    let back_ext = stack.back.as_ref().unwrap().extension().unwrap();
+    let back_ext = std::path::Path::new(&stack.back.as_ref().unwrap().path)
+        .extension()
+        .unwrap();
     assert_eq!(back_ext, "tif");
 
     // Format should be detected from original (JPEG)

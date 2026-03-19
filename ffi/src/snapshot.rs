@@ -45,10 +45,10 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
-    let path_to_c_string = |path: &Option<std::path::PathBuf>| -> *mut c_char {
-        match path {
-            Some(p) => {
-                let s = p.to_string_lossy().into_owned();
+    let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
+        match img {
+            Some(f) => {
+                let s = f.path.clone();
                 CString::new(s)
                     .map(|cs| cs.into_raw())
                     .unwrap_or(ptr::null_mut())

@@ -153,9 +153,12 @@ impl LocalRepository {
     /// richer metadata from FastFoto's processing. Falls back to original
     /// if no enhanced image exists.
     fn load_exif_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
-        let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
+        let candidate = stack
+            .enhanced
+            .as_ref()
+            .or(stack.original.as_ref());
         match candidate {
-            Some(path) => exif::read_exif_tags(path).unwrap_or_default(),
+            Some(f) => exif::read_exif_tags(Path::new(&f.path)).unwrap_or_default(),
             None => std::collections::HashMap::new(),
         }
     }
@@ -165,15 +168,18 @@ impl LocalRepository {
     /// For JPEG: reads embedded XMP from the file.
     /// For TIFF and other formats: returns empty (sidecar XMP is handled separately).
     fn load_embedded_xmp(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
-        let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
+        let candidate = stack
+            .enhanced
+            .as_ref()
+            .or(stack.original.as_ref());
         match candidate {
-            Some(path) => {
+            Some(f) => {
                 // Only read embedded XMP from JPEG; TIFF XMP is in the stack sidecar
                 if matches!(
-                    crate::metadata::detect_image_format(path),
+                    crate::metadata::detect_image_format(Path::new(&f.path)),
                     Some(ImageFormat::Jpeg)
                 ) {
-                    xmp::read_xmp_from_jpeg(path).unwrap_or_default()
+                    xmp::read_xmp_from_jpeg(Path::new(&f.path)).unwrap_or_default()
                 } else {
                     std::collections::HashMap::new()
                 }
@@ -407,10 +413,13 @@ impl Repository for LocalRepository {
         //    This ensures maximum interoperability — Lightroom, darktable, etc.
         //    can read the tags even without the sidecar file.
         if !tags.xmp_tags.is_empty() {
-            let target = stack.enhanced.as_ref().or(stack.original.as_ref());
-            if let Some(path) = target {
+            let target = stack
+                .enhanced
+                .as_ref()
+                .or(stack.original.as_ref());
+            if let Some(f) = target {
                 // Best-effort: embed into file; sidecar is authoritative
-                let _ = xmp::write_xmp(path, &tags.xmp_tags);
+                let _ = xmp::write_xmp(Path::new(&f.path), &tags.xmp_tags);
             }
         }
 
@@ -439,15 +448,15 @@ impl Repository for LocalRepository {
         let paths: Vec<&Path> = match target {
             RotationTarget::All => [&stack.original, &stack.enhanced, &stack.back]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
             RotationTarget::Front => [&stack.original, &stack.enhanced]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
             RotationTarget::Back => [&stack.back]
                 .iter()
-                .filter_map(|opt| opt.as_deref())
+                .filter_map(|opt| opt.as_ref().map(|f| Path::new(&f.path)))
                 .collect(),
         };
 

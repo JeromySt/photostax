@@ -922,28 +922,28 @@ pub fn output_stacks_table(
 
         if show_metadata {
             // Show file paths
-            if let Some(ref p) = stack.original {
+            if let Some(ref f) = stack.original {
                 let _ = writeln!(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    p.file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
                 );
             }
-            if let Some(ref p) = stack.enhanced {
+            if let Some(ref f) = stack.enhanced {
                 let _ = writeln!(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    p.file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
                 );
             }
-            if let Some(ref p) = stack.back {
+            if let Some(ref f) = stack.back {
                 let _ = writeln!(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    p.file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
                 );
             }
         }
@@ -981,17 +981,17 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
             let orig = stack
                 .original
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|f| f.path.clone())
                 .unwrap_or_default();
             let enh = stack
                 .enhanced
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|f| f.path.clone())
                 .unwrap_or_default();
             let back = stack
                 .back
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|f| f.path.clone())
                 .unwrap_or_default();
             let _ = writeln!(
                 out,
@@ -1048,30 +1048,30 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         out,
         "│ Files:                                                           │"
     );
-    if let Some(ref p) = stack.original {
-        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    if let Some(ref f) = stack.original {
+        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Original: {:<40} ({:>8}) │",
-            p.file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
             format_size(size)
         );
     }
-    if let Some(ref p) = stack.enhanced {
-        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    if let Some(ref f) = stack.enhanced {
+        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Enhanced: {:<40} ({:>8}) │",
-            p.file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
             format_size(size)
         );
     }
-    if let Some(ref p) = stack.back {
-        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    if let Some(ref f) = stack.back {
+        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Back:     {:<40} ({:>8}) │",
-            p.file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
             format_size(size)
         );
     }
@@ -1144,14 +1144,14 @@ pub fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
     let _ = writeln!(out, "type,key,value");
     let _ = writeln!(out, "id,,{}", stack.id);
 
-    if let Some(ref p) = stack.original {
-        let _ = writeln!(out, "file,original,{}", p.display());
+    if let Some(ref f) = stack.original {
+        let _ = writeln!(out, "file,original,{}", f.path);
     }
-    if let Some(ref p) = stack.enhanced {
-        let _ = writeln!(out, "file,enhanced,{}", p.display());
+    if let Some(ref f) = stack.enhanced {
+        let _ = writeln!(out, "file,enhanced,{}", f.path);
     }
-    if let Some(ref p) = stack.back {
-        let _ = writeln!(out, "file,back,{}", p.display());
+    if let Some(ref f) = stack.back {
+        let _ = writeln!(out, "file,back,{}", f.path);
     }
 
     for (key, value) in &stack.metadata.exif_tags {
@@ -1296,6 +1296,7 @@ pub fn escape_csv(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use photostax_core::hashing::ImageFile;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -1321,13 +1322,11 @@ mod tests {
     }
 
     fn make_stack(id: &str) -> PhotoStack {
-        PhotoStack {
-            id: id.to_string(),
-            original: Some(PathBuf::from(format!("/photos/{id}.jpg"))),
-            enhanced: Some(PathBuf::from(format!("/photos/{id}_a.jpg"))),
-            back: Some(PathBuf::from(format!("/photos/{id}_b.jpg"))),
-            metadata: Metadata::default(),
-        }
+        let mut stack = PhotoStack::new(id);
+        stack.original = Some(ImageFile::new(format!("/photos/{id}.jpg"), 0));
+        stack.enhanced = Some(ImageFile::new(format!("/photos/{id}_a.jpg"), 0));
+        stack.back = Some(ImageFile::new(format!("/photos/{id}_b.jpg"), 0));
+        stack
     }
 
     fn make_stack_with_metadata(id: &str) -> PhotoStack {
@@ -1344,37 +1343,25 @@ mod tests {
             serde_json::Value::String("Family".to_string()),
         );
 
-        PhotoStack {
-            id: id.to_string(),
-            original: Some(PathBuf::from(format!("/photos/{id}.jpg"))),
-            enhanced: Some(PathBuf::from(format!("/photos/{id}_a.jpg"))),
-            back: None,
-            metadata: Metadata {
-                exif_tags,
-                xmp_tags,
-                custom_tags,
-            },
-        }
+        let mut stack = PhotoStack::new(id);
+        stack.original = Some(ImageFile::new(format!("/photos/{id}.jpg"), 0));
+        stack.enhanced = Some(ImageFile::new(format!("/photos/{id}_a.jpg"), 0));
+        stack.metadata = Metadata {
+            exif_tags,
+            xmp_tags,
+            custom_tags,
+        };
+        stack
     }
 
     fn make_tiff_stack(id: &str) -> PhotoStack {
-        PhotoStack {
-            id: id.to_string(),
-            original: Some(PathBuf::from(format!("/photos/{id}.tif"))),
-            enhanced: None,
-            back: None,
-            metadata: Metadata::default(),
-        }
+        let mut stack = PhotoStack::new(id);
+        stack.original = Some(ImageFile::new(format!("/photos/{id}.tif"), 0));
+        stack
     }
 
     fn make_empty_stack(id: &str) -> PhotoStack {
-        PhotoStack {
-            id: id.to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata::default(),
-        }
+        PhotoStack::new(id)
     }
 
     // ======================== Pure function tests ========================
@@ -2353,16 +2340,11 @@ mod tests {
     fn test_output_info_table_with_long_tag_truncation() {
         let mut exif_tags = HashMap::new();
         exif_tags.insert("Description".to_string(), "A".repeat(100));
-        let stack = PhotoStack {
-            id: "TRUNC".to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata {
-                exif_tags,
-                xmp_tags: HashMap::new(),
-                custom_tags: HashMap::new(),
-            },
+        let mut stack = PhotoStack::new("TRUNC");
+        stack.metadata = Metadata {
+            exif_tags,
+            xmp_tags: HashMap::new(),
+            custom_tags: HashMap::new(),
         };
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
@@ -2518,16 +2500,12 @@ mod tests {
     fn test_output_info_table_with_xmp_tags() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Creator".to_string(), "John Doe".to_string());
-        let stack = PhotoStack {
-            id: "XMP_TEST".to_string(),
-            original: Some(PathBuf::from("/photos/XMP_TEST.jpg")),
-            enhanced: None,
-            back: None,
-            metadata: Metadata {
-                exif_tags: HashMap::new(),
-                xmp_tags,
-                custom_tags: HashMap::new(),
-            },
+        let mut stack = PhotoStack::new("XMP_TEST");
+        stack.original = Some(ImageFile::new("/photos/XMP_TEST.jpg", 0));
+        stack.metadata = Metadata {
+            exif_tags: HashMap::new(),
+            xmp_tags,
+            custom_tags: HashMap::new(),
         };
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
@@ -2543,16 +2521,11 @@ mod tests {
             "album".to_string(),
             serde_json::Value::String("vacation".to_string()),
         );
-        let stack = PhotoStack {
-            id: "CUSTOM_TEST".to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata {
-                exif_tags: HashMap::new(),
-                xmp_tags: HashMap::new(),
-                custom_tags,
-            },
+        let mut stack = PhotoStack::new("CUSTOM_TEST");
+        stack.metadata = Metadata {
+            exif_tags: HashMap::new(),
+            xmp_tags: HashMap::new(),
+            custom_tags,
         };
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
@@ -2583,16 +2556,14 @@ mod tests {
         xmp_tags.insert("Creator".to_string(), "Jane".to_string());
         let mut custom_tags = HashMap::new();
         custom_tags.insert("rating".to_string(), serde_json::Value::from(5));
-        let stack = PhotoStack {
-            id: "CSV_TAGS".to_string(),
-            original: Some(PathBuf::from("/photos/CSV_TAGS.jpg")),
-            enhanced: Some(PathBuf::from("/photos/CSV_TAGS_a.jpg")),
-            back: Some(PathBuf::from("/photos/CSV_TAGS_b.jpg")),
-            metadata: Metadata {
-                exif_tags: HashMap::new(),
-                xmp_tags,
-                custom_tags,
-            },
+        let mut stack = PhotoStack::new("CSV_TAGS");
+        stack.original = Some(ImageFile::new("/photos/CSV_TAGS.jpg", 0));
+        stack.enhanced = Some(ImageFile::new("/photos/CSV_TAGS_a.jpg", 0));
+        stack.back = Some(ImageFile::new("/photos/CSV_TAGS_b.jpg", 0));
+        stack.metadata = Metadata {
+            exif_tags: HashMap::new(),
+            xmp_tags,
+            custom_tags,
         };
         let mut buf = Vec::new();
         output_info_csv(&mut buf, &stack);
@@ -2623,16 +2594,11 @@ mod tests {
     fn test_output_info_table_with_long_xmp_truncation() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Description".to_string(), "X".repeat(100));
-        let stack = PhotoStack {
-            id: "LONG_XMP".to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata {
-                exif_tags: HashMap::new(),
-                xmp_tags,
-                custom_tags: HashMap::new(),
-            },
+        let mut stack = PhotoStack::new("LONG_XMP");
+        stack.metadata = Metadata {
+            exif_tags: HashMap::new(),
+            xmp_tags,
+            custom_tags: HashMap::new(),
         };
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
@@ -2647,16 +2613,11 @@ mod tests {
             "longval".to_string(),
             serde_json::Value::String("Y".repeat(100)),
         );
-        let stack = PhotoStack {
-            id: "LONG_CUSTOM".to_string(),
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata {
-                exif_tags: HashMap::new(),
-                xmp_tags: HashMap::new(),
-                custom_tags,
-            },
+        let mut stack = PhotoStack::new("LONG_CUSTOM");
+        stack.metadata = Metadata {
+            exif_tags: HashMap::new(),
+            xmp_tags: HashMap::new(),
+            custom_tags,
         };
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);

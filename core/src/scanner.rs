@@ -46,6 +46,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 
+use crate::hashing::ImageFile;
 use crate::photo_stack::PhotoStack;
 
 /// Configuration for the FastFoto file scanner.
@@ -224,10 +225,13 @@ fn scan_directory_inner(
             .entry(base_name.clone())
             .or_insert_with(|| PhotoStack::new(&base_name));
 
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let path_str = path.to_string_lossy().into_owned();
+
         match variant {
-            Variant::Original => stack.original = Some(path),
-            Variant::Enhanced => stack.enhanced = Some(path),
-            Variant::Back => stack.back = Some(path),
+            Variant::Original => stack.original = Some(ImageFile::new(path_str, size)),
+            Variant::Enhanced => stack.enhanced = Some(ImageFile::new(path_str, size)),
+            Variant::Back => stack.back = Some(ImageFile::new(path_str, size)),
         }
     }
     Ok(())
@@ -544,8 +548,8 @@ mod tests {
         assert!(s1.original.is_some());
         assert!(s1.back.is_some());
         // Verify they have different extensions
-        let orig_ext = s1.original.as_ref().unwrap().extension().unwrap();
-        let back_ext = s1.back.as_ref().unwrap().extension().unwrap();
+        let orig_ext = Path::new(&s1.original.as_ref().unwrap().path).extension().unwrap();
+        let back_ext = Path::new(&s1.back.as_ref().unwrap().path).extension().unwrap();
         assert_eq!(orig_ext, "jpg");
         assert_eq!(back_ext, "tif");
     }

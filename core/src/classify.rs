@@ -94,7 +94,7 @@ pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryErro
         return Ok(false);
     }
 
-    let path = stack.enhanced.as_ref().unwrap();
+    let path = Path::new(&stack.enhanced.as_ref().unwrap().path);
     match is_likely_back(path) {
         Ok(true) => {
             stack.back = stack.enhanced.take();
@@ -109,8 +109,13 @@ pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hashing::ImageFile;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    fn img(path: PathBuf) -> ImageFile {
+        ImageFile::new(path.to_string_lossy(), 0)
+    }
 
     /// Create a small solid-white JPEG (back-of-photo like).
     fn create_white_jpeg(dir: &Path, name: &str) -> PathBuf {
@@ -150,12 +155,12 @@ mod tests {
         let back_path = create_white_jpeg(tmp.path(), "IMG_001_a.jpg");
 
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(tmp.path().join("IMG_001.jpg"));
-        stack.enhanced = Some(back_path.clone());
+        stack.original = Some(img(tmp.path().join("IMG_001.jpg")));
+        stack.enhanced = Some(img(back_path.clone()));
 
         assert!(classify_ambiguous(&mut stack).unwrap());
         assert!(stack.enhanced.is_none());
-        assert_eq!(stack.back, Some(back_path));
+        assert_eq!(stack.back.as_ref().unwrap().path, back_path.to_string_lossy().as_ref());
     }
 
     #[test]
@@ -164,11 +169,11 @@ mod tests {
         let front_path = create_colourful_jpeg(tmp.path(), "IMG_002_a.jpg");
 
         let mut stack = PhotoStack::new("IMG_002");
-        stack.original = Some(tmp.path().join("IMG_002.jpg"));
-        stack.enhanced = Some(front_path.clone());
+        stack.original = Some(img(tmp.path().join("IMG_002.jpg")));
+        stack.enhanced = Some(img(front_path.clone()));
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(stack.enhanced, Some(front_path));
+        assert_eq!(stack.enhanced.as_ref().unwrap().path, front_path.to_string_lossy().as_ref());
         assert!(stack.back.is_none());
     }
 
@@ -178,17 +183,17 @@ mod tests {
         let enhanced = create_white_jpeg(tmp.path(), "IMG_003_a.jpg");
 
         let mut stack = PhotoStack::new("IMG_003");
-        stack.enhanced = Some(enhanced.clone());
-        stack.back = Some(tmp.path().join("IMG_003_b.jpg"));
+        stack.enhanced = Some(img(enhanced.clone()));
+        stack.back = Some(img(tmp.path().join("IMG_003_b.jpg")));
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(stack.enhanced, Some(enhanced));
+        assert_eq!(stack.enhanced.as_ref().unwrap().path, enhanced.to_string_lossy().as_ref());
     }
 
     #[test]
     fn test_classify_ambiguous_noop_when_no_enhanced() {
         let mut stack = PhotoStack::new("IMG_004");
-        stack.original = Some(PathBuf::from("/photos/IMG_004.jpg"));
+        stack.original = Some(img(PathBuf::from("/photos/IMG_004.jpg")));
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
     }
