@@ -433,7 +433,8 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             s.to_lowercase().contains(&text_lower)
         });
 
-        if !found_in_id && !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom {
+        if !found_in_id && !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom
+        {
             return false;
         }
     }

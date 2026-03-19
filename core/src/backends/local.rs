@@ -60,9 +60,9 @@ use std::path::{Path, PathBuf};
 
 use notify::{EventKind, RecursiveMode, Watcher};
 
+use crate::classify;
 use crate::events::{FileVariant, StackEvent};
 use crate::file_access::{FileAccess, ReadSeek};
-use crate::classify;
 use crate::metadata::exif;
 use crate::metadata::sidecar;
 use crate::metadata::xmp;
@@ -180,10 +180,7 @@ impl LocalRepository {
     /// richer metadata from FastFoto's processing. Falls back to original
     /// if no enhanced image exists.
     fn load_exif_tags(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
-        let candidate = stack
-            .enhanced
-            .as_ref()
-            .or(stack.original.as_ref());
+        let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
             Some(f) => exif::read_exif_tags(Path::new(&f.path)).unwrap_or_default(),
             None => std::collections::HashMap::new(),
@@ -195,10 +192,7 @@ impl LocalRepository {
     /// For JPEG: reads embedded XMP from the file.
     /// For TIFF and other formats: returns empty (sidecar XMP is handled separately).
     fn load_embedded_xmp(&self, stack: &PhotoStack) -> std::collections::HashMap<String, String> {
-        let candidate = stack
-            .enhanced
-            .as_ref()
-            .or(stack.original.as_ref());
+        let candidate = stack.enhanced.as_ref().or(stack.original.as_ref());
         match candidate {
             Some(f) => {
                 // Only read embedded XMP from JPEG; TIFF XMP is in the stack sidecar
@@ -460,7 +454,10 @@ impl Repository for LocalRepository {
         Ok(stack)
     }
 
-    fn read_image(&self, path: &str) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+    fn read_image(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
         Ok(self.open_read(path)?)
     }
 
@@ -469,10 +466,7 @@ impl Repository for LocalRepository {
         //    This ensures maximum interoperability — Lightroom, darktable, etc.
         //    can read the tags even without the sidecar file.
         if !tags.xmp_tags.is_empty() {
-            let target = stack
-                .enhanced
-                .as_ref()
-                .or(stack.original.as_ref());
+            let target = stack.enhanced.as_ref().or(stack.original.as_ref());
             if let Some(f) = target {
                 // Best-effort: embed into file; sidecar is authoritative
                 let _ = xmp::write_xmp(Path::new(&f.path), &tags.xmp_tags);
@@ -541,15 +535,16 @@ impl Repository for LocalRepository {
         std::thread::spawn(move || {
             let (notify_tx, notify_rx) = std::sync::mpsc::channel();
 
-            let mut watcher =
-                match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            let mut watcher = match notify::recommended_watcher(
+                move |res: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = res {
                         let _ = notify_tx.send(event);
                     }
-                }) {
-                    Ok(w) => w,
-                    Err(_) => return,
-                };
+                },
+            ) {
+                Ok(w) => w,
+                Err(_) => return,
+            };
 
             let mode = if config.recursive {
                 RecursiveMode::Recursive
@@ -662,7 +657,10 @@ mod tests {
     use tempfile::TempDir;
 
     /// Get a stack by its display name (scans the repo, finds by name, then fetches by opaque ID).
-    fn get_stack_by_name(repo: &LocalRepository, name: &str) -> Result<PhotoStack, RepositoryError> {
+    fn get_stack_by_name(
+        repo: &LocalRepository,
+        name: &str,
+    ) -> Result<PhotoStack, RepositoryError> {
         let stacks = repo.scan()?;
         let opaque_id = stacks
             .iter()
@@ -804,7 +802,12 @@ mod tests {
         let repo = LocalRepository::new(dir);
         // Scan to discover the opaque ID
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let stack = repo.get_stack(&opaque_id).unwrap();
 
@@ -1267,7 +1270,12 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let rotated = repo
             .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)
@@ -1292,7 +1300,12 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let rotated = repo
             .rotate_stack(&opaque_id, Rotation::Ccw90, RotationTarget::All)
@@ -1313,7 +1326,12 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let rotated = repo
             .rotate_stack(&opaque_id, Rotation::Cw180, RotationTarget::All)
@@ -1337,7 +1355,12 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let rotated = repo
             .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)
@@ -1373,7 +1396,12 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let opaque_id = stacks.iter().find(|s| s.name == "IMG_001").unwrap().id.clone();
+        let opaque_id = stacks
+            .iter()
+            .find(|s| s.name == "IMG_001")
+            .unwrap()
+            .id
+            .clone();
 
         let rotated = repo
             .rotate_stack(&opaque_id, Rotation::Cw90, RotationTarget::All)

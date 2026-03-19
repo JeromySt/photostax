@@ -565,7 +565,10 @@ mod tests {
         for i in 0..page.len {
             let item = unsafe { &*page.data.add(i) };
             let name = unsafe { CStr::from_ptr(item.name) }.to_str().unwrap();
-            assert!(name.contains("FamilyPhotos"), "expected FamilyPhotos in {name}");
+            assert!(
+                name.contains("FamilyPhotos"),
+                "expected FamilyPhotos in {name}"
+            );
         }
 
         unsafe { photostax_paginated_result_free(page) };

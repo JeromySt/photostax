@@ -174,7 +174,11 @@ impl Default for ScannerConfig {
 /// let stacks = scan_directory(Path::new("/archive"), &config, "file:///archive")?;
 /// # Ok::<(), std::io::Error>(())
 /// ```
-pub fn scan_directory(dir: &Path, config: &ScannerConfig, location: &str) -> std::io::Result<Vec<PhotoStack>> {
+pub fn scan_directory(
+    dir: &Path,
+    config: &ScannerConfig,
+    location: &str,
+) -> std::io::Result<Vec<PhotoStack>> {
     let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
     scan_directory_inner(dir, dir, config, location, &mut stacks)?;
 
@@ -235,19 +239,17 @@ fn scan_directory_inner(
 
         let opaque_id = crate::hashing::make_stack_id(location, &relative_dir, &base_name);
 
-        let stack = stacks
-            .entry(opaque_id.clone())
-            .or_insert_with(|| {
-                let mut s = PhotoStack::new(&opaque_id);
-                s.name = base_name.clone();
-                s.folder = if relative_dir.is_empty() {
-                    None
-                } else {
-                    Some(relative_dir.to_string())
-                };
-                s.repo_id = Some(location.to_string());
-                s
-            });
+        let stack = stacks.entry(opaque_id.clone()).or_insert_with(|| {
+            let mut s = PhotoStack::new(&opaque_id);
+            s.name = base_name.clone();
+            s.folder = if relative_dir.is_empty() {
+                None
+            } else {
+                Some(relative_dir.to_string())
+            };
+            s.repo_id = Some(location.to_string());
+            s
+        });
 
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
         let path_str = path.to_string_lossy().into_owned();
@@ -574,8 +576,12 @@ mod tests {
         assert!(s1.original.is_some());
         assert!(s1.back.is_some());
         // Verify they have different extensions
-        let orig_ext = Path::new(&s1.original.as_ref().unwrap().path).extension().unwrap();
-        let back_ext = Path::new(&s1.back.as_ref().unwrap().path).extension().unwrap();
+        let orig_ext = Path::new(&s1.original.as_ref().unwrap().path)
+            .extension()
+            .unwrap();
+        let back_ext = Path::new(&s1.back.as_ref().unwrap().path)
+            .extension()
+            .unwrap();
         assert_eq!(orig_ext, "jpg");
         assert_eq!(back_ext, "tif");
     }

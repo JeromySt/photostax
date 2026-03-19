@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use crate::events::{CacheEvent, FileVariant, StackEvent};
 use crate::hashing::ImageFile;
-use crate::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile};
+use crate::photo_stack::{
+    Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
+};
 use crate::repository::{Repository, RepositoryError};
 use crate::snapshot::ScanSnapshot;
 
@@ -159,9 +161,7 @@ impl StackManager {
             .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?
             .repo_id
             .as_ref()
-            .ok_or_else(|| {
-                StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id"))
-            })?
+            .ok_or_else(|| StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id")))?
             .clone();
 
         let reg = self
@@ -186,9 +186,7 @@ impl StackManager {
             .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?
             .repo_id
             .as_ref()
-            .ok_or_else(|| {
-                StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id"))
-            })?
+            .ok_or_else(|| StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id")))?
             .clone();
 
         let reg = self
@@ -772,10 +770,7 @@ mod tests {
             path: "/photos/IMG_001_a.jpg".to_string(),
             size: 2000,
         });
-        assert_eq!(
-            result,
-            Some(CacheEvent::StackUpdated("abc123".to_string()))
-        );
+        assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
         let stack = mgr.get_stack("abc123").unwrap();
         assert!(stack.original.is_some());
         assert!(stack.enhanced.is_some());
@@ -800,10 +795,7 @@ mod tests {
             stack_id: "abc123".to_string(),
             variant: FileVariant::Original,
         });
-        assert_eq!(
-            result,
-            Some(CacheEvent::StackUpdated("abc123".to_string()))
-        );
+        assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
         let stack = mgr.get_stack("abc123").unwrap();
         assert!(stack.original.is_none());
         assert!(stack.enhanced.is_some());
@@ -822,10 +814,7 @@ mod tests {
             stack_id: "abc123".to_string(),
             variant: FileVariant::Original,
         });
-        assert_eq!(
-            result,
-            Some(CacheEvent::StackRemoved("abc123".to_string()))
-        );
+        assert_eq!(result, Some(CacheEvent::StackRemoved("abc123".to_string())));
         assert!(mgr.get_stack("abc123").is_none());
     }
 

@@ -257,7 +257,10 @@ pub trait Repository: FileAccess {
     /// # Errors
     ///
     /// Returns [`RepositoryError::Io`] if the file cannot be read.
-    fn read_image(&self, path: &str) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError>;
+    fn read_image(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError>;
 
     /// Write metadata tags to the files in a photo stack.
     ///

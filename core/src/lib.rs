@@ -66,8 +66,8 @@
 #![warn(missing_docs)]
 
 pub mod backends;
-pub mod events;
 pub mod classify;
+pub mod events;
 pub mod file_access;
 pub mod hashing;
 pub mod metadata;

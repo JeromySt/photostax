@@ -676,11 +676,7 @@ impl PhotoStack {
             hasher.update(h.as_bytes());
         }
         let digest = hasher.finalize();
-        let hex: String = digest
-            .iter()
-            .take(8)
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
         Ok(Some(hex))
     }
 }

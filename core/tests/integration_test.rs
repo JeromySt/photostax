@@ -55,19 +55,28 @@ fn test_end_to_end_scan_search_metadata() {
     // Verify all 3 stack configurations:
 
     // Config 1: Original only (1 file, no enhanced, no back)
-    let stack_0004 = stacks.iter().find(|s| s.name == "FamilyPhotos_0004").unwrap();
+    let stack_0004 = stacks
+        .iter()
+        .find(|s| s.name == "FamilyPhotos_0004")
+        .unwrap();
     assert!(stack_0004.original.is_some());
     assert!(stack_0004.enhanced.is_none());
     assert!(stack_0004.back.is_none());
 
     // Config 2: Original + enhanced (2 files, no back)
-    let stack_0002 = stacks.iter().find(|s| s.name == "FamilyPhotos_0002").unwrap();
+    let stack_0002 = stacks
+        .iter()
+        .find(|s| s.name == "FamilyPhotos_0002")
+        .unwrap();
     assert!(stack_0002.original.is_some());
     assert!(stack_0002.enhanced.is_some());
     assert!(stack_0002.back.is_none());
 
     // Config 3: Original + back (2 files, no enhanced)
-    let stack_0005 = stacks.iter().find(|s| s.name == "FamilyPhotos_0005").unwrap();
+    let stack_0005 = stacks
+        .iter()
+        .find(|s| s.name == "FamilyPhotos_0005")
+        .unwrap();
     assert!(stack_0005.original.is_some());
     assert!(stack_0005.enhanced.is_none());
     assert!(stack_0005.back.is_some());
@@ -75,7 +84,10 @@ fn test_end_to_end_scan_search_metadata() {
     // Get specific stack and verify structure
     let stack = {
         let stacks_tmp = repo.scan().unwrap();
-        stacks_tmp.into_iter().find(|s| s.name == "FamilyPhotos_0001").unwrap()
+        stacks_tmp
+            .into_iter()
+            .find(|s| s.name == "FamilyPhotos_0001")
+            .unwrap()
     };
     assert!(stack.original.is_some());
     assert!(stack.enhanced.is_some());
@@ -126,7 +138,10 @@ fn test_xmp_readable_by_exif_tools() {
     let repo = LocalRepository::new(dir);
     let stack = {
         let stacks_tmp = repo.scan().unwrap();
-        stacks_tmp.into_iter().find(|s| s.name == "TestPhoto_0001").unwrap()
+        stacks_tmp
+            .into_iter()
+            .find(|s| s.name == "TestPhoto_0001")
+            .unwrap()
     };
 
     // Write XMP metadata
@@ -142,7 +157,12 @@ fn test_xmp_readable_by_exif_tools() {
     repo.write_metadata(&stack, &metadata).unwrap();
 
     // write_metadata prefers enhanced image, so read from enhanced
-    let target_path = stack.enhanced.as_ref().or(stack.original.as_ref()).map(|f| &f.path).unwrap();
+    let target_path = stack
+        .enhanced
+        .as_ref()
+        .or(stack.original.as_ref())
+        .map(|f| &f.path)
+        .unwrap();
     let xmp_tags = xmp::read_xmp(std::path::Path::new(target_path)).unwrap();
     assert_eq!(
         xmp_tags.get("description"),
@@ -258,7 +278,12 @@ fn test_tiff_workflow() {
     repo.write_metadata(stack, &metadata).unwrap();
 
     // Verify sidecar was created - write_metadata uses enhanced or original
-    let target = stack.enhanced.as_ref().or(stack.original.as_ref()).map(|f| &f.path).unwrap();
+    let target = stack
+        .enhanced
+        .as_ref()
+        .or(stack.original.as_ref())
+        .map(|f| &f.path)
+        .unwrap();
     let sidecar_path = std::path::Path::new(target).with_extension("xmp");
     assert!(
         sidecar_path.exists(),
@@ -301,7 +326,10 @@ fn test_mixed_format_stack() {
     let repo = LocalRepository::new(dir);
     let stack = {
         let stacks_tmp = repo.scan().unwrap();
-        stacks_tmp.into_iter().find(|s| s.name == "MixedBatch_0001").unwrap()
+        stacks_tmp
+            .into_iter()
+            .find(|s| s.name == "MixedBatch_0001")
+            .unwrap()
     };
 
     // Original should be JPEG

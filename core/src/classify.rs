@@ -160,7 +160,10 @@ mod tests {
 
         assert!(classify_ambiguous(&mut stack).unwrap());
         assert!(stack.enhanced.is_none());
-        assert_eq!(stack.back.as_ref().unwrap().path, back_path.to_string_lossy().as_ref());
+        assert_eq!(
+            stack.back.as_ref().unwrap().path,
+            back_path.to_string_lossy().as_ref()
+        );
     }
 
     #[test]
@@ -173,7 +176,10 @@ mod tests {
         stack.enhanced = Some(img(front_path.clone()));
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(stack.enhanced.as_ref().unwrap().path, front_path.to_string_lossy().as_ref());
+        assert_eq!(
+            stack.enhanced.as_ref().unwrap().path,
+            front_path.to_string_lossy().as_ref()
+        );
         assert!(stack.back.is_none());
     }
 
@@ -187,7 +193,10 @@ mod tests {
         stack.back = Some(img(tmp.path().join("IMG_003_b.jpg")));
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(stack.enhanced.as_ref().unwrap().path, enhanced.to_string_lossy().as_ref());
+        assert_eq!(
+            stack.enhanced.as_ref().unwrap().path,
+            enhanced.to_string_lossy().as_ref()
+        );
     }
 
     #[test]

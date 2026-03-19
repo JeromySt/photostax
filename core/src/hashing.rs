@@ -304,7 +304,10 @@ mod tests {
     fn test_hash_file_different_content() {
         let (_f1, p1) = create_test_file(b"hello");
         let (_f2, p2) = create_test_file(b"world");
-        assert_ne!(hash_file(Path::new(&p1)).unwrap(), hash_file(Path::new(&p2)).unwrap());
+        assert_ne!(
+            hash_file(Path::new(&p1)).unwrap(),
+            hash_file(Path::new(&p2)).unwrap()
+        );
     }
 
     #[test]

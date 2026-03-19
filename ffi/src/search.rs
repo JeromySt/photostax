@@ -479,10 +479,7 @@ mod tests {
             "/test/original.jpg",
             0,
         ));
-        stack.back = Some(photostax_core::hashing::ImageFile::new(
-            "/test/back.jpg",
-            0,
-        ));
+        stack.back = Some(photostax_core::hashing::ImageFile::new("/test/back.jpg", 0));
         stack.metadata = metadata;
 
         let ffi = photo_stack_to_ffi(&stack);

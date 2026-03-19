@@ -604,15 +604,18 @@ fn resolve_stack(
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
     if mgr.is_empty() {
-        mgr.scan().map_err(|e| {
-            photostax_core::repository::RepositoryError::Other(e.to_string())
-        })?;
+        mgr.scan()
+            .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     }
     if let Some(s) = mgr.get_stack(id_or_name) {
         return Ok(s.clone());
     }
     // Fall back: find by name
-    let found = mgr.stacks().into_iter().find(|s| s.name == id_or_name).cloned();
+    let found = mgr
+        .stacks()
+        .into_iter()
+        .find(|s| s.name == id_or_name)
+        .cloned();
     found.ok_or_else(|| {
         photostax_core::repository::RepositoryError::NotFound(id_or_name.to_string())
     })
@@ -787,7 +790,8 @@ pub fn cmd_metadata_delete(
     };
 
     // Verify stack exists
-    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) = resolve_stack(&mut mgr, stack_id)
+    if let Err(photostax_core::repository::RepositoryError::NotFound(_)) =
+        resolve_stack(&mut mgr, stack_id)
     {
         let _ = writeln!(err, "Stack not found: {stack_id}");
         return EXIT_NOT_FOUND;
@@ -1016,7 +1020,10 @@ pub fn output_stacks_table(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
                 );
             }
             if let Some(ref f) = stack.enhanced {
@@ -1024,7 +1031,10 @@ pub fn output_stacks_table(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
                 );
             }
             if let Some(ref f) = stack.back {
@@ -1032,7 +1042,10 @@ pub fn output_stacks_table(
                     out,
                     "│ {:<max_id$} │         │ {}",
                     "",
-                    Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy()
+                    Path::new(&f.path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
                 );
             }
         }
@@ -1142,7 +1155,10 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         let _ = writeln!(
             out,
             "│   Original: {:<40} ({:>8}) │",
-            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
             format_size(size)
         );
     }
@@ -1151,7 +1167,10 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         let _ = writeln!(
             out,
             "│   Enhanced: {:<40} ({:>8}) │",
-            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
             format_size(size)
         );
     }
@@ -1160,7 +1179,10 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         let _ = writeln!(
             out,
             "│   Back:     {:<40} ({:>8}) │",
-            Path::new(&f.path).file_name().unwrap_or_default().to_string_lossy(),
+            Path::new(&f.path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
             format_size(size)
         );
     }

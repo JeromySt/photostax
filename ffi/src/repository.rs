@@ -193,8 +193,7 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiP
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> =
-            stacks.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> = stacks.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -256,8 +255,7 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> =
-            stacks.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> = stacks.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -551,7 +549,8 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
             };
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = paginated.items.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> =
+            paginated.items.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -1137,10 +1136,7 @@ mod tests {
 
     #[test]
     fn test_path_to_c_string_some() {
-        let img = Some(photostax_core::hashing::ImageFile::new(
-            "/test/path.jpg",
-            0,
-        ));
+        let img = Some(photostax_core::hashing::ImageFile::new("/test/path.jpg", 0));
         let result = image_path_to_c_string(&img);
         assert!(!result.is_null());
         let s = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
