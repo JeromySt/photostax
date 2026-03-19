@@ -199,6 +199,17 @@ internal static partial class NativeMethods
     internal static extern void photostax_paginated_result_free(FfiPaginatedResult result);
 
     /// <summary>
+    /// Unified query: search + paginate the cache in a single call.
+    /// query_json may be null (match all), limit 0 = return all.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiPaginatedResult photostax_query(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? queryJson,
+        nuint offset,
+        nuint limit);
+
+    /// <summary>
     /// Get metadata for a stack as a JSON string.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

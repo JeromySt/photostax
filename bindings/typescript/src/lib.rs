@@ -12,7 +12,7 @@ use napi_derive::napi;
 
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePhotoStack, Rotation as CoreRotation, RotationTarget as CoreRotationTarget, ScannerProfile as CoreScannerProfile};
-use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery as CoreSearchQuery};
+use photostax_core::search::{SearchQuery as CoreSearchQuery};
 use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
 use photostax_core::stack_manager::StackManager;
 
@@ -60,6 +60,10 @@ impl From<JsMetadata> for CoreMetadata {
 pub struct JsPhotoStack {
     /// Unique identifier derived from the base filename
     pub id: String,
+    /// Human-readable display name (file stem)
+    pub name: String,
+    /// Subfolder within the repository (null if root-level)
+    pub folder: Option<String>,
     /// Path to the original front scan (may be null)
     pub original: Option<String>,
     /// Path to the enhanced/color-corrected scan (may be null)
@@ -74,10 +78,26 @@ impl From<CorePhotoStack> for JsPhotoStack {
     fn from(s: CorePhotoStack) -> Self {
         Self {
             id: s.id,
+            name: s.name,
+            folder: s.folder,
             original: s.original.as_ref().map(|f| f.path.clone()),
             enhanced: s.enhanced.as_ref().map(|f| f.path.clone()),
             back: s.back.as_ref().map(|f| f.path.clone()),
             metadata: s.metadata.into(),
+        }
+    }
+}
+
+impl From<&CorePhotoStack> for JsPhotoStack {
+    fn from(s: &CorePhotoStack) -> Self {
+        Self {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            folder: s.folder.clone(),
+            original: s.original.as_ref().map(|f| f.path.clone()),
+            enhanced: s.enhanced.as_ref().map(|f| f.path.clone()),
+            back: s.back.as_ref().map(|f| f.path.clone()),
+            metadata: s.metadata.clone().into(),
         }
     }
 }
@@ -215,7 +235,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
     }
 
     /// Scan with a scanner profile and progress callback.
@@ -269,7 +289,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_progress(progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
     }
 
     /// Scan the repository and return all photo stacks with full metadata loaded.
@@ -284,7 +304,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.stacks().into_iter().cloned().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
     }
 
     /// Retrieve a single photo stack by its ID.
@@ -372,13 +392,52 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        let core_query: CoreSearchQuery = query.into();
+        let results = mgr.query(&core_query, None);
         drop(mgr);
 
-        let core_query: CoreSearchQuery = query.into();
-        let results = filter_stacks(&stacks, &core_query);
+        Ok(results.items.iter().map(JsPhotoStack::from).collect())
+    }
 
-        Ok(results.into_iter().map(JsPhotoStack::from).collect())
+    /// Unified query: search + paginate the cache in a single call.
+    ///
+    /// This is the preferred way to retrieve stacks. Combines filtering and
+    /// pagination into one operation. Call `scan()` or `scanWithMetadata()` first
+    /// to populate the cache.
+    ///
+    /// @param query - Search criteria (null/undefined for all stacks)
+    /// @param offset - Number of stacks to skip (0-based, default: 0)
+    /// @param limit - Maximum stacks to return (0 = all, default: 0)
+    /// @returns Paginated result with items and metadata
+    #[napi]
+    pub fn query(
+        &self,
+        query: Option<JsSearchQuery>,
+        offset: Option<u32>,
+        limit: Option<u32>,
+    ) -> napi::Result<JsPaginatedResult> {
+        let mgr = self.inner.borrow();
+        let core_query = match query {
+            Some(q) => q.into(),
+            None => CoreSearchQuery::new(),
+        };
+        let off = offset.unwrap_or(0) as usize;
+        let lim = limit.unwrap_or(0) as usize;
+        let pagination = if lim > 0 {
+            Some(photostax_core::search::PaginationParams { offset: off, limit: lim })
+        } else {
+            None
+        };
+        let paginated = mgr.query(&core_query, pagination.as_ref());
+        drop(mgr);
+
+        Ok(JsPaginatedResult {
+            items: paginated.items.iter().map(JsPhotoStack::from).collect(),
+            total_count: paginated.total_count as u32,
+            offset: paginated.offset as u32,
+            limit: paginated.limit as u32,
+            has_more: paginated.has_more,
+        })
     }
 
     /// Scan the repository and return a paginated page of photo stacks.
@@ -398,16 +457,14 @@ impl PhotostaxRepository {
             mgr.scan()
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         }
-        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
-        drop(mgr);
-
-        let paginated = paginate_stacks(
-            &stacks,
-            &PaginationParams {
+        let paginated = mgr.query(
+            &CoreSearchQuery::new(),
+            Some(&photostax_core::search::PaginationParams {
                 offset: offset as usize,
                 limit: limit as usize,
-            },
+            }),
         );
+        drop(mgr);
 
         let items: Vec<JsPhotoStack> = paginated.items.into_iter().map(JsPhotoStack::from).collect();
 
@@ -437,19 +494,16 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let stacks: Vec<CorePhotoStack> = mgr.stacks().into_iter().cloned().collect();
-        drop(mgr);
 
         let core_query: CoreSearchQuery = query.into();
-        let filtered = filter_stacks(&stacks, &core_query);
-
-        let paginated = paginate_stacks(
-            &filtered,
-            &PaginationParams {
+        let paginated = mgr.query(
+            &core_query,
+            Some(&photostax_core::search::PaginationParams {
                 offset: offset as usize,
                 limit: limit as usize,
-            },
+            }),
         );
+        drop(mgr);
 
         Ok(JsPaginatedResult {
             items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
@@ -574,9 +628,9 @@ impl PhotostaxRepository {
         mgr.scan_with_progress(progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         if load_metadata.unwrap_or(false) {
-            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
-            for id in ids {
-                let _ = mgr.load_metadata(&id);
+            let all = mgr.query(&photostax_core::search::SearchQuery::new(), None);
+            for stack in &all.items {
+                let _ = mgr.load_metadata(&stack.id);
             }
         }
         let snapshot = mgr.snapshot();

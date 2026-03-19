@@ -32,6 +32,16 @@ internal struct FfiPhotoStack
     public IntPtr Id;
 
     /// <summary>
+    /// Human-readable display name (never null).
+    /// </summary>
+    public IntPtr Name;
+
+    /// <summary>
+    /// Subfolder within the repository (null if root level).
+    /// </summary>
+    public IntPtr Folder;
+
+    /// <summary>
     /// Path to original image (null if absent).
     /// </summary>
     public IntPtr Original;

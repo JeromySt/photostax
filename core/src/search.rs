@@ -99,6 +99,20 @@ pub struct PaginatedResult<T> {
     pub has_more: bool,
 }
 
+impl<T> PaginatedResult<T> {
+    /// Returns the `PaginationParams` for the next page, or `None` if there are no more items.
+    pub fn next_page(&self) -> Option<PaginationParams> {
+        if self.has_more {
+            Some(PaginationParams {
+                offset: self.offset + self.limit,
+                limit: self.limit,
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// Paginate a slice of photo stacks.
 ///
 /// Returns a [`PaginatedResult`] containing the requested page of stacks.
@@ -171,7 +185,7 @@ pub fn paginate_stacks(
 ///     .with_has_back(true)
 ///     .with_text("birthday");
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
     /// EXIF tag filters (all must match). Key is tag name, value is substring to find.
     pub exif_filters: Vec<(String, String)>,
@@ -361,6 +375,11 @@ pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoSta
         .filter(|stack| matches_query(stack, query))
         .cloned()
         .collect()
+}
+
+/// Check if a single stack matches all query criteria (public for use by StackManager).
+pub(crate) fn matches_query_ref(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    matches_query(stack, query)
 }
 
 /// Check if a single stack matches all query criteria.
@@ -1020,5 +1039,46 @@ mod tests {
         assert!(q.stack_ids.is_none());
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn next_page_when_has_more() {
+        let result: PaginatedResult<PhotoStack> = PaginatedResult {
+            items: vec![],
+            total_count: 50,
+            offset: 0,
+            limit: 20,
+            has_more: true,
+        };
+        let next = result.next_page().unwrap();
+        assert_eq!(next.offset, 20);
+        assert_eq!(next.limit, 20);
+    }
+
+    #[test]
+    fn next_page_when_no_more() {
+        let result: PaginatedResult<PhotoStack> = PaginatedResult {
+            items: vec![],
+            total_count: 10,
+            offset: 0,
+            limit: 20,
+            has_more: false,
+        };
+        assert!(result.next_page().is_none());
+    }
+
+    #[test]
+    fn search_query_serde_roundtrip() {
+        let query = SearchQuery::new()
+            .with_text("birthday")
+            .with_exif_filter("Make", "EPSON")
+            .with_has_back(true);
+
+        let json = serde_json::to_string(&query).unwrap();
+        let deserialized: SearchQuery = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.text_query, Some("birthday".to_string()));
+        assert_eq!(deserialized.exif_filters.len(), 1);
+        assert_eq!(deserialized.has_back, Some(true));
     }
 }

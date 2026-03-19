@@ -23,37 +23,54 @@ using Photostax;
 // Open a repository
 using var repo = new PhotostaxRepository("/path/to/photos");
 
-// Scan for all photo stacks
-var stacks = repo.Scan();
-foreach (var stack in stacks)
+// Query all stacks (no filter, no pagination)
+var all = repo.Query();
+
+foreach (var stack in all.Items)
 {
-    Console.WriteLine($"Stack: {stack.Id}");
+    // stack.Id is a 16-char hex hash (e.g. "a1b2c3d4e5f67890")
+    // stack.Name is the human-readable display name
+    Console.WriteLine($"{stack.Name} ({stack.Id})");
+    Console.WriteLine($"  Folder: {stack.Folder ?? "(root)"}");
     Console.WriteLine($"  Original: {stack.OriginalPath}");
     Console.WriteLine($"  Enhanced: {stack.EnhancedPath}");
     Console.WriteLine($"  Back: {stack.BackPath}");
     Console.WriteLine($"  Format: {stack.Format}");
 }
 
-// Search for specific photos
-var query = new SearchQuery()
-    .WithText("vacation")
-    .WithExifFilter("Make", "EPSON")
-    .WithHasBack(true);
+// Search with filter and pagination using Query()
+var page = repo.Query(
+    new SearchQuery().WithText("birthday").WithHasBack(true),
+    offset: 0,
+    limit: 20
+);
 
-var results = repo.Search(query);
-
-// Paginate results
-var page = repo.ScanPaginated(offset: 0, limit: 20);
 Console.WriteLine($"Page has {page.Items.Count} of {page.TotalCount} total");
 Console.WriteLine($"Has more: {page.HasMore}");
 
-// Read image bytes
-var imageData = repo.ReadImage(stacks[0].OriginalPath!);
+// Iterate pages
+foreach (var stack in page.Items)
+    Console.WriteLine($"{stack.Name} ({stack.Id})");
 
-// Write metadata
+if (page.HasMore)
+{
+    var nextPage = repo.Query(
+        new SearchQuery().WithText("birthday"),
+        offset: 20, limit: 20);
+}
+
+// Read image bytes
+var imageData = repo.ReadImage(all.Items[0].OriginalPath!);
+
+// Write metadata (use stack.Id for lookups)
 var metadata = new Metadata().WithCustomTag("album", "Family Photos");
-repo.WriteMetadata(stacks[0].Id, metadata);
+repo.WriteMetadata(all.Items[0].Id, metadata);
 ```
+
+> **Note — Stack IDs changed in v0.2.x:** Stack IDs are now opaque 16-character
+> hex strings (truncated SHA-256 hashes) rather than human-readable stems.
+> Use `stack.Name` when displaying a stack to users and `stack.Id` for
+> programmatic lookups such as `GetStack()` or `WriteMetadata()`.
 
 ## API Overview
 
@@ -63,13 +80,43 @@ The main entry point for working with photo repositories.
 
 | Method | Description |
 |--------|-------------|
+| `Query()` | **(v0.2.x)** Search and paginate in one call. Accepts an optional `SearchQuery`, `offset`, and `limit`. Returns a `PagedResult<PhotoStack>`. |
 | `Scan()` | Discover all photo stacks in the repository |
-| `GetStack(id)` | Get a specific stack by ID |
+| `GetStack(id)` | Get a specific stack by its opaque hash ID |
 | `ReadImage(path)` | Read raw image bytes |
 | `WriteMetadata(id, metadata)` | Write metadata to a stack |
-| `Search(query)` | Find stacks matching a query |
-| `ScanPaginated(offset, limit)` | Scan with pagination (offset/limit) |
-| `SearchPaginated(query, offset, limit)` | Search with pagination (offset/limit) |
+| `Search(query)` | Find stacks matching a query (convenience wrapper around `Query()`) |
+| `ScanPaginated(offset, limit)` | Scan with pagination (convenience wrapper around `Query()`) |
+| `SearchPaginated(query, offset, limit)` | Search with pagination (convenience wrapper around `Query()`) |
+
+#### `Query()` — Preferred Search & Pagination API
+
+`Query()` is the recommended way to search and paginate as of v0.2.x.
+The older `Search()`, `ScanPaginated()`, and `SearchPaginated()` methods still
+work but are now convenience wrappers around `Query()`.
+
+```csharp
+// All stacks (no filter, no pagination)
+var all = repo.Query();
+
+// With filter and pagination
+var page = repo.Query(
+    new SearchQuery().WithText("birthday").WithHasBack(true),
+    offset: 0,
+    limit: 20
+);
+
+// Iterate pages
+foreach (var stack in page.Items)
+    Console.WriteLine($"{stack.Name} ({stack.Id})");
+
+if (page.HasMore)
+{
+    var nextPage = repo.Query(
+        new SearchQuery().WithText("birthday"),
+        offset: 20, limit: 20);
+}
+```
 
 ### PhotoStack
 
@@ -77,7 +124,9 @@ Represents a photo stack with its associated images and metadata.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `Id` | `string` | Unique stack identifier |
+| `Id` | `string` | Opaque 16-char hex hash (SHA-256). Use for lookups. |
+| `Name` | `string` | **(v0.2.x)** Human-readable display name for the stack. |
+| `Folder` | `string?` | **(v0.2.x)** Subfolder within the repository, or `null` if at root. |
 | `OriginalPath` | `string?` | Path to original scan |
 | `EnhancedPath` | `string?` | Path to enhanced scan |
 | `BackPath` | `string?` | Path to back scan |

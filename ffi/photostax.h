@@ -72,6 +72,10 @@ typedef struct FfiPhotoStack {
    */
   char *name;
   /**
+   * Subfolder name within the repository (null if root level).
+   */
+  char *folder;
+  /**
    * Path to original image (null if absent).
    */
   char *original;
@@ -438,6 +442,30 @@ struct FfiPaginatedResult photostax_repo_scan_paginated(const struct PhotostaxRe
                                                         uintptr_t offset,
                                                         uintptr_t limit,
                                                         bool load_metadata);
+
+/**
+ * Unified query: search + paginate the cache in a single call.
+ *
+ * This is the preferred way to retrieve stacks. Combines filtering and
+ * pagination into one operation without intermediate allocations.
+ *
+ * # Parameters
+ *
+ * - `repo` — repository handle from [`photostax_repo_open`]
+ * - `query_json` — JSON-serialized [`SearchQuery`], or null to match all stacks
+ * - `offset` — number of items to skip (0-based)
+ * - `limit` — maximum items to return; 0 means return all matching stacks
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `query_json`, if non-null, must be a valid null-terminated UTF-8 string
+ * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ */
+struct FfiPaginatedResult photostax_query(const struct PhotostaxRepo *repo,
+                                          const char *query_json,
+                                          uintptr_t offset,
+                                          uintptr_t limit);
 
 /**
  * Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it

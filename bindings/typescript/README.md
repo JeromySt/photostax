@@ -35,16 +35,29 @@ const repo = new PhotostaxRepository('/path/to/photos');
 const stacks = repo.scan();
 
 for (const stack of stacks) {
-  console.log(`Photo: ${stack.id}`);
+  // Use stack.name for display; stack.id is an opaque 16-char hex hash
+  console.log(`Photo: ${stack.name} (id=${stack.id})`);
+  console.log(`  Folder: ${stack.folder ?? '(root)'}`);
   console.log(`  Original: ${stack.original}`);
   console.log(`  Enhanced: ${stack.enhanced}`);
   console.log(`  Back: ${stack.back}`);
   console.log(`  EXIF Make: ${stack.metadata.exifTags['Make']}`);
 }
 
-// Paginate results (20 items starting at offset 0)
-const page = repo.scanPaginated(0, 20);
-console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
+// Use query() for search + pagination in one call (preferred)
+const page1 = repo.query(
+  { text: "birthday", hasBack: true },
+  0,   // offset
+  20   // limit
+);
+console.log(`Showing ${page1.items.length} of ${page1.totalCount} total`);
+
+if (page1.hasMore) {
+  const page2 = repo.query({ text: "birthday", hasBack: true }, 20, 20);
+}
+
+// query() with no arguments returns all stacks, unpaginated
+const all = repo.query();
 ```
 
 ## API Overview
@@ -56,24 +69,31 @@ The main class for accessing photo stacks.
 | Method | Description |
 |--------|-------------|
 | `scan()` | Discover all photo stacks in the repository |
-| `getStack(id)` | Get a specific stack by ID |
+| `getStack(id)` | Get a specific stack by its opaque hash ID |
 | `readImage(path)` | Read raw image bytes as Buffer |
 | `writeMetadata(id, metadata)` | Write metadata to a stack |
-| `search(query)` | Find stacks matching a query |
-| `scanPaginated(offset, limit)` | Scan with pagination (offset/limit) |
-| `searchPaginated(query, offset, limit)` | Search with pagination (offset/limit) |
+| `query(filter?, offset?, limit?)` | **Preferred.** Search and paginate in one call (see below) |
+| `search(query)` | Find stacks matching a query *(convenience wrapper around `query()`)* |
+| `scanPaginated(offset, limit)` | Scan with pagination *(convenience wrapper around `query()`)* |
+| `searchPaginated(query, offset, limit)` | Search with pagination *(convenience wrapper around `query()`)* |
 
 ### PhotoStack
 
 ```typescript
 interface PhotoStack {
-  id: string;                  // Base filename identifier
+  id: string;                  // Opaque 16-char hex hash (SHA-256); use for lookups
+  name: string;                // Human-readable display name (e.g. "IMG_0042")
+  folder: string | null;       // Subfolder within the repository, or null for root
   original: string | null;     // Path to original scan
   enhanced: string | null;     // Path to enhanced scan
   back: string | null;         // Path to back scan
   metadata: Metadata;
 }
 ```
+
+> **v0.2.x note:** Stack IDs are now opaque hashes, not human-readable stems.
+> Use `stack.name` for display purposes and `stack.id` for programmatic lookups
+> (e.g. `repo.getStack(stack.id)`).
 
 ### Metadata
 
@@ -108,6 +128,34 @@ interface PaginatedResult {
   hasMore: boolean;             // Whether more items exist beyond this page
 }
 ```
+
+### query()
+
+The preferred way to search and paginate in a single call. All parameters are optional:
+
+```typescript
+// All stacks (no filter, no pagination)
+const all = repo.query();
+
+// Filter only
+const filtered = repo.query({ text: "vacation" });
+
+// Filter + pagination
+const page = repo.query(
+  { text: "birthday", hasBack: true },
+  0,   // offset
+  20   // limit
+);
+
+// Pagination without filter
+const page = repo.query(undefined, 0, 50);
+```
+
+`query()` returns a `PaginatedResult`. When called without `offset`/`limit`, all
+matching stacks are returned in a single result with `hasMore: false`.
+
+> `search()`, `scanPaginated()`, and `searchPaginated()` remain available for
+> backward compatibility but are now convenience wrappers around `query()`.
 
 ### Utility Functions
 

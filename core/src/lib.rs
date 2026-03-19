@@ -22,17 +22,29 @@
 //!
 //! ```rust,no_run
 //! use photostax_core::backends::local::LocalRepository;
-//! use photostax_core::repository::Repository;
+//! use photostax_core::stack_manager::StackManager;
+//! use photostax_core::photo_stack::ScannerProfile;
+//! use photostax_core::search::{SearchQuery, PaginationParams};
 //!
-//! // Open a local directory containing FastFoto scans
+//! // Create a StackManager with a local repository
 //! let repo = LocalRepository::new("/path/to/photos");
-//! let stacks = repo.scan().unwrap();
+//! let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
+//! mgr.scan().unwrap();
 //!
-//! for stack in &stacks {
-//!     println!("Photo: {}", stack.id);
-//!     if let Some(ref back) = stack.back {
-//!         println!("  Has back scan: {}", back.path);
-//!     }
+//! // Query all stacks
+//! let all = mgr.query(&SearchQuery::new(), None);
+//! for stack in &all.items {
+//!     println!("Photo: {} ({})", stack.name, stack.id);
+//! }
+//!
+//! // Search with pagination
+//! let query = SearchQuery::new().with_has_back(true);
+//! let page = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+//! println!("{} of {} stacks", page.items.len(), page.total_count);
+//!
+//! // Iterate pages
+//! if let Some(next) = page.next_page() {
+//!     let page2 = mgr.query(&query, Some(&next));
 //! }
 //! ```
 //!

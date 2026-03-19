@@ -40,25 +40,32 @@ Epson FastFoto scanners produce multiple files per scanned photo:
 
 ```rust
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::manager::StackManager;
-use photostax_core::scanner::ScannerProfile;
+use photostax_core::stack_manager::StackManager;
+use photostax_core::photo_stack::ScannerProfile;
+use photostax_core::search::{SearchQuery, PaginationParams};
 
 let repo = LocalRepository::new("/path/to/photos");
-let manager = StackManager::single(repo, ScannerProfile::Auto);
-manager.scan().unwrap();
+let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
+mgr.scan().unwrap();
 
-for stack in manager.all_stacks() {
+// Query all stacks
+let all = mgr.query(&SearchQuery::new(), None);
+for stack in &all.items {
     println!("Photo: {} ({})", stack.name, stack.id);
     if let Some(ref original) = stack.original {
         println!("  Original: {}", original.path);
     }
 }
 
-// Paginate results (e.g. page 2 with 20 items per page)
-use photostax_core::search::{paginate_stacks, PaginationParams};
-let stacks = manager.all_stacks();
-let page = paginate_stacks(&stacks, &PaginationParams { offset: 20, limit: 20 });
+// Search with pagination
+let query = SearchQuery::new().with_has_back(true);
+let page = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
 println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
+
+// Iterate to next page
+if let Some(next) = page.next_page() {
+    let page2 = mgr.query(&query, Some(&next));
+}
 ```
 
 ## Quick Start (.NET)
@@ -66,21 +73,26 @@ println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
 ```csharp
 using Photostax;
 
-// Binding constructors wrap StackManager automatically
 using var repo = new PhotostaxRepository("/path/to/photos");
-var stacks = repo.Scan();
+repo.Scan();
 
-foreach (var stack in stacks)
+// Query all stacks
+var all = repo.Query();
+foreach (var stack in all.Items)
 {
     Console.WriteLine($"Photo: {stack.Name} ({stack.Id})");
     Console.WriteLine($"  Original: {stack.OriginalPath}");
-    Console.WriteLine($"  Enhanced: {stack.EnhancedPath}");
-    Console.WriteLine($"  Back: {stack.BackPath}");
 }
 
-// Paginate results (e.g. page 2 with 20 items per page)
-var page = repo.ScanPaginated(offset: 20, limit: 20);
+// Search with pagination
+var page = repo.Query("birthday", offset: 0, limit: 20);
 Console.WriteLine($"Showing {page.Items.Count} of {page.TotalCount} total");
+
+// Next page
+if (page.HasMore)
+{
+    var page2 = repo.Query("birthday", offset: 20, limit: 20);
+}
 ```
 
 ## Quick Start (TypeScript)
@@ -88,19 +100,24 @@ Console.WriteLine($"Showing {page.Items.Count} of {page.TotalCount} total");
 ```typescript
 import { PhotostaxRepository } from '@photostax/core';
 
-// Binding constructors wrap StackManager automatically
 const repo = new PhotostaxRepository('/path/to/photos');
-const stacks = repo.scan();
+repo.scan();
 
-for (const stack of stacks) {
+// Query all stacks
+const all = repo.query();
+for (const stack of all.items) {
   console.log(`Photo: ${stack.name} (${stack.id})`);
   console.log(`  Original: ${stack.original?.path}`);
-  console.log(`  EXIF Make: ${stack.metadata.exifTags['Make']}`);
 }
 
-// Paginate results (e.g. page 2 with 20 items per page)
-const page = repo.scanPaginated(20, 20);
+// Search with pagination
+const page = repo.query({ text: 'birthday' }, 0, 20);
 console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
+
+// Next page
+if (page.hasMore) {
+  const page2 = repo.query({ text: 'birthday' }, 20, 20);
+}
 ```
 
 ## Quick Start (CLI)

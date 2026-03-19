@@ -74,6 +74,12 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
     FfiPhotoStack {
         id,
         name,
+        folder: stack
+            .folder
+            .as_deref()
+            .and_then(|f| CString::new(f).ok())
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut()),
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),
@@ -171,9 +177,9 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
             return ptr::null_mut();
         }
         if load_metadata {
-            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
-            for id in ids {
-                let _ = mgr.load_metadata(&id);
+            let all = mgr.query(&photostax_core::search::SearchQuery::new(), None);
+            for stack in &all.items {
+                let _ = mgr.load_metadata(&stack.id);
             }
         }
         let snap = mgr.snapshot();
