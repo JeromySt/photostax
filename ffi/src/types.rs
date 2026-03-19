@@ -42,6 +42,8 @@ pub struct FfiPhotoStack {
     pub id: *mut c_char,
     /// Human-readable stack name, typically the file stem (never null).
     pub name: *mut c_char,
+    /// Subfolder name within the repository (null if root level).
+    pub folder: *mut c_char,
     /// Path to original image (null if absent).
     pub original: *mut c_char,
     /// Path to enhanced image (null if absent).
@@ -224,6 +226,7 @@ mod tests {
         let stack = FfiPhotoStack {
             id: std::ptr::null_mut(),
             name: std::ptr::null_mut(),
+            folder: std::ptr::null_mut(),
             original: std::ptr::null_mut(),
             enhanced: std::ptr::null_mut(),
             back: std::ptr::null_mut(),
@@ -231,6 +234,7 @@ mod tests {
         };
         assert!(stack.id.is_null());
         assert!(stack.name.is_null());
+        assert!(stack.folder.is_null());
         assert!(stack.original.is_null());
         assert!(stack.enhanced.is_null());
         assert!(stack.back.is_null());

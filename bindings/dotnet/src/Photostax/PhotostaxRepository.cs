@@ -131,7 +131,7 @@ public sealed class PhotostaxRepository : IDisposable
             foreach (var stack in stacks)
             {
                 var metadata = LoadMetadataCore(stack.Id);
-                result.Add(new PhotoStack(stack.Id, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
+                result.Add(new PhotoStack(stack.Id, stack.Name, stack.Folder, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
             }
             return result;
         }
@@ -308,6 +308,39 @@ public sealed class PhotostaxRepository : IDisposable
 
         var queryJson = query.ToJson();
         var result = NativeMethods.photostax_search_paginated(
+            _handle.DangerousGetHandle(),
+            queryJson,
+            (nuint)offset,
+            (nuint)limit);
+        try
+        {
+            return ConvertPaginatedResult(result);
+        }
+        finally
+        {
+            NativeMethods.photostax_paginated_result_free(result);
+        }
+    }
+
+    /// <summary>
+    /// Unified query: search and paginate the cache in a single call.
+    /// </summary>
+    /// <remarks>
+    /// This is the preferred way to retrieve stacks. Combines filtering and
+    /// pagination into one operation. Call <see cref="Scan"/> or <see cref="ScanWithMetadata"/>
+    /// first to populate the cache.
+    /// </remarks>
+    /// <param name="query">Search criteria, or null to match all stacks.</param>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum stacks to return. Use 0 to return all matching stacks.</param>
+    /// <returns>A paginated result containing matching photo stacks and metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> Query(SearchQuery? query = null, int offset = 0, int limit = 0)
+    {
+        ThrowIfDisposed();
+
+        var queryJson = query?.ToJson();
+        var result = NativeMethods.photostax_query(
             _handle.DangerousGetHandle(),
             queryJson,
             (nuint)offset,
@@ -520,13 +553,15 @@ public sealed class PhotostaxRepository : IDisposable
     internal static PhotoStack ConvertStack(FfiPhotoStack ffi)
     {
         var id = Marshal.PtrToStringUTF8(ffi.Id) ?? throw new PhotostaxException("Stack ID is null");
+        var name = ffi.Name != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Name) ?? id : id;
+        var folder = ffi.Folder != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Folder) : null;
         var original = ffi.Original != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Original) : null;
         var enhanced = ffi.Enhanced != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Enhanced) : null;
         var back = ffi.Back != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Back) : null;
         var metadataJson = Marshal.PtrToStringUTF8(ffi.MetadataJson) ?? "{}";
         var metadata = Metadata.FromJson(metadataJson);
 
-        return new PhotoStack(id, original, enhanced, back, metadata);
+        return new PhotoStack(id, name, folder, original, enhanced, back, metadata);
     }
 
     private static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)

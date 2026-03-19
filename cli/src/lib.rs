@@ -13,7 +13,7 @@ use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::ImageFormat;
 use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget, ScannerProfile};
 use photostax_core::scanner::ScannerConfig;
-use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
+use photostax_core::search::{paginate_stacks, PaginationParams, SearchQuery};
 use photostax_core::stack_manager::StackManager;
 
 /// CLI tool for inspecting and managing Epson FastFoto photo stacks
@@ -466,9 +466,9 @@ pub fn cmd_scan(
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
-    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
-
-    // Apply filters
+    let stacks: Vec<PhotoStack> = mgr
+        .query(&photostax_core::search::SearchQuery::new(), None)
+        .items;
     let filtered: Vec<_> = stacks
         .into_iter()
         .filter(|s| {
@@ -543,7 +543,6 @@ pub fn cmd_search(
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
-    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
 
     // Build search query
     let mut search = SearchQuery::new().with_text(query);
@@ -564,11 +563,9 @@ pub fn cmd_search(
         search = search.with_ids(stack_ids.to_vec());
     }
 
-    let results = filter_stacks(&stacks, &search);
-
     // Apply pagination if limit > 0
     if limit > 0 {
-        let paginated = paginate_stacks(&results, &PaginationParams { offset, limit });
+        let paginated = mgr.query(&search, Some(&PaginationParams { offset, limit }));
         output_stacks(out, &paginated.items, format, false, directory);
         if format == OutputFormat::Json {
             let _ = writeln!(
@@ -591,7 +588,8 @@ pub fn cmd_search(
             );
         }
     } else {
-        output_stacks(out, &results, format, false, directory);
+        let results = mgr.query(&search, None);
+        output_stacks(out, &results.items, format, false, directory);
     }
     EXIT_SUCCESS
 }
@@ -611,11 +609,9 @@ fn resolve_stack(
         return Ok(s.clone());
     }
     // Fall back: find by name
-    let found = mgr
-        .stacks()
-        .into_iter()
-        .find(|s| s.name == id_or_name)
-        .cloned();
+    let query = SearchQuery::new().with_text(id_or_name);
+    let results = mgr.query(&query, None);
+    let found = results.items.into_iter().find(|s| s.name == id_or_name);
     found.ok_or_else(|| {
         photostax_core::repository::RepositoryError::NotFound(id_or_name.to_string())
     })
@@ -830,7 +826,9 @@ pub fn cmd_export(
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
-    let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
+    let stacks: Vec<PhotoStack> = mgr
+        .query(&photostax_core::search::SearchQuery::new(), None)
+        .items;
 
     let json = serde_json::to_string_pretty(&stacks).unwrap();
 

@@ -15,6 +15,7 @@ use crate::photo_stack::{
     Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
 };
 use crate::repository::{Repository, RepositoryError};
+use crate::search::{paginate_stacks, PaginatedResult, PaginationParams, SearchQuery};
 use crate::snapshot::ScanSnapshot;
 
 /// Errors specific to [`StackManager`] operations.
@@ -253,8 +254,62 @@ impl StackManager {
     }
 
     /// Get all stacks in the cache.
+    #[deprecated(since = "0.2.1", note = "Use `query()` instead")]
     pub fn stacks(&self) -> Vec<&PhotoStack> {
         self.cache.values().collect()
+    }
+
+    /// Query the cache with optional filtering and pagination.
+    ///
+    /// This is the primary entry point for retrieving stacks. It filters
+    /// directly over the cache without cloning, then paginates the results.
+    ///
+    /// - Empty `SearchQuery` + `None` pagination = all stacks
+    /// - `SearchQuery` filters + `None` pagination = all matching stacks
+    /// - Any query + `Some(pagination)` = a single page of results
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use photostax_core::stack_manager::StackManager;
+    /// # use photostax_core::search::{SearchQuery, PaginationParams};
+    /// # let mgr = StackManager::new();
+    /// // All stacks, no filter, no pagination
+    /// let all = mgr.query(&SearchQuery::new(), None);
+    ///
+    /// // Filtered, first page of 20
+    /// let query = SearchQuery::new().with_has_back(true);
+    /// let page1 = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+    ///
+    /// // Iterate pages
+    /// if let Some(next) = page1.next_page() {
+    ///     let page2 = mgr.query(&query, Some(&next));
+    /// }
+    /// ```
+    pub fn query(
+        &self,
+        query: &SearchQuery,
+        pagination: Option<&PaginationParams>,
+    ) -> PaginatedResult<PhotoStack> {
+        use crate::search::matches_query_ref;
+
+        let filtered: Vec<PhotoStack> = self
+            .cache
+            .values()
+            .filter(|stack| matches_query_ref(stack, query))
+            .cloned()
+            .collect();
+
+        match pagination {
+            Some(params) => paginate_stacks(&filtered, params),
+            None => PaginatedResult {
+                total_count: filtered.len(),
+                offset: 0,
+                limit: filtered.len(),
+                has_more: false,
+                items: filtered,
+            },
+        }
     }
 
     /// Total number of stacks in the cache.
@@ -391,6 +446,7 @@ fn same_scheme(a: &str, b: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::backends::local::LocalRepository;
@@ -1233,5 +1289,126 @@ mod tests {
         let mgr_err: StackManagerError = repo_err.into();
         let display = format!("{}", mgr_err);
         assert!(display.contains("stack1"));
+    }
+
+    // ── query() tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn query_all_no_pagination() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg", "IMG_003.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let result = mgr.query(&SearchQuery::new(), None);
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.items.len(), 3);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn query_with_pagination() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(
+            &tmp,
+            &[
+                "IMG_001.jpg",
+                "IMG_002.jpg",
+                "IMG_003.jpg",
+                "IMG_004.jpg",
+                "IMG_005.jpg",
+            ],
+        );
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let page1 = mgr.query(
+            &SearchQuery::new(),
+            Some(&PaginationParams {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.total_count, 5);
+        assert!(page1.has_more);
+
+        let next = page1.next_page().unwrap();
+        assert_eq!(next.offset, 2);
+        assert_eq!(next.limit, 2);
+
+        let page2 = mgr.query(&SearchQuery::new(), Some(&next));
+        assert_eq!(page2.items.len(), 2);
+        assert!(page2.has_more);
+
+        let page3 = mgr.query(&SearchQuery::new(), Some(&page2.next_page().unwrap()));
+        assert_eq!(page3.items.len(), 1);
+        assert!(!page3.has_more);
+        assert!(page3.next_page().is_none());
+    }
+
+    #[test]
+    fn query_with_filter() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_001_b.jpg", "IMG_002.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let query = SearchQuery::new().with_has_back(true);
+        let result = mgr.query(&query, None);
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.items[0].name, "IMG_001");
+    }
+
+    #[test]
+    fn query_with_filter_and_pagination() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(
+            &tmp,
+            &[
+                "A_001.jpg",
+                "A_001_b.jpg",
+                "A_002.jpg",
+                "A_002_b.jpg",
+                "A_003.jpg",
+                "A_003_b.jpg",
+                "A_004.jpg",
+            ],
+        );
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.scan().unwrap();
+
+        let query = SearchQuery::new().with_has_back(true);
+        let page = mgr.query(
+            &query,
+            Some(&PaginationParams {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.total_count, 3);
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn query_empty_cache() {
+        let mgr = StackManager::new();
+        let result = mgr.query(&SearchQuery::new(), None);
+        assert_eq!(result.total_count, 0);
+        assert!(result.items.is_empty());
+        assert!(!result.has_more);
     }
 }

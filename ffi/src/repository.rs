@@ -66,6 +66,12 @@ fn photo_stack_to_ffi(stack: &PhotoStack) -> FfiPhotoStack {
     FfiPhotoStack {
         id,
         name,
+        folder: stack
+            .folder
+            .as_deref()
+            .and_then(|f| CString::new(f).ok())
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut()),
         original: image_path_to_c_string(&stack.original),
         enhanced: image_path_to_c_string(&stack.enhanced),
         back: image_path_to_c_string(&stack.back),
@@ -186,14 +192,14 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiP
         if mgr.scan().is_err() {
             return FfiPhotoStackArray::empty();
         }
-        let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        let all = mgr.query(&photostax_core::search::SearchQuery::new(), None);
         drop(mgr);
 
-        if stacks.is_empty() {
+        if all.items.is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = stacks.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> = all.items.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -248,14 +254,14 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
         if mgr.scan_with_progress(progress).is_err() {
             return FfiPhotoStackArray::empty();
         }
-        let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        let all = mgr.query(&photostax_core::search::SearchQuery::new(), None);
         drop(mgr);
 
-        if stacks.is_empty() {
+        if all.items.is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = stacks.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> = all.items.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -530,13 +536,100 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
         } else if mgr.scan().is_err() {
             return FfiPaginatedResult::empty(offset, limit);
         }
-        let stacks: Vec<PhotoStack> = mgr.stacks().into_iter().cloned().collect();
+        let stacks: Vec<PhotoStack> = mgr
+            .query(&photostax_core::search::SearchQuery::new(), None)
+            .items;
         drop(mgr);
 
         let paginated = photostax_core::search::paginate_stacks(
             &stacks,
             &photostax_core::search::PaginationParams { offset, limit },
         );
+
+        if paginated.items.is_empty() {
+            return FfiPaginatedResult {
+                data: ptr::null_mut(),
+                len: 0,
+                total_count: paginated.total_count,
+                offset: paginated.offset,
+                limit: paginated.limit,
+                has_more: paginated.has_more,
+            };
+        }
+
+        let ffi_stacks: Vec<FfiPhotoStack> =
+            paginated.items.iter().map(photo_stack_to_ffi).collect();
+        let len = ffi_stacks.len();
+        let boxed_slice = ffi_stacks.into_boxed_slice();
+        let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
+
+        FfiPaginatedResult {
+            data,
+            len,
+            total_count: paginated.total_count,
+            offset: paginated.offset,
+            limit: paginated.limit,
+            has_more: paginated.has_more,
+        }
+    }));
+
+    result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
+}
+
+/// Unified query: search + paginate the cache in a single call.
+///
+/// This is the preferred way to retrieve stacks. Combines filtering and
+/// pagination into one operation without intermediate allocations.
+///
+/// # Parameters
+///
+/// - `repo` — repository handle from [`photostax_repo_open`]
+/// - `query_json` — JSON-serialized [`SearchQuery`], or null to match all stacks
+/// - `offset` — number of items to skip (0-based)
+/// - `limit` — maximum items to return; 0 means return all matching stacks
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `query_json`, if non-null, must be a valid null-terminated UTF-8 string
+/// - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_query(
+    repo: *const PhotostaxRepo,
+    query_json: *const c_char,
+    offset: usize,
+    limit: usize,
+) -> FfiPaginatedResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if repo.is_null() {
+            return FfiPaginatedResult::empty(offset, limit);
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let mgr = repo_ref.inner.borrow();
+
+        let query = if query_json.is_null() {
+            photostax_core::search::SearchQuery::new()
+        } else {
+            let json_str = match unsafe { CStr::from_ptr(query_json) }.to_str() {
+                Ok(s) => s,
+                Err(_) => return FfiPaginatedResult::empty(offset, limit),
+            };
+            let parsed: Result<photostax_core::search::SearchQuery, _> =
+                serde_json::from_str(json_str);
+            match parsed {
+                Ok(q) => q,
+                Err(_) => return FfiPaginatedResult::empty(offset, limit),
+            }
+        };
+
+        let pagination = if limit > 0 {
+            Some(photostax_core::search::PaginationParams { offset, limit })
+        } else {
+            None
+        };
+
+        let paginated = mgr.query(&query, pagination.as_ref());
 
         if paginated.items.is_empty() {
             return FfiPaginatedResult {
@@ -693,6 +786,9 @@ fn free_stack_strings(stack: &FfiPhotoStack) {
         }
         if !stack.name.is_null() {
             drop(CString::from_raw(stack.name));
+        }
+        if !stack.folder.is_null() {
+            drop(CString::from_raw(stack.folder));
         }
         if !stack.original.is_null() {
             drop(CString::from_raw(stack.original));

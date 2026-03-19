@@ -1,4 +1,64 @@
-# Migration Guide: v0.1.x → v0.2.0
+# Migration Guide
+
+## v0.2.0 → v0.2.1
+
+This is a non-breaking release. All existing code continues to work. The main change is a new unified `query()` method that replaces the separate search/paginate pattern.
+
+### New: `StackManager::query()`
+
+**Before (v0.2.0):** Search and pagination were separate operations.
+
+```rust
+// v0.2.0 — search then paginate separately
+let stacks = manager.stacks();
+let filtered = filter_stacks(&stacks, &query);
+let page = paginate_stacks(&filtered, &PaginationParams { offset: 0, limit: 20 });
+```
+
+**After (v0.2.1):** Use `query()` for search + pagination in one call.
+
+```rust
+// v0.2.1 — unified query
+let page = manager.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+
+// All stacks (replaces stacks())
+let all = manager.query(&SearchQuery::new(), None);
+
+// Iterate pages naturally
+if let Some(next) = page.next_page() {
+    let page2 = manager.query(&query, Some(&next));
+}
+```
+
+### Deprecations
+
+- `StackManager::stacks()` — use `query(&SearchQuery::new(), None)` instead
+
+### Binding updates
+
+**TypeScript:**
+```typescript
+// v0.2.1 — unified query
+const page = repo.query({ text: 'birthday' }, 0, 20);
+const all = repo.query(); // all stacks
+```
+
+**.NET:**
+```csharp
+// v0.2.1 — unified query
+var page = repo.Query("birthday", offset: 0, limit: 20);
+var all = repo.Query(); // all stacks
+```
+
+### FFI
+
+- New: `photostax_query(repo, query_json, offset, limit)` — unified search + paginate
+- New: `folder` field on `FfiPhotoStack`
+- Existing FFI functions remain available
+
+---
+
+## v0.1.x → v0.2.0
 
 This guide covers all breaking changes in photostax v0.2.0 and how to update your code.
 

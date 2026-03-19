@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-19
+
+### Added
+
+- `StackManager::query(&SearchQuery, Option<&PaginationParams>)` — unified search + pagination in one call
+- `PaginatedResult::next_page()` — returns `Option<PaginationParams>` for natural page iteration
+- `SearchQuery` now implements `Serialize`/`Deserialize` for JSON interop
+- FFI: `photostax_query()` — unified C-compatible query function (search + paginate)
+- FFI: `folder` field on `FfiPhotoStack`
+- TypeScript: `query(filter?, offset?, limit?)` method on `PhotostaxRepository`
+- TypeScript: `name` and `folder` fields on `JsPhotoStack`
+- .NET: `Query()` method on `PhotostaxRepository`
+- .NET: `Name` and `Folder` properties on `PhotoStack`
+
+### Changed
+
+- `StackManager::stacks()` is deprecated in favor of `query()`
+- All binding layers (FFI, TypeScript, .NET, CLI) now use `query()` internally
+- CLI `resolve_stack()` uses text search via `query()` instead of linear scan
+
+### Fixed
+
+- CLI no longer requires exact ID match — partial text search resolves stacks
+
 ## [0.2.0] - 2026-03-19
 
 ### Added

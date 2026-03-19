@@ -6,7 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 
-use photostax_core::search::{filter_stacks, paginate_stacks, PaginationParams, SearchQuery};
+use photostax_core::search::{PaginationParams, SearchQuery};
 use serde::Deserialize;
 
 use crate::types::{FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, PhotostaxRepo};
@@ -49,6 +49,12 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
     FfiPhotoStack {
         id,
         name,
+        folder: stack
+            .folder
+            .as_deref()
+            .and_then(|f| CString::new(f).ok())
+            .map(|s| s.into_raw())
+            .unwrap_or(ptr::null_mut()),
         original: path_to_c_string(&stack.original),
         enhanced: path_to_c_string(&stack.enhanced),
         back: path_to_c_string(&stack.back),
@@ -145,18 +151,17 @@ pub unsafe extern "C" fn photostax_search(
         if mgr.scan_with_metadata().is_err() {
             return FfiPhotoStackArray::empty();
         }
-        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
-            mgr.stacks().into_iter().cloned().collect();
+
+        // Apply the filter using query()
+        let filtered = mgr.query(&query, None);
         drop(mgr);
 
-        // Apply the filter
-        let filtered = filter_stacks(&stacks, &query);
-
-        if filtered.is_empty() {
+        if filtered.items.is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = filtered.iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> =
+            filtered.items.iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -245,12 +250,9 @@ pub unsafe extern "C" fn photostax_search_paginated(
         if mgr.scan_with_metadata().is_err() {
             return FfiPaginatedResult::empty(offset, limit);
         }
-        let stacks: Vec<photostax_core::photo_stack::PhotoStack> =
-            mgr.stacks().into_iter().cloned().collect();
-        drop(mgr);
 
-        let filtered = filter_stacks(&stacks, &query);
-        let paginated = paginate_stacks(&filtered, &PaginationParams { offset, limit });
+        let paginated = mgr.query(&query, Some(&PaginationParams { offset, limit }));
+        drop(mgr);
 
         if paginated.items.is_empty() {
             return FfiPaginatedResult {
