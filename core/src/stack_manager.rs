@@ -1050,10 +1050,7 @@ mod tests {
     #[test]
     fn check_status_after_removal() {
         let tmp = TempDir::new().unwrap();
-        setup_test_dir(
-            &tmp,
-            &["IMG_001.jpg", "IMG_002.jpg"],
-        );
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg"]);
 
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
