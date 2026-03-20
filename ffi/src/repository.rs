@@ -661,6 +661,99 @@ pub unsafe extern "C" fn photostax_query(
     result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
 }
 
+/// Create an empty [`StackManager`] with no repositories.
+///
+/// Use [`photostax_manager_add_repo`] to register repositories, then
+/// [`photostax_repo_scan`] (or any other repo function) to operate on them.
+/// The returned handle is compatible with all existing `photostax_repo_*`
+/// functions.
+///
+/// # Safety
+///
+/// - Caller owns the returned handle and must free it with [`photostax_repo_free`]
+/// - Returns null on internal error
+#[no_mangle]
+pub unsafe extern "C" fn photostax_manager_new() -> *mut PhotostaxRepo {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mgr = StackManager::new();
+        let boxed = Box::new(PhotostaxRepo {
+            inner: std::cell::RefCell::new(mgr),
+        });
+        Box::into_raw(boxed)
+    }));
+    result.unwrap_or(ptr::null_mut())
+}
+
+/// Add a repository to an existing [`StackManager`].
+///
+/// The `path` is a filesystem directory. Set `recursive` to scan subdirectories.
+/// `profile` controls scanner classification: 0 = Auto, 1 = EnhancedOnly,
+/// 2 = EnhancedAndBack, 3 = Skip.
+///
+/// All subsequent scan/query/get operations on this handle will include stacks
+/// from every registered repository.
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+///   [`photostax_repo_open`]
+/// - `path` must be a valid null-terminated UTF-8 string
+/// - Returns an [`FfiResult`] indicating success or failure
+#[no_mangle]
+pub unsafe extern "C" fn photostax_manager_add_repo(
+    mgr: *mut PhotostaxRepo,
+    path: *const c_char,
+    recursive: bool,
+    profile: i32,
+) -> FfiResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if mgr.is_null() || path.is_null() {
+            return FfiResult::error("null pointer");
+        }
+
+        let c_str = unsafe { CStr::from_ptr(path) };
+        let path_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return FfiResult::error("invalid UTF-8 path"),
+        };
+
+        let config = ScannerConfig {
+            recursive,
+            ..ScannerConfig::default()
+        };
+        let repo = LocalRepository::with_config(PathBuf::from(path_str), config);
+
+        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+
+        let mgr_ref = unsafe { &*mgr };
+        let mut mgr_inner = mgr_ref.inner.borrow_mut();
+        match mgr_inner.add_repo(Box::new(repo), scanner_profile) {
+            Ok(_) => FfiResult::success(),
+            Err(e) => FfiResult::error(&e.to_string()),
+        }
+    }));
+    result.unwrap_or_else(|_| FfiResult::error("panic in photostax_manager_add_repo"))
+}
+
+/// Return the number of repositories registered with a [`StackManager`].
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+///   [`photostax_repo_open`]
+/// - Returns 0 if `mgr` is null
+#[no_mangle]
+pub unsafe extern "C" fn photostax_manager_repo_count(mgr: *const PhotostaxRepo) -> usize {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if mgr.is_null() {
+            return 0;
+        }
+        let mgr_ref = unsafe { &*mgr };
+        mgr_ref.inner.borrow().repo_count()
+    }));
+    result.unwrap_or(0)
+}
+
 /// Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it
 /// as a JSON string.
 ///
@@ -1643,5 +1736,101 @@ mod tests {
 
         unsafe { photostax_stack_free(result) };
         unsafe { photostax_repo_free(repo) };
+    }
+
+    // ── StackManager multi-repo tests ──────────────────────────────────
+
+    #[test]
+    fn test_manager_new_creates_empty() {
+        let mgr = unsafe { photostax_manager_new() };
+        assert!(!mgr.is_null());
+        let count = unsafe { photostax_manager_repo_count(mgr) };
+        assert_eq!(count, 0);
+        unsafe { photostax_repo_free(mgr) };
+    }
+
+    #[test]
+    fn test_manager_add_repo_then_scan() {
+        let mgr = unsafe { photostax_manager_new() };
+        let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
+        let result = unsafe { photostax_manager_add_repo(mgr, path.as_ptr(), false, 0) };
+        assert!(result.success);
+
+        let count = unsafe { photostax_manager_repo_count(mgr) };
+        assert_eq!(count, 1);
+
+        let array = unsafe { photostax_repo_scan(mgr) };
+        assert!(array.len > 0, "should find stacks after adding repo");
+        unsafe { photostax_stack_array_free(array) };
+        unsafe { photostax_repo_free(mgr) };
+    }
+
+    #[test]
+    fn test_manager_add_multiple_repos() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        // Copy testdata into both dirs
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), dir1.path().join(entry.file_name())).unwrap();
+                std::fs::copy(entry.path(), dir2.path().join(entry.file_name())).unwrap();
+            }
+        }
+
+        let mgr = unsafe { photostax_manager_new() };
+        let path1 = CString::new(dir1.path().to_str().unwrap()).unwrap();
+        let path2 = CString::new(dir2.path().to_str().unwrap()).unwrap();
+
+        let r1 = unsafe { photostax_manager_add_repo(mgr, path1.as_ptr(), false, 0) };
+        assert!(r1.success);
+        let r2 = unsafe { photostax_manager_add_repo(mgr, path2.as_ptr(), false, 0) };
+        assert!(r2.success);
+        assert_eq!(unsafe { photostax_manager_repo_count(mgr) }, 2);
+
+        let array = unsafe { photostax_repo_scan(mgr) };
+        // Both repos scanned — should have stacks from both
+        assert!(array.len > 0);
+        unsafe { photostax_stack_array_free(array) };
+        unsafe { photostax_repo_free(mgr) };
+    }
+
+    #[test]
+    fn test_manager_query_across_repos() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), dir1.path().join(entry.file_name())).unwrap();
+                std::fs::copy(entry.path(), dir2.path().join(entry.file_name())).unwrap();
+            }
+        }
+
+        let mgr = unsafe { photostax_manager_new() };
+        let path1 = CString::new(dir1.path().to_str().unwrap()).unwrap();
+        let path2 = CString::new(dir2.path().to_str().unwrap()).unwrap();
+        unsafe { photostax_manager_add_repo(mgr, path1.as_ptr(), false, 0) };
+        unsafe { photostax_manager_add_repo(mgr, path2.as_ptr(), false, 0) };
+        unsafe { photostax_repo_scan(mgr) };
+
+        // Query with no filter — should get stacks from both repos
+        let result = unsafe { photostax_query(mgr, ptr::null(), 0, 0) };
+        assert!(result.total_count > 0);
+        unsafe { photostax_paginated_result_free(result) };
+        unsafe { photostax_repo_free(mgr) };
+    }
+
+    #[test]
+    fn test_manager_add_repo_null_ptr() {
+        let result = unsafe { photostax_manager_add_repo(ptr::null_mut(), ptr::null(), false, 0) };
+        assert!(!result.success);
+        unsafe { photostax_string_free(result.error_message) };
+    }
+
+    #[test]
+    fn test_manager_repo_count_null() {
+        let count = unsafe { photostax_manager_repo_count(ptr::null()) };
+        assert_eq!(count, 0);
     }
 }

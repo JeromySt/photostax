@@ -100,6 +100,28 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.U1)] bool recursive);
 
     /// <summary>
+    /// Create an empty StackManager with no repositories.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_manager_new();
+
+    /// <summary>
+    /// Add a repository directory to a StackManager.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_manager_add_repo(
+        IntPtr mgr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.U1)] bool recursive,
+        int profile);
+
+    /// <summary>
+    /// Return the number of repositories registered with a StackManager.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern nuint photostax_manager_repo_count(IntPtr mgr);
+
+    /// <summary>
     /// Free a repository handle.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

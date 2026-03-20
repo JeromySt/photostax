@@ -468,6 +468,54 @@ struct FfiPaginatedResult photostax_query(const struct PhotostaxRepo *repo,
                                           uintptr_t limit);
 
 /**
+ * Create an empty [`StackManager`] with no repositories.
+ *
+ * Use [`photostax_manager_add_repo`] to register repositories, then
+ * [`photostax_repo_scan`] (or any other repo function) to operate on them.
+ * The returned handle is compatible with all existing `photostax_repo_*`
+ * functions.
+ *
+ * # Safety
+ *
+ * - Caller owns the returned handle and must free it with [`photostax_repo_free`]
+ * - Returns null on internal error
+ */
+struct PhotostaxRepo *photostax_manager_new(void);
+
+/**
+ * Add a repository to an existing [`StackManager`].
+ *
+ * The `path` is a filesystem directory. Set `recursive` to scan subdirectories.
+ * `profile` controls scanner classification: 0 = Auto, 1 = EnhancedOnly,
+ * 2 = EnhancedAndBack, 3 = Skip.
+ *
+ * All subsequent scan/query/get operations on this handle will include stacks
+ * from every registered repository.
+ *
+ * # Safety
+ *
+ * - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+ *   [`photostax_repo_open`]
+ * - `path` must be a valid null-terminated UTF-8 string
+ * - Returns an [`FfiResult`] indicating success or failure
+ */
+struct FfiResult photostax_manager_add_repo(struct PhotostaxRepo *mgr,
+                                            const char *path,
+                                            bool recursive,
+                                            int32_t profile);
+
+/**
+ * Return the number of repositories registered with a [`StackManager`].
+ *
+ * # Safety
+ *
+ * - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+ *   [`photostax_repo_open`]
+ * - Returns 0 if `mgr` is null
+ */
+uintptr_t photostax_manager_repo_count(const struct PhotostaxRepo *mgr);
+
+/**
  * Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it
  * as a JSON string.
  *

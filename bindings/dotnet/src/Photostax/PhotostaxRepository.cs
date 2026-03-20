@@ -532,7 +532,7 @@ public sealed class PhotostaxRepository : IDisposable
         return message;
     }
 
-    private static IReadOnlyList<PhotoStack> ConvertStackArray(FfiPhotoStackArray array)
+    internal static IReadOnlyList<PhotoStack> ConvertStackArray(FfiPhotoStackArray array)
     {
         if (array.Data == IntPtr.Zero || array.Len == 0)
             return [];
@@ -564,7 +564,7 @@ public sealed class PhotostaxRepository : IDisposable
         return new PhotoStack(id, name, folder, original, enhanced, back, metadata);
     }
 
-    private static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)
+    internal static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)
     {
         var items = new List<PhotoStack>();
 

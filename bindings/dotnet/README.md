@@ -18,7 +18,23 @@ This package provides idiomatic C# access to Epson FastFoto photo repositories. 
 - **Lazy metadata loading** — scan first, load EXIF/XMP on demand
 - **Filesystem watching** and reactive cache updates (Rust-only for now)
 
-> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is not yet exposed in the .NET binding — each `PhotostaxRepository` wraps one directory. Multi-repo projection is on the roadmap.
+> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is now also available in the .NET binding via the `StackManager` class.
+
+### Multi-repo with StackManager
+
+```csharp
+using var mgr = new StackManager();
+mgr.AddRepo("/photos/2024", recursive: true);
+mgr.AddRepo("/photos/2023", recursive: true);
+
+mgr.Scan();
+Console.WriteLine($"Managing {mgr.RepoCount} repos");
+
+// Query across all repos
+var page = mgr.Query(new SearchQuery().WithText("birthday"), offset: 0, limit: 20);
+foreach (var stack in page.Items)
+    Console.WriteLine($"{stack.Name} ({stack.Id})");
+```
 
 ## Installation
 
