@@ -24,27 +24,27 @@
 //! use photostax_core::backends::local::LocalRepository;
 //! use photostax_core::stack_manager::StackManager;
 //! use photostax_core::photo_stack::ScannerProfile;
-//! use photostax_core::search::{SearchQuery, PaginationParams};
+//! use photostax_core::search::SearchQuery;
 //!
 //! // Create a StackManager with a local repository
 //! let repo = LocalRepository::new("/path/to/photos");
 //! let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
-//! mgr.scan().unwrap();
 //!
-//! // Query all stacks
-//! let all = mgr.query(&SearchQuery::new(), None);
-//! for stack in &all.items {
+//! // Query all stacks (auto-scans on first call) → returns a ScanSnapshot
+//! let snap = mgr.query(None, None).unwrap();
+//! for stack in snap.stacks() {
 //!     println!("Photo: {} ({})", stack.name, stack.id);
 //! }
 //!
-//! // Search with pagination
+//! // Search with filters + pagination via snapshot
 //! let query = SearchQuery::new().with_has_back(true);
-//! let page = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+//! let snap = mgr.query(Some(&query), None).unwrap();
+//! let page = snap.get_page(0, 20);
 //! println!("{} of {} stacks", page.items.len(), page.total_count);
 //!
-//! // Iterate pages
-//! if let Some(next) = page.next_page() {
-//!     let page2 = mgr.query(&query, Some(&next));
+//! // Next page from the same snapshot
+//! if page.has_more {
+//!     let page2 = snap.get_page(20, 20);
 //! }
 //! ```
 //!
@@ -78,11 +78,14 @@
 #![warn(missing_docs)]
 
 pub mod backends;
+pub mod classifier;
 pub mod classify;
 pub mod events;
 pub mod file_access;
 pub mod hashing;
+pub mod image_handle;
 pub mod metadata;
+pub mod metadata_handle;
 pub mod photo_stack;
 pub mod repository;
 pub mod scanner;

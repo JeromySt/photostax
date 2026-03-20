@@ -53,52 +53,12 @@ public class RepositoryTests
     }
 
     [Fact]
-    public void ReadImage_NullPath_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            string? nullPath = null;
-            ArgumentNullException.ThrowIfNull(nullPath);
-        });
-    }
-
-    [Fact]
-    public void WriteMetadata_NullStackId_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            string? nullId = null;
-            ArgumentNullException.ThrowIfNull(nullId);
-        });
-    }
-
-    [Fact]
-    public void WriteMetadata_NullMetadata_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            Metadata? nullMetadata = null;
-            ArgumentNullException.ThrowIfNull(nullMetadata);
-        });
-    }
-
-    [Fact]
     public void Search_NullQuery_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
         {
             SearchQuery? nullQuery = null;
             ArgumentNullException.ThrowIfNull(nullQuery);
-        });
-    }
-
-    [Fact]
-    public void LoadMetadata_NullStackId_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            string? nullId = null;
-            ArgumentNullException.ThrowIfNull(nullId);
         });
     }
 

@@ -14,17 +14,35 @@ namespace Photostax;
 public sealed class ScanSnapshot : IDisposable
 {
     private readonly SnapshotSafeHandle _handle;
+    private readonly IntPtr _managerHandle;
     private bool _disposed;
 
-    internal ScanSnapshot(SnapshotSafeHandle handle)
+    internal ScanSnapshot(SnapshotSafeHandle handle, IntPtr managerHandle)
     {
         _handle = handle;
+        _managerHandle = managerHandle;
     }
 
     /// <summary>
     /// Gets the native handle for interop.
     /// </summary>
     internal IntPtr Handle => _handle.DangerousGetHandle();
+
+    /// <summary>
+    /// Gets a value indicating whether the snapshot is stale (filesystem has changed
+    /// since the snapshot was created).
+    /// </summary>
+    public bool IsStale
+    {
+        get
+        {
+            ThrowIfDisposed();
+            var status = NativeMethods.photostax_snapshot_check_status(
+                _managerHandle,
+                _handle.DangerousGetHandle());
+            return status.IsStale;
+        }
+    }
 
     /// <summary>
     /// Total number of stacks in the snapshot.
@@ -55,7 +73,7 @@ public sealed class ScanSnapshot : IDisposable
             (nuint)limit);
         try
         {
-            return ConvertPaginatedResult(result);
+            return PhotoStack.ConvertPaginatedResult(_managerHandle, result);
         }
         finally
         {
@@ -81,7 +99,7 @@ public sealed class ScanSnapshot : IDisposable
         if (ptr == IntPtr.Zero)
             throw new PhotostaxException("Failed to filter snapshot.");
 
-        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr));
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr), _managerHandle);
     }
 
     /// <inheritdoc />
@@ -97,28 +115,5 @@ public sealed class ScanSnapshot : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-    }
-
-    private static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)
-    {
-        var items = new List<PhotoStack>();
-
-        if (result.Data != IntPtr.Zero && result.Len > 0)
-        {
-            var structSize = Marshal.SizeOf<FfiPhotoStack>();
-            for (nuint i = 0; i < result.Len; i++)
-            {
-                var stackPtr = IntPtr.Add(result.Data, (int)i * structSize);
-                var ffiStack = Marshal.PtrToStructure<FfiPhotoStack>(stackPtr);
-                items.Add(PhotostaxRepository.ConvertStack(ffiStack));
-            }
-        }
-
-        return new PaginatedResult<PhotoStack>(
-            items,
-            (int)result.TotalCount,
-            (int)result.Offset,
-            (int)result.Limit,
-            result.HasMore);
     }
 }

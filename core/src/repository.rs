@@ -1,14 +1,17 @@
 //! Storage backend abstraction for photo repositories.
 //!
 //! This module defines the [`Repository`] trait that abstracts over different
-//! storage backends. The trait provides a common interface for scanning, reading,
-//! and writing photo stacks regardless of where they are stored.
+//! storage backends. The trait provides a common interface for scanning photo
+//! stacks regardless of where they are stored. Per-stack I/O (reading images,
+//! loading/writing metadata, rotation) is handled by [`ImageRef`] and
+//! [`MetadataRef`] handles embedded in each [`PhotoStack`].
 //!
 //! ## Backend Pattern
 //!
 //! The `Repository` trait enables a plugin architecture:
 //!
 //! - [`backends::local::LocalRepository`] — Local filesystem (implemented)
+//! - [`backends::foreign::ForeignRepository`] — Host-language-provided I/O
 //! - OneDrive, Google Drive, etc. — Cloud storage (planned)
 //!
 //! ## Example: Custom Backend
@@ -17,80 +20,59 @@
 //!
 //! ```rust,no_run
 //! use photostax_core::repository::{Repository, RepositoryError};
-//! use photostax_core::photo_stack::{ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile};
+//! use photostax_core::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
+//! use photostax_core::classifier::ImageClassifier;
+//! use photostax_core::events::RepoEvent;
 //! use photostax_core::file_access::{FileAccess, ReadSeek};
+//! use std::sync::Arc;
 //! use std::io::{self, Write};
 //!
 //! struct MyCloudRepository {
 //!     bucket: String,
 //!     location: String,
 //!     repo_id: String,
+//!     generation: std::sync::atomic::AtomicU64,
+//!     classifier: Option<Arc<dyn ImageClassifier>>,
 //! }
 //!
 //! impl FileAccess for MyCloudRepository {
 //!     fn open_read(&self, path: &str) -> io::Result<Box<dyn ReadSeek>> {
-//!         // Open cloud object for reading
 //!         todo!()
 //!     }
-//!
 //!     fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>> {
-//!         // Open cloud object for writing
 //!         todo!()
 //!     }
 //! }
 //!
 //! impl Repository for MyCloudRepository {
-//!     fn location(&self) -> &str {
-//!         &self.location
-//!     }
-//!
-//!     fn id(&self) -> &str {
-//!         &self.repo_id
-//!     }
+//!     fn location(&self) -> &str { &self.location }
+//!     fn id(&self) -> &str { &self.repo_id }
 //!
 //!     fn scan_with_progress(&self, _profile: ScannerProfile, _progress: Option<&mut dyn FnMut(&ScanProgress)>) -> Result<Vec<PhotoStack>, RepositoryError> {
-//!         // List objects in cloud bucket, group by naming convention
 //!         todo!()
 //!     }
 //!
-//!     fn scan_with_classification(&self, _mode: ClassifyMode) -> Result<Vec<PhotoStack>, RepositoryError> {
-//!         self.scan_with_progress(_mode.into(), None)
+//!     fn generation(&self) -> u64 {
+//!         self.generation.load(std::sync::atomic::Ordering::Acquire)
 //!     }
 //!
-//!     fn load_metadata(&self, _stack: &mut PhotoStack) -> Result<(), RepositoryError> {
-//!         // Fetch EXIF/XMP from cloud storage
-//!         todo!()
-//!     }
-//!
-//!     fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError> {
-//!         // Fetch specific stack by ID
-//!         todo!()
-//!     }
-//!
-//!     fn read_image(&self, path: &str) -> Result<Box<dyn photostax_core::file_access::ReadSeek>, RepositoryError> {
-//!         // Stream image bytes from cloud
-//!         todo!()
-//!     }
-//!
-//!     fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
-//!         // Upload metadata to cloud
-//!         todo!()
-//!     }
-//!
-//!     fn rotate_stack(&self, id: &str, rotation: Rotation, target: RotationTarget) -> Result<PhotoStack, RepositoryError> {
-//!         // Download, rotate, re-upload
-//!         todo!()
+//!     fn set_classifier(&mut self, classifier: Arc<dyn ImageClassifier>) {
+//!         self.classifier = Some(classifier);
 //!     }
 //! }
 //! ```
 //!
 //! [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
+//! [`ImageRef`]: crate::image_handle::ImageRef
+//! [`MetadataRef`]: crate::metadata_handle::MetadataRef
+//! [`PhotoStack`]: crate::photo_stack::PhotoStack
 
-use crate::events::StackEvent;
+use std::sync::Arc;
+
+use crate::classifier::ImageClassifier;
+use crate::events::{RepoEvent, StackEvent};
 use crate::file_access::FileAccess;
-use crate::photo_stack::{
-    ClassifyMode, Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
-};
+use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
 
 /// Errors that can occur when interacting with a photo repository.
 ///
@@ -121,12 +103,25 @@ pub enum RepositoryError {
     /// failures, network timeouts, or serialization errors.
     #[error("{0}")]
     Other(String),
+
+    /// The photo stack has been deleted and its handles are no longer valid.
+    ///
+    /// Returned when an operation is attempted on an [`ImageRef`](crate::image_handle::ImageRef)
+    /// or [`MetadataRef`](crate::metadata_handle::MetadataRef) whose backing
+    /// handle has been invalidated (e.g., after the file was deleted from disk).
+    #[error("photo stack has been deleted")]
+    StackDeleted,
 }
 
 /// Abstraction over a storage backend containing Epson FastFoto photo stacks.
 ///
 /// Implementations exist for local filesystem access ([`backends::local::LocalRepository`]),
 /// with cloud storage backends (OneDrive, Google Drive) planned for future releases.
+///
+/// Per-stack I/O (reading images, loading/writing metadata, rotation) is handled
+/// by the [`ImageRef`](crate::image_handle::ImageRef) and
+/// [`MetadataRef`](crate::metadata_handle::MetadataRef) handles embedded in each
+/// [`PhotoStack`].
 ///
 /// # Thread Safety
 ///
@@ -151,10 +146,10 @@ pub enum RepositoryError {
 /// let stacks = repo.scan()?;
 /// println!("Found {} stacks", stacks.len());
 ///
-/// // Load metadata only when needed
+/// // Metadata is loaded lazily via the handle
 /// let mut stack = stacks.into_iter().next().unwrap();
-/// repo.load_metadata(&mut stack)?;
-/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, stack.metadata.exif_tags.len());
+/// let meta = stack.metadata.read()?;
+/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, meta.exif_tags.len());
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
@@ -196,17 +191,6 @@ pub trait Repository: FileAccess {
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
     ) -> Result<Vec<PhotoStack>, RepositoryError>;
 
-    /// Scan the repository with the given classification mode.
-    ///
-    /// Convenience wrapper around [`scan_with_progress`](Self::scan_with_progress)
-    /// with no progress callback.
-    fn scan_with_classification(
-        &self,
-        mode: ClassifyMode,
-    ) -> Result<Vec<PhotoStack>, RepositoryError> {
-        self.scan_with_progress(mode.into(), None)
-    }
-
     /// Scan the repository and return all discovered photo stacks.
     ///
     /// This is equivalent to calling
@@ -221,91 +205,28 @@ pub trait Repository: FileAccess {
         self.scan_with_progress(ScannerProfile::Auto, None)
     }
 
-    /// Load EXIF, XMP, and sidecar metadata into an existing photo stack.
+    /// Current structural generation counter.
     ///
-    /// Populates the stack's [`Metadata`] by reading:
-    /// 1. EXIF tags from the enhanced (preferred) or original image file
-    /// 2. Embedded XMP from JPEG files
-    /// 3. XMP sidecar file (`.xmp`) — highest priority, overrides above
-    /// 4. Folder name metadata — lowest priority, fills gaps
+    /// Bumps on stack add/remove. Used by [`ScanSnapshot::is_stale`] to
+    /// detect whether cached data is still current without re-scanning.
     ///
-    /// This is the lazy counterpart to scanning: call it only when you need
-    /// a stack's full metadata (e.g., for display, search, or export).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RepositoryError::Io`] if metadata files cannot be read.
-    fn load_metadata(&self, stack: &mut PhotoStack) -> Result<(), RepositoryError>;
+    /// [`ScanSnapshot::is_stale`]: crate::snapshot::ScanSnapshot::is_stale
+    fn generation(&self) -> u64;
 
-    /// Retrieve a single photo stack by its ID.
+    /// Set the image classifier for this repo.
     ///
-    /// The ID is the base filename without the `_a`/`_b` suffix or extension.
-    /// Returns a lightweight stack without file-based metadata loaded.
-    /// Call [`load_metadata`](Self::load_metadata) to populate EXIF/XMP/sidecar data.
-    ///
-    /// # Errors
-    ///
-    /// - [`RepositoryError::NotFound`] if no stack with the given ID exists
-    /// - [`RepositoryError::Io`] if the repository cannot be accessed
-    fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError>;
+    /// Called by [`StackManager`](crate::stack_manager::StackManager) at
+    /// registration time so all repos in a session share a single classifier.
+    fn set_classifier(&mut self, classifier: Arc<dyn ImageClassifier>);
 
-    /// Read an image file as a seekable stream.
+    /// Subscribe to structural changes ([`RepoEvent::StackAdded`] / [`RepoEvent::StackRemoved`]).
     ///
-    /// The path should be one of the paths from a [`PhotoStack`] (original, enhanced, or back).
-    /// Returns a boxed stream that supports both reading and seeking.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RepositoryError::Io`] if the file cannot be read.
-    fn read_image(
-        &self,
-        path: &str,
-    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError>;
-
-    /// Write metadata tags to the files in a photo stack.
-    ///
-    /// The behavior depends on the metadata type:
-    ///
-    /// - **XMP tags**: Written directly to image files (JPEG) or sidecar `.xmp` files (TIFF)
-    /// - **Custom tags**: Stored in the XMP sidecar file (`.xmp`)
-    /// - **EXIF tags**: Stored as overrides in the XMP sidecar file (direct EXIF writing is avoided for safety)
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RepositoryError::Other`] if metadata cannot be written.
-    fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError>;
-
-    /// Rotate images in a photo stack by the given angle.
-    ///
-    /// The `target` parameter controls which images are rotated:
-    ///
-    /// | Target | Images rotated |
-    /// |--------|----------------|
-    /// | [`All`](RotationTarget::All) | original + enhanced + back |
-    /// | [`Front`](RotationTarget::Front) | original + enhanced only |
-    /// | [`Back`](RotationTarget::Back) | back only |
-    ///
-    /// After rotation the stack is returned with refreshed metadata so
-    /// callers can immediately use the updated state.
-    ///
-    /// # Supported Formats
-    ///
-    /// | Format | Behaviour |
-    /// |--------|-----------|
-    /// | JPEG | Decoded → rotated → re-encoded (lossy) |
-    /// | TIFF | Decoded → rotated → re-encoded |
-    ///
-    /// # Errors
-    ///
-    /// - [`RepositoryError::NotFound`] if the stack ID does not exist
-    /// - [`RepositoryError::Io`] if any image file cannot be read or written
-    /// - [`RepositoryError::Other`] if an image cannot be decoded
-    fn rotate_stack(
-        &self,
-        id: &str,
-        rotation: Rotation,
-        target: RotationTarget,
-    ) -> Result<PhotoStack, RepositoryError>;
+    /// Returns a receiver. Drop it to unsubscribe. The default implementation
+    /// returns a receiver that never produces events.
+    fn subscribe(&self) -> Result<std::sync::mpsc::Receiver<RepoEvent>, RepositoryError> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        Ok(rx)
+    }
 
     /// Start watching for file changes. Returns a receiver for StackEvents.
     /// Default implementation returns a receiver that never produces events.
@@ -371,6 +292,15 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let repo = LocalRepository::new(tmp.path());
         let rx = repo.watch();
+        assert!(rx.is_ok());
+    }
+
+    #[test]
+    fn test_default_subscribe_returns_receiver() {
+        use crate::backends::local::LocalRepository;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = LocalRepository::new(tmp.path());
+        let rx = repo.subscribe();
         assert!(rx.is_ok());
     }
 }

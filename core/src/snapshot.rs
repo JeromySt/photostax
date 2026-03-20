@@ -36,7 +36,7 @@
 //! # Ok::<(), photostax_core::repository::RepositoryError>(())
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
@@ -54,6 +54,8 @@ use crate::search::{
 pub struct ScanSnapshot {
     stacks: Vec<PhotoStack>,
     ids: HashSet<String>,
+    /// Per-repo generation counters captured at snapshot time.
+    repo_generations: HashMap<String, u64>,
 }
 
 /// Result of checking a snapshot against the current repository state.
@@ -124,11 +126,15 @@ impl ScanSnapshot {
         let mut stacks = repo.scan_with_progress(profile, progress)?;
         if load_metadata {
             for stack in &mut stacks {
-                repo.load_metadata(stack)?;
+                let _ = stack.metadata.read()?;
             }
         }
         let ids = stacks.iter().map(|s| s.id.clone()).collect();
-        Ok(Self { stacks, ids })
+        Ok(Self {
+            stacks,
+            ids,
+            repo_generations: HashMap::new(),
+        })
     }
 
     /// Create a snapshot from a pre-existing vector of stacks.
@@ -136,7 +142,11 @@ impl ScanSnapshot {
     /// Useful for creating filtered sub-snapshots or testing.
     pub fn from_stacks(stacks: Vec<PhotoStack>) -> Self {
         let ids = stacks.iter().map(|s| s.id.clone()).collect();
-        Self { stacks, ids }
+        Self {
+            stacks,
+            ids,
+            repo_generations: HashMap::new(),
+        }
     }
 
     /// Total number of stacks in the snapshot.
@@ -171,6 +181,24 @@ impl ScanSnapshot {
         &self.ids
     }
 
+    /// Returns `true` if any repo generation has advanced since this snapshot
+    /// was created, meaning cached data may be out of date.
+    pub fn is_stale(&self, current_generations: &HashMap<String, u64>) -> bool {
+        for (repo_id, &snap_gen) in &self.repo_generations {
+            if let Some(&current_gen) = current_generations.get(repo_id) {
+                if current_gen > snap_gen {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Set the repo generation map (used by `StackManager` when building a snapshot).
+    pub fn set_repo_generations(&mut self, gens: HashMap<String, u64>) {
+        self.repo_generations = gens;
+    }
+
     /// Check whether the snapshot is still current.
     ///
     /// Performs a fast scan (no metadata I/O) and compares the resulting
@@ -199,11 +227,51 @@ impl ScanSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashing::ImageFile;
+    use crate::image_handle::ImageRef;
+    use std::sync::Arc;
+
+    struct MockImg;
+    impl crate::image_handle::ImageHandle for MockImg {
+        fn read(
+            &self,
+        ) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError>
+        {
+            Ok(Box::new(std::io::Cursor::new(vec![])))
+        }
+        fn stream(
+            &self,
+        ) -> Result<
+            crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>,
+            crate::repository::RepositoryError,
+        > {
+            Ok(crate::hashing::HashingReader::new(Box::new(
+                std::io::Cursor::new(vec![]),
+            )))
+        }
+        fn hash(&self) -> Result<String, crate::repository::RepositoryError> {
+            Ok("0000000000000000".into())
+        }
+        fn dimensions(&self) -> Result<(u32, u32), crate::repository::RepositoryError> {
+            Ok((1, 1))
+        }
+        fn size(&self) -> u64 {
+            0
+        }
+        fn rotate(
+            &self,
+            _: crate::photo_stack::Rotation,
+        ) -> Result<(), crate::repository::RepositoryError> {
+            Ok(())
+        }
+        fn is_valid(&self) -> bool {
+            true
+        }
+        fn invalidate(&self) {}
+    }
 
     fn make_stack(id: &str) -> PhotoStack {
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
+        stack.original = ImageRef::new(Arc::new(MockImg));
         stack
     }
 
@@ -275,8 +343,8 @@ mod tests {
     #[test]
     fn test_filter_returns_subset() {
         let mut stacks = make_stacks(4);
-        stacks[0].back = Some(ImageFile::new("IMG_000_b.jpg", 0));
-        stacks[2].back = Some(ImageFile::new("IMG_002_b.jpg", 0));
+        stacks[0].back = ImageRef::new(Arc::new(MockImg));
+        stacks[2].back = ImageRef::new(Arc::new(MockImg));
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));
@@ -290,11 +358,11 @@ mod tests {
     fn test_filter_then_page() {
         let mut stacks = make_stacks(10);
         for s in &mut stacks {
-            s.back = Some(ImageFile::new(format!("{}_b.jpg", s.id), 0));
+            s.back = ImageRef::new(Arc::new(MockImg));
         }
         // Remove back from two stacks
-        stacks[3].back = None;
-        stacks[7].back = None;
+        stacks[3].back = ImageRef::absent();
+        stacks[7].back = ImageRef::absent();
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));

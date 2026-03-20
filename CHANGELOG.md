@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-20
+
+### ⚠️ BREAKING CHANGES
+
+This is a major architecture redesign. See [MIGRATION.md](docs/MIGRATION.md) for upgrade guidance.
+
+#### PhotoStack-Centric API
+- **PhotoStack** is now the primary user-facing object for all I/O operations
+- `stack.original.read()`, `stack.enhanced.hash()`, `stack.back.rotate()` — per-image operations via `ImageRef`
+- `stack.metadata.read()`, `stack.metadata.write()` — metadata operations via `MetadataRef`
+- `stack.original.is_present()` replaces `stack.original.is_some()`
+
+#### Repository Trait Simplified
+- Removed: `load_metadata()`, `get_stack()`, `read_image()`, `write_metadata()`, `rotate_stack()`
+- Added: `generation()`, `set_classifier()`, `subscribe()`
+- Repository is now a pure structural provider — creates PhotoStacks with embedded handles
+
+#### SessionManager (formerly StackManager)
+- `SessionManager` type alias added (StackManager still works)
+- Removed per-stack routing methods (load_metadata, write_metadata, rotate_stack, read_image)
+- Added `query(&SearchQuery) -> ScanSnapshot` for unified search + pagination
+- Added `subscribe_cache_events()` for cache change notifications
+
+#### New Traits
+- `ImageHandle` — per-file I/O abstraction (read, stream, hash, dimensions, rotate)
+- `MetadataHandle` — per-stack metadata I/O (load, write)
+- `ImageClassifier` — pluggable image classification (DI'd, owned by SessionManager)
+
+#### New Types
+- `ImageRef` — user-facing accessor wrapping `Arc<dyn ImageHandle>` with caching
+- `MetadataRef` — user-facing accessor wrapping `Arc<dyn MetadataHandle>` with lazy loading
+- `LocalImageHandle` / `LocalMetadataHandle` — filesystem-backed implementations
+- `RepoEvent`, `HandleEvent`, `SnapshotEvent`, `StalenessReason` — notification types
+
+#### ScanSnapshot Improvements
+- Added `repo_generations` for O(1) staleness detection
+- Added `is_stale()` method
+- Snapshots now contain PhotoStacks with live handles
+
+#### Search
+- Added `repo_id` filter to `SearchQuery` via `with_repo_id()`
+
+### Removed
+- `Option<ImageFile>` fields on PhotoStack (replaced by `ImageRef`)
+- `Metadata` field on PhotoStack (replaced by `MetadataRef`)
+- `PhotoStack::format()` method
+- `Serialize`/`Deserialize` derives on PhotoStack
+- Per-stack operations on Repository and StackManager traits
+
 ## [0.3.0] - 2026-03-20
 
 ### Added
@@ -260,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Repository creation and scanning
   - Version information
 
+[0.4.0]: https://github.com/JeromySt/photostax/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/JeromySt/photostax/compare/v0.1.13...v0.2.0
 [0.1.10]: https://github.com/JeromySt/photostax/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/JeromySt/photostax/compare/v0.1.8...v0.1.9

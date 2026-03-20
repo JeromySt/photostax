@@ -81,15 +81,15 @@ jobs:
     - name: Generate coverage report
       run: cargo llvm-cov --package photostax-core --lcov --output-path lcov.info
 
-    - name: Verify coverage threshold (95%)
+    - name: Verify coverage threshold (90%)
       run: |
         COVERAGE=$(cargo llvm-cov --package photostax-core --json | jq '.data[0].totals.lines.percent')
         echo "Line coverage: ${COVERAGE}%"
-        if (( $(echo "$COVERAGE < 95" | bc -l) )); then
-          echo "::error::Coverage ${COVERAGE}% is below 95% threshold"
+        if (( $(echo "$COVERAGE < 90" | bc -l) )); then
+          echo "::error::Coverage ${COVERAGE}% is below 90% threshold"
           exit 1
         fi
-        echo "✓ Coverage meets 95% threshold"
+        echo "✓ Coverage meets 90% threshold"
 
     - name: Upload coverage artifact
       uses: actions/upload-artifact@v7

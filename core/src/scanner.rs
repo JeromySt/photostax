@@ -33,11 +33,7 @@
 //! let stacks = scan_directory(Path::new("/photos"), &config, "file:///photos")?;
 //!
 //! for stack in stacks {
-//!     println!("{} (id={}): {} files", stack.name, stack.id, [
-//!         stack.original.as_ref(),
-//!         stack.enhanced.as_ref(),
-//!         stack.back.as_ref(),
-//!     ].iter().filter(|x| x.is_some()).count());
+//!     println!("{} (id={}): {} files", stack.name, stack.id, stack.image_count());
 //! }
 //! # Ok::<(), std::io::Error>(())
 //! ```
@@ -45,8 +41,10 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::Arc;
 
-use crate::hashing::ImageFile;
+use crate::backends::local_handles::LocalImageHandle;
+use crate::image_handle::ImageRef;
 use crate::photo_stack::PhotoStack;
 
 /// A file entry for abstract scanning (filesystem-agnostic).
@@ -61,7 +59,7 @@ pub struct FileEntry {
     /// The relative folder path within the repository (empty string for root).
     /// Uses forward slashes as separators (e.g., `"2024/January"`).
     pub folder: String,
-    /// The full path or URI to the file (stored in the resulting `ImageFile`).
+    /// The full path or URI to the file (stored in the resulting `ImageRef`).
     pub path: String,
     /// File size in bytes.
     pub size: u64,
@@ -128,14 +126,17 @@ pub fn scan_entries(
             s
         });
 
+        let handle = Arc::new(LocalImageHandle::new(&entry.path, entry.size));
         match variant {
             Variant::Original => {
-                stack.original = Some(ImageFile::new(entry.path.clone(), entry.size))
+                stack.original = ImageRef::new(handle);
             }
             Variant::Enhanced => {
-                stack.enhanced = Some(ImageFile::new(entry.path.clone(), entry.size))
+                stack.enhanced = ImageRef::new(handle);
             }
-            Variant::Back => stack.back = Some(ImageFile::new(entry.path.clone(), entry.size)),
+            Variant::Back => {
+                stack.back = ImageRef::new(handle);
+            }
         }
     }
 
@@ -552,14 +553,14 @@ mod tests {
         assert_eq!(stacks.len(), 2);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
-        assert!(s1.back.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
+        assert!(s1.back.is_present());
 
         let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert!(s2.original.is_some());
-        assert!(s2.enhanced.is_none());
-        assert!(s2.back.is_none());
+        assert!(s2.original.is_present());
+        assert!(!s2.enhanced.is_present());
+        assert!(!s2.back.is_present());
     }
 
     #[test]
@@ -596,12 +597,12 @@ mod tests {
         assert_eq!(stacks.len(), 2);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
-        assert!(s1.back.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
+        assert!(s1.back.is_present());
 
         let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert!(s2.original.is_some());
+        assert!(s2.original.is_present());
     }
 
     #[test]
@@ -621,12 +622,12 @@ mod tests {
         assert_eq!(stacks.len(), 2);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
 
         let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert!(s2.original.is_some());
-        assert!(s2.enhanced.is_some());
+        assert!(s2.original.is_present());
+        assert!(s2.enhanced.is_present());
     }
 
     #[test]
@@ -644,17 +645,8 @@ mod tests {
         assert_eq!(stacks.len(), 1);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.back.is_some());
-        // Verify they have different extensions
-        let orig_ext = Path::new(&s1.original.as_ref().unwrap().path)
-            .extension()
-            .unwrap();
-        let back_ext = Path::new(&s1.back.as_ref().unwrap().path)
-            .extension()
-            .unwrap();
-        assert_eq!(orig_ext, "jpg");
-        assert_eq!(back_ext, "tif");
+        assert!(s1.original.is_present());
+        assert!(s1.back.is_present());
     }
 
     #[test]
@@ -713,9 +705,9 @@ mod tests {
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
         assert_eq!(s.name, "IMG_001");
-        assert!(s.original.is_none());
-        assert!(s.enhanced.is_some());
-        assert!(s.back.is_none());
+        assert!(!s.original.is_present());
+        assert!(s.enhanced.is_present());
+        assert!(!s.back.is_present());
     }
 
     #[test]
@@ -732,9 +724,9 @@ mod tests {
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
         assert_eq!(s.name, "IMG_001");
-        assert!(s.original.is_none());
-        assert!(s.enhanced.is_none());
-        assert!(s.back.is_some());
+        assert!(!s.original.is_present());
+        assert!(!s.enhanced.is_present());
+        assert!(s.back.is_present());
     }
 
     #[test]
@@ -757,9 +749,9 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         let s = &stacks[0];
-        assert!(s.original.is_some());
-        assert!(s.enhanced.is_some());
-        assert!(s.back.is_some());
+        assert!(s.original.is_present());
+        assert!(s.enhanced.is_present());
+        assert!(s.back.is_present());
     }
 
     #[test]
@@ -893,17 +885,17 @@ mod tests {
         let s3 = stacks.iter().find(|s| s.name == "IMG_003").unwrap();
 
         // Verify the root stack has enhanced image
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
         assert!(s1.folder.is_none());
 
         // Verify the subdirectory stack has back image
-        assert!(s2.original.is_some());
-        assert!(s2.back.is_some());
+        assert!(s2.original.is_present());
+        assert!(s2.back.is_present());
         assert_eq!(s2.folder.as_deref(), Some("batch2"));
 
         // Verify the nested stack exists
-        assert!(s3.original.is_some());
+        assert!(s3.original.is_present());
         assert_eq!(s3.folder.as_deref(), Some("batch2/deep"));
     }
 

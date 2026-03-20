@@ -204,6 +204,9 @@ pub struct SearchQuery {
 
     /// Allowlist of stack IDs. When set, only stacks whose ID is in this list are returned.
     pub stack_ids: Option<Vec<String>>,
+
+    /// Filter to stacks from a specific repository.
+    pub repo_id: Option<String>,
 }
 
 impl SearchQuery {
@@ -340,6 +343,24 @@ impl SearchQuery {
         self.stack_ids = Some(ids);
         self
     }
+
+    /// Filter to stacks from a specific repository.
+    ///
+    /// When set, only stacks whose `repo_id` matches the given value are
+    /// included in results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// let query = SearchQuery::new()
+    ///     .with_repo_id("file:///photos");
+    /// ```
+    pub fn with_repo_id(mut self, repo_id: impl Into<String>) -> Self {
+        self.repo_id = Some(repo_id.into());
+        self
+    }
 }
 
 /// Filter a collection of photo stacks based on a search query.
@@ -384,6 +405,14 @@ pub(crate) fn matches_query_ref(stack: &PhotoStack, query: &SearchQuery) -> bool
 
 /// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    // Check repo_id filter
+    if let Some(ref repo_id) = query.repo_id {
+        match &stack.repo_id {
+            Some(stack_repo) if stack_repo == repo_id => {}
+            _ => return false,
+        }
+    }
+
     // Check stack ID/name allowlist
     if let Some(ref ids) = query.stack_ids {
         if !ids.iter().any(|id| id == &stack.id || id == &stack.name) {
@@ -393,20 +422,24 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 
     // Check structural filters
     if let Some(has_back) = query.has_back {
-        if stack.back.is_some() != has_back {
+        if stack.back.is_present() != has_back {
             return false;
         }
     }
 
     if let Some(has_enhanced) = query.has_enhanced {
-        if stack.enhanced.is_some() != has_enhanced {
+        if stack.enhanced.is_present() != has_enhanced {
             return false;
         }
     }
 
+    // Get cached metadata (search only works on loaded metadata)
+    let empty_metadata = crate::photo_stack::Metadata::default();
+    let meta = stack.metadata.cached().unwrap_or(&empty_metadata);
+
     // Check EXIF tag filters
     for (key, contains) in &query.exif_filters {
-        match stack.metadata.exif_tags.get(key) {
+        match meta.exif_tags.get(key) {
             Some(value) if value.to_lowercase().contains(&contains.to_lowercase()) => {}
             _ => return false,
         }
@@ -414,7 +447,7 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 
     // Check custom tag filters
     for (key, contains) in &query.custom_filters {
-        match stack.metadata.custom_tags.get(key) {
+        match meta.custom_tags.get(key) {
             Some(value) => {
                 let value_str = match value {
                     serde_json::Value::String(s) => s.clone(),
@@ -428,10 +461,9 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
         }
     }
 
-    // Check free-text search
+    // Check free-text search (matches name, folder, and metadata — NOT opaque ID)
     if let Some(ref text) = query.text_query {
         let text_lower = text.to_lowercase();
-        let found_in_id = stack.id.to_lowercase().contains(&text_lower);
         let found_in_name = stack.name.to_lowercase().contains(&text_lower);
         let found_in_folder = stack
             .folder
@@ -439,12 +471,11 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             .unwrap_or("")
             .to_lowercase()
             .contains(&text_lower);
-        let found_in_exif = stack
-            .metadata
+        let found_in_exif = meta
             .exif_tags
             .values()
             .any(|v| v.to_lowercase().contains(&text_lower));
-        let found_in_custom = stack.metadata.custom_tags.values().any(|v| {
+        let found_in_custom = meta.custom_tags.values().any(|v| {
             let s = match v {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -452,8 +483,7 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             s.to_lowercase().contains(&text_lower)
         });
 
-        if !found_in_id && !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom
-        {
+        if !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom {
             return false;
         }
     }
@@ -472,7 +502,58 @@ mod tests {
         exif: Vec<(&str, &str)>,
         custom: Vec<(&str, &str)>,
     ) -> PhotoStack {
-        use crate::hashing::ImageFile;
+        use crate::image_handle::ImageRef;
+        use crate::metadata_handle::{MetadataHandle, MetadataRef};
+        use crate::repository::RepositoryError;
+        use std::sync::Arc;
+
+        // Inline metadata handle that returns the provided metadata
+        struct InlineMetadataHandle {
+            data: Metadata,
+        }
+        impl MetadataHandle for InlineMetadataHandle {
+            fn load(&self) -> Result<Metadata, RepositoryError> {
+                Ok(self.data.clone())
+            }
+            fn write(&self, _: &Metadata) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+            fn is_valid(&self) -> bool {
+                true
+            }
+        }
+
+        // Mock image handle
+        struct MockImg;
+        impl crate::image_handle::ImageHandle for MockImg {
+            fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+                Ok(Box::new(std::io::Cursor::new(vec![])))
+            }
+            fn stream(
+                &self,
+            ) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, RepositoryError>
+            {
+                Ok(crate::hashing::HashingReader::new(Box::new(
+                    std::io::Cursor::new(vec![]),
+                )))
+            }
+            fn hash(&self) -> Result<String, RepositoryError> {
+                Ok("0000000000000000".into())
+            }
+            fn dimensions(&self) -> Result<(u32, u32), RepositoryError> {
+                Ok((1, 1))
+            }
+            fn size(&self) -> u64 {
+                0
+            }
+            fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+            fn is_valid(&self) -> bool {
+                true
+            }
+            fn invalidate(&self) {}
+        }
 
         let mut metadata = Metadata::default();
         for (k, v) in exif {
@@ -484,14 +565,18 @@ mod tests {
                 .insert(k.to_string(), serde_json::json!(v));
         }
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
-        stack.enhanced = Some(ImageFile::new(format!("{id}_a.jpg"), 0));
+        stack.original = ImageRef::new(Arc::new(MockImg));
+        stack.enhanced = ImageRef::new(Arc::new(MockImg));
         stack.back = if has_back {
-            Some(ImageFile::new(format!("{id}_b.jpg"), 0))
+            ImageRef::new(Arc::new(MockImg))
         } else {
-            None
+            ImageRef::absent()
         };
-        stack.metadata = metadata;
+        // Pre-load metadata into the MetadataRef
+        let handle = Arc::new(InlineMetadataHandle { data: metadata });
+        let mut mref = MetadataRef::new(handle);
+        let _ = mref.read(); // trigger load to cache it
+        stack.metadata = mref;
         stack
     }
 
@@ -580,7 +665,7 @@ mod tests {
     fn test_filter_by_has_enhanced_true() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
             let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = None;
+            s.enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
@@ -594,7 +679,7 @@ mod tests {
     fn test_filter_by_has_enhanced_false() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
             let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = None;
+            s.enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
@@ -688,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn test_text_query_matches_stack_id() {
+    fn test_text_query_matches_stack_name() {
         let stacks = vec![
             make_stack("FamilyPhotos_001", false, vec![], vec![]),
             make_stack("VacationPics_002", false, vec![], vec![]),
@@ -697,23 +782,29 @@ mod tests {
         let q = SearchQuery::new().with_text("Family");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "FamilyPhotos_001");
+        assert_eq!(results[0].name, "FamilyPhotos_001");
+    }
+
+    #[test]
+    fn test_text_query_does_not_match_opaque_id() {
+        // Opaque hex IDs should not be searchable by text
+        let mut stack = make_stack("IMG_001", false, vec![], vec![]);
+        stack.id = "abc123def456".to_string();
+        stack.name = "IMG_001".to_string();
+
+        let q = SearchQuery::new().with_text("abc123");
+        let results = filter_stacks(&[stack], &q);
+        assert_eq!(results.len(), 0); // should NOT match opaque ID
     }
 
     #[test]
     fn test_custom_tag_with_non_string_values() {
-        let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(crate::hashing::ImageFile::new("IMG_001.jpg", 0));
-        stack
-            .metadata
-            .custom_tags
-            .insert("count".to_string(), serde_json::json!(42));
-        stack
-            .metadata
-            .custom_tags
-            .insert("tags".to_string(), serde_json::json!(["a", "b", "c"]));
-
-        let stacks = vec![stack];
+        let stacks = vec![make_stack(
+            "IMG_001",
+            false,
+            vec![],
+            vec![("count", "42"), ("tags", "[\"a\",\"b\",\"c\"]")],
+        )];
 
         // Number value search
         let q = SearchQuery::new().with_custom_filter("count", "42");
@@ -735,6 +826,7 @@ mod tests {
         assert!(q.has_back.is_none());
         assert!(q.has_enhanced.is_none());
         assert!(q.stack_ids.is_none());
+        assert!(q.repo_id.is_none());
     }
 
     #[test]

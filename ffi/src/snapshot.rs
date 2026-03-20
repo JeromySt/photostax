@@ -49,23 +49,28 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
-    let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
-        match img {
-            Some(f) => {
-                let s = f.path.clone();
-                CString::new(s)
-                    .map(|cs| cs.into_raw())
-                    .unwrap_or(ptr::null_mut())
-            }
-            None => ptr::null_mut(),
+    let image_ref_to_c = |img: &photostax_core::image_handle::ImageRef| -> *mut c_char {
+        if img.is_present() {
+            CString::new("present")
+                .map(|cs| cs.into_raw())
+                .unwrap_or(ptr::null_mut())
+        } else {
+            ptr::null_mut()
         }
     };
 
-    let metadata_json = serde_json::json!({
-        "exif_tags": stack.metadata.exif_tags,
-        "xmp_tags": stack.metadata.xmp_tags,
-        "custom_tags": stack.metadata.custom_tags,
-    });
+    let metadata_json = match stack.metadata.cached() {
+        Some(m) => serde_json::json!({
+            "exif_tags": m.exif_tags,
+            "xmp_tags": m.xmp_tags,
+            "custom_tags": m.custom_tags,
+        }),
+        None => serde_json::json!({
+            "exif_tags": {},
+            "xmp_tags": {},
+            "custom_tags": {},
+        }),
+    };
     let metadata_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
     let metadata_json_ptr = std::ffi::CString::new(metadata_str)
         .map(|s| s.into_raw())
@@ -80,9 +85,9 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
             .and_then(|f| CString::new(f).ok())
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut()),
-        original: path_to_c_string(&stack.original),
-        enhanced: path_to_c_string(&stack.enhanced),
-        back: path_to_c_string(&stack.back),
+        original: image_ref_to_c(&stack.original),
+        enhanced: image_ref_to_c(&stack.enhanced),
+        back: image_ref_to_c(&stack.back),
         metadata_json: metadata_json_ptr,
     }
 }
@@ -110,13 +115,16 @@ pub unsafe extern "C" fn photostax_create_snapshot(
 
         let repo_ref = unsafe { &*repo };
         let mut mgr = repo_ref.inner.borrow_mut();
-        let scan_result = if load_metadata {
-            mgr.scan_with_metadata()
-        } else {
-            mgr.scan()
-        };
-        if scan_result.is_err() {
+        if mgr.rescan(None).is_err() {
             return ptr::null_mut();
+        }
+        if load_metadata {
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in &ids {
+                if let Some(s) = mgr.get_stack_mut(id) {
+                    let _ = s.metadata.read();
+                }
+            }
         }
         let snap = mgr.snapshot();
         drop(mgr);
@@ -173,13 +181,15 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
             };
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.scan_with_progress(progress).is_err() {
+        if mgr.rescan(progress).is_err() {
             return ptr::null_mut();
         }
         if load_metadata {
-            let all = mgr.query(&photostax_core::search::SearchQuery::new(), None);
-            for stack in &all.items {
-                let _ = mgr.load_metadata(&stack.id);
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in &ids {
+                if let Some(s) = mgr.get_stack_mut(id) {
+                    let _ = s.metadata.read();
+                }
             }
         }
         let snap = mgr.snapshot();
@@ -299,7 +309,7 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
 
         // Re-scan to get the current state for comparison
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.scan().is_err() {
+        if mgr.rescan(None).is_err() {
             return error_status;
         }
         let status = mgr.check_status(&snap.inner);

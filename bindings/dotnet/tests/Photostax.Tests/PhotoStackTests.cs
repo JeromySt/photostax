@@ -11,14 +11,14 @@ public class PhotoStackTests
     public void Constructor_NullId_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new PhotoStack(null!, "name", null, null, null, null, new Metadata()));
+            new PhotoStack(IntPtr.Zero, null!, "name", null, null, null, null, new Metadata()));
     }
 
     [Fact]
     public void Constructor_NullMetadata_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new PhotoStack("id", "name", null, null, null, null, null!));
+            new PhotoStack(IntPtr.Zero, "id", "name", null, null, null, null, null!));
     }
 
     [Fact]
@@ -205,6 +205,7 @@ public class PhotoStackTests
         Metadata? metadata = null)
     {
         return new PhotoStack(
+            IntPtr.Zero,
             id,
             id,
             null,

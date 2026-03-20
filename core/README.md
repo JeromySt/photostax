@@ -26,26 +26,43 @@ cargo add photostax-core
 
 ## Features
 
+- **PhotoStack-centric API** — all I/O through `stack.original.read()`, `stack.metadata.write()`, etc.
 - **Multi-format support** — JPEG (`.jpg`, `.jpeg`) and TIFF (`.tif`, `.tiff`)
-- **PhotoStack abstraction** — Groups front, enhanced, and back scans into a single unit
-- **Repository trait** — Pluggable storage backends (local filesystem included)
-- **Metadata support** — Read EXIF, read/write XMP, and custom sidecar database
-- **Search & filter** — Query stacks by metadata with a fluent builder API
-- **Pagination** — Fetch pages of results by offset and limit for efficient web rendering
+- **ImageRef / MetadataRef** — lazy, cached accessors for image data and metadata
+- **Repository trait** — pluggable storage backends (local filesystem included)
+- **SessionManager** — multi-repo cache with unified query and pagination
+- **Search & filter** — query stacks by metadata with a fluent builder API
+- **ScanSnapshot** — point-in-time snapshots with O(1) staleness detection
 
 ## Quick Start
 
 ```rust
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::repository::Repository;
+use photostax_core::stack_manager::StackManager;
+use photostax_core::photo_stack::ScannerProfile;
+use photostax_core::search::SearchQuery;
 
+// Create a manager with a local repository
 let repo = LocalRepository::new("/path/to/photos");
-let stacks = repo.scan().unwrap();
+let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
+mgr.scan().unwrap();
 
-for stack in &stacks {
-    println!("Photo: {}", stack.id);
-    if let Some(ref back) = stack.back {
-        println!("  Has back scan: {}", back.display());
+// Query all stacks → returns a ScanSnapshot
+let snap = mgr.query(&SearchQuery::new());
+
+for stack in snap.stacks() {
+    println!("Photo: {} ({})", stack.name, stack.id);
+
+    // Read original image via ImageRef
+    if stack.original.is_present() {
+        let mut reader = stack.original.read().unwrap();
+        // ... process image bytes ...
+    }
+
+    // Read metadata via MetadataRef (lazy-loaded)
+    let meta = stack.metadata.read().unwrap();
+    if let Some(make) = meta.exif_tags.get("Make") {
+        println!("  Camera: {make}");
     }
 }
 ```
@@ -56,42 +73,47 @@ for stack in &stacks {
 
 | Type | Description |
 |------|-------------|
-| `PhotoStack` | Represents a grouped photo with original, enhanced, and back scans |
-| `Metadata` | EXIF, XMP, and custom metadata for a photo stack |
+| `PhotoStack` | Grouped photo with `original`, `enhanced`, `back` (`ImageRef`) and `metadata` (`MetadataRef`) |
+| `ImageRef` | Lazy, cached accessor for a single image variant — `read()`, `hash()`, `dimensions()`, `rotate()` |
+| `MetadataRef` | Lazy accessor for stack metadata — `read()`, `write()` |
+| `Metadata` | EXIF, XMP, and custom tags for a photo stack |
 | `Repository` | Trait for storage backend abstraction |
 | `LocalRepository` | Local filesystem implementation |
+| `StackManager` | Multi-repo cache manager (aliased as `SessionManager`) |
 | `SearchQuery` | Builder for filtering stacks by metadata |
-| `PaginationParams` | Offset and limit for paginated queries |
+| `ScanSnapshot` | Point-in-time snapshot for consistent pagination |
 | `PaginatedResult<T>` | A page of results with total count and navigation metadata |
 
-### Key Methods
+### Key Operations
 
 ```rust
 // Scanning
-let stacks = repo.scan()?;              // Discover all photo stacks
-let stack = repo.get_stack("IMG_001")?; // Get specific stack by ID
+let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto)?;
+mgr.scan()?;
 
-// Metadata
-let metadata = repo.read_metadata("IMG_001")?;
-repo.write_metadata("IMG_001", &metadata)?;
+// Per-stack image I/O via ImageRef
+let stack = snap.stacks().first().unwrap();
+let mut reader = stack.original.read()?;      // Read image bytes
+let hash = stack.enhanced.hash()?;            // SHA-256 (cached)
+let (w, h) = stack.back.dimensions()?;        // Image dimensions (cached)
+stack.back.rotate(Rotation::Cw90)?;           // Rotate in place
 
-// Search
+// Per-stack metadata via MetadataRef
+let meta = stack.metadata.read()?;            // Lazy load EXIF/XMP/custom
+stack.metadata.write(&updated_meta)?;         // Write back
+
+// Search + pagination via ScanSnapshot
 let query = SearchQuery::new()
     .with_text("vacation")
     .with_has_back(true);
-let results = repo.search(&query)?;
+let snap = mgr.query(&query);
+let page = snap.get_page(0, 20);
+println!("{} of {} stacks", page.items.len(), page.total_count);
 
-// Pagination
-use photostax_core::search::{paginate_stacks, PaginationParams};
-let stacks = repo.scan()?;
-let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 20 });
-println!("Page has {} items, {} total", page.items.len(), page.total_count);
-assert_eq!(page.has_more, stacks.len() > 20);
-
-// Read image stream
-use std::io::Read;
-let mut bytes = Vec::new();
-repo.read_image(&stack.original.unwrap().path)?.read_to_end(&mut bytes)?;
+// Next page from the same snapshot
+if page.has_more {
+    let page2 = snap.get_page(20, 20);
+}
 ```
 
 ## Building from Source

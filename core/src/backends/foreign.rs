@@ -46,13 +46,13 @@
 //! ```
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use crate::events::StackEvent;
+use crate::classifier::ImageClassifier;
+use crate::events::{RepoEvent, StackEvent};
 use crate::file_access::{FileAccess, ReadSeek};
-use crate::photo_stack::{
-    Metadata, PhotoStack, Rotation, RotationTarget, ScanPhase, ScanProgress, ScannerProfile,
-};
+use crate::photo_stack::{PhotoStack, ScanPhase, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, FileEntry, ScannerConfig};
 
@@ -111,6 +111,8 @@ pub struct ForeignRepository {
     provider: Box<dyn RepositoryProvider>,
     config: ScannerConfig,
     repo_id: String,
+    generation: AtomicU64,
+    classifier: Option<Arc<dyn ImageClassifier>>,
 }
 
 impl ForeignRepository {
@@ -121,6 +123,8 @@ impl ForeignRepository {
             provider,
             config: ScannerConfig::default(),
             repo_id,
+            generation: AtomicU64::new(0),
+            classifier: None,
         }
     }
 
@@ -131,6 +135,8 @@ impl ForeignRepository {
             provider,
             config,
             repo_id,
+            generation: AtomicU64::new(0),
+            classifier: None,
         }
     }
 }
@@ -167,32 +173,7 @@ impl Repository for ForeignRepository {
 
         let stack_count = stacks.len();
         for (i, stack) in stacks.iter_mut().enumerate() {
-            // Apply folder metadata parsing (same as LocalRepository)
-            if let Some(ref folder) = stack.folder {
-                let last_component = folder.rsplit('/').next().unwrap_or(folder);
-                let folder_meta = scanner::parse_folder_name(last_component);
-                if let Some(year) = folder_meta.year {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("Year".to_string())
-                        .or_insert_with(|| year.to_string());
-                }
-                if let Some(ref mos) = folder_meta.month_or_season {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("MonthOrSeason".to_string())
-                        .or_insert_with(|| mos.clone());
-                }
-                if let Some(ref subject) = folder_meta.subject {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("Subject".to_string())
-                        .or_insert_with(|| subject.clone());
-                }
-            }
+            stack.location = stack.folder.clone();
 
             if let Some(ref mut cb) = progress {
                 cb(&ScanProgress {
@@ -208,7 +189,7 @@ impl Repository for ForeignRepository {
             let ambiguous_indices: Vec<usize> = stacks
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.enhanced.is_some() && s.back.is_none())
+                .filter(|(_, s)| s.enhanced.is_present() && !s.back.is_present())
                 .map(|(i, _)| i)
                 .collect();
 
@@ -236,115 +217,17 @@ impl Repository for ForeignRepository {
         Ok(stacks)
     }
 
-    fn load_metadata(&self, stack: &mut PhotoStack) -> Result<(), RepositoryError> {
-        // For foreign repos, metadata loading reads from the provider streams.
-        // Use the same EXIF/XMP/sidecar pipeline as local, but via open_read().
-        let target = stack.enhanced.as_ref().or(stack.original.as_ref());
-        if let Some(file) = target {
-            if let Ok(reader) = self.open_read(&file.path) {
-                let mut buf_reader = io::BufReader::new(reader);
-                if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf_reader) {
-                    for field in exif.fields() {
-                        let tag_name = format!("{}", field.tag);
-                        let tag_value = field.display_value().to_string();
-                        stack
-                            .metadata
-                            .exif_tags
-                            .entry(tag_name)
-                            .or_insert(tag_value);
-                    }
-                }
-            }
-        }
-        Ok(())
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
-    fn get_stack(&self, id: &str) -> Result<PhotoStack, RepositoryError> {
-        let entries = self.provider.list_entries("", self.config.recursive)?;
-        let stacks = scanner::scan_entries(&entries, &self.config, self.provider.location());
-        stacks
-            .into_iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| RepositoryError::NotFound(id.to_string()))
+    fn set_classifier(&mut self, classifier: Arc<dyn ImageClassifier>) {
+        self.classifier = Some(classifier);
     }
 
-    fn read_image(&self, path: &str) -> Result<Box<dyn ReadSeek>, RepositoryError> {
-        Ok(self.open_read(path)?)
-    }
-
-    fn write_metadata(&self, stack: &PhotoStack, tags: &Metadata) -> Result<(), RepositoryError> {
-        // For foreign repos, write to sidecar via the provider's write stream.
-        // XMP embedded writes require the full img-parts pipeline which needs
-        // local file paths — for foreign repos we only support sidecar writes.
-        if !tags.xmp_tags.is_empty() || !tags.custom_tags.is_empty() || !tags.exif_tags.is_empty() {
-            let sidecar_name = format!("{}.xmp", stack.name);
-            let sidecar_path = if let Some(ref folder) = stack.folder {
-                format!("{}/{}", folder, sidecar_name)
-            } else {
-                sidecar_name
-            };
-
-            // Build XMP content
-            let mut xmp_content = String::from(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-                 <x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n\
-                 <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
-                 <rdf:Description",
-            );
-
-            for (key, value) in &tags.xmp_tags {
-                xmp_content.push_str(&format!(" {}=\"{}\"", key, value));
-            }
-            for (key, value) in &tags.custom_tags {
-                xmp_content.push_str(&format!(" custom:{}=\"{}\"", key, value));
-            }
-
-            xmp_content.push_str("/>\n</rdf:RDF>\n</x:xmpmeta>\n");
-
-            let mut writer = self
-                .open_write(&sidecar_path)
-                .map_err(|e| RepositoryError::Other(e.to_string()))?;
-            writer
-                .write_all(xmp_content.as_bytes())
-                .map_err(|e| RepositoryError::Other(e.to_string()))?;
-        }
-        Ok(())
-    }
-
-    fn rotate_stack(
-        &self,
-        id: &str,
-        rotation: Rotation,
-        target: RotationTarget,
-    ) -> Result<PhotoStack, RepositoryError> {
-        let stack = self.get_stack(id)?;
-
-        let paths: Vec<&str> = match target {
-            RotationTarget::All => [&stack.original, &stack.enhanced, &stack.back]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-            RotationTarget::Front => [&stack.original, &stack.enhanced]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-            RotationTarget::Back => [&stack.back]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-        };
-
-        if paths.is_empty() {
-            return Err(RepositoryError::Other(format!(
-                "Stack '{id}' has no image files to rotate for target {target:?}"
-            )));
-        }
-
-        for path in paths {
-            self.rotate_foreign_image(path, rotation)?;
-        }
-
-        self.get_stack(id)
+    fn subscribe(&self) -> Result<std::sync::mpsc::Receiver<RepoEvent>, RepositoryError> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        Ok(rx)
     }
 
     fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
@@ -355,71 +238,12 @@ impl Repository for ForeignRepository {
     }
 }
 
-impl ForeignRepository {
-    /// Rotate an image file using provider I/O streams.
-    fn rotate_foreign_image(&self, path: &str, rotation: Rotation) -> Result<(), RepositoryError> {
-        // Read the image via the provider
-        let mut reader = self.open_read(path)?;
-        let mut buf = Vec::new();
-        io::Read::read_to_end(&mut reader, &mut buf)?;
-        drop(reader);
-
-        // Determine format and rotate
-        let ext = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-
-        let rotated = match ext.as_str() {
-            "jpg" | "jpeg" => {
-                let img = image::load_from_memory_with_format(&buf, image::ImageFormat::Jpeg)
-                    .map_err(|e| RepositoryError::Other(format!("Failed to decode JPEG: {e}")))?;
-                let rotated_img = apply_rotation(img, rotation);
-                let mut output = Vec::new();
-                rotated_img
-                    .write_to(&mut io::Cursor::new(&mut output), image::ImageFormat::Jpeg)
-                    .map_err(|e| RepositoryError::Other(format!("Failed to encode JPEG: {e}")))?;
-                output
-            }
-            "tif" | "tiff" => {
-                let img = image::load_from_memory_with_format(&buf, image::ImageFormat::Tiff)
-                    .map_err(|e| RepositoryError::Other(format!("Failed to decode TIFF: {e}")))?;
-                let rotated_img = apply_rotation(img, rotation);
-                let mut output = Vec::new();
-                rotated_img
-                    .write_to(&mut io::Cursor::new(&mut output), image::ImageFormat::Tiff)
-                    .map_err(|e| RepositoryError::Other(format!("Failed to encode TIFF: {e}")))?;
-                output
-            }
-            _ => {
-                return Err(RepositoryError::Other(format!(
-                    "Unsupported image format: {ext}"
-                )));
-            }
-        };
-
-        // Write back via the provider
-        let mut writer = self.open_write(path)?;
-        writer.write_all(&rotated)?;
-        Ok(())
-    }
-}
-
-/// Apply rotation to a DynamicImage.
-fn apply_rotation(img: image::DynamicImage, rotation: Rotation) -> image::DynamicImage {
-    match rotation {
-        Rotation::Cw90 => img.rotate90(),
-        Rotation::Ccw90 => img.rotate270(),
-        Rotation::Cw180 => img.rotate180(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::io::{Cursor, Read};
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     /// In-memory mock provider for testing.
@@ -550,49 +374,15 @@ mod tests {
         assert_eq!(stacks.len(), 2);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
-        assert!(s1.back.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
+        assert!(s1.back.is_present());
         assert_eq!(s1.repo_id.as_deref(), Some("cloud://photos"));
 
         let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert!(s2.original.is_some());
-        assert!(s2.enhanced.is_none());
-        assert!(s2.back.is_none());
-    }
-
-    #[test]
-    fn test_foreign_repo_get_stack() {
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.jpg", b"data");
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        let stacks = repo.scan().unwrap();
-        let id = &stacks[0].id;
-
-        let stack = repo.get_stack(id).unwrap();
-        assert_eq!(stack.name, "IMG_001");
-    }
-
-    #[test]
-    fn test_foreign_repo_get_stack_not_found() {
-        let provider = MockProvider::new("cloud://test");
-        let repo = ForeignRepository::new(Box::new(provider));
-        let result = repo.get_stack("nonexistent");
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), RepositoryError::NotFound(_)));
-    }
-
-    #[test]
-    fn test_foreign_repo_read_image() {
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("photo.jpg", b"image bytes");
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        let mut reader = repo.read_image("photo.jpg").unwrap();
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, b"image bytes");
+        assert!(s2.original.is_present());
+        assert!(!s2.enhanced.is_present());
+        assert!(!s2.back.is_present());
     }
 
     #[test]
@@ -630,30 +420,6 @@ mod tests {
         let hash2 = FileAccess::hash_file(&repo, "data.bin").unwrap();
         assert_eq!(hash1.len(), 16);
         assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_foreign_repo_write_metadata() {
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.jpg", b"data");
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        let stacks = repo.scan().unwrap();
-        let stack = &stacks[0];
-
-        let mut tags = Metadata::default();
-        tags.xmp_tags
-            .insert("dc:title".to_string(), "Test Photo".to_string());
-
-        let result = repo.write_metadata(stack, &tags);
-        assert!(result.is_ok());
-
-        // Verify sidecar was written
-        let mut reader = FileAccess::open_read(&repo, "IMG_001.xmp").unwrap();
-        let mut content = String::new();
-        reader.read_to_string(&mut content).unwrap();
-        assert!(content.contains("dc:title"));
-        assert!(content.contains("Test Photo"));
     }
 
     #[test]
@@ -715,15 +481,8 @@ mod tests {
         let stack = &stacks[0];
         assert_eq!(stack.name, "IMG_001");
         assert_eq!(stack.folder.as_deref(), Some("1984_Mexico"));
-        // Folder metadata should be parsed
-        assert_eq!(
-            stack.metadata.exif_tags.get("Year").map(|s| s.as_str()),
-            Some("1984")
-        );
-        assert_eq!(
-            stack.metadata.exif_tags.get("Subject").map(|s| s.as_str()),
-            Some("Mexico")
-        );
+        // Folder is stored for downstream metadata loading
+        assert_eq!(stack.location.as_deref(), Some("1984_Mexico"));
     }
 
     #[test]
@@ -749,148 +508,26 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         assert_eq!(stacks[0].name, "IMG_001");
-        assert!(stacks[0].enhanced.is_some());
+        assert!(stacks[0].enhanced.is_present());
     }
 
     #[test]
-    fn test_foreign_repo_load_metadata_no_images() {
+    fn test_foreign_repo_generation_and_classifier() {
+        let provider = MockProvider::new("cloud://test");
+        let mut repo = ForeignRepository::new(Box::new(provider));
+        assert_eq!(repo.generation(), 0);
+
+        let classifier: Arc<dyn crate::classifier::ImageClassifier> =
+            Arc::new(crate::classifier::DefaultClassifier);
+        repo.set_classifier(classifier);
+        assert!(repo.classifier.is_some());
+    }
+
+    #[test]
+    fn test_foreign_repo_subscribe() {
         let provider = MockProvider::new("cloud://test");
         let repo = ForeignRepository::new(Box::new(provider));
-
-        let mut stack = PhotoStack {
-            id: "test".to_string(),
-            name: "test".to_string(),
-            folder: None,
-            repo_id: None,
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata::default(),
-        };
-        // load_metadata on a stack with no images should succeed (no-op)
-        repo.load_metadata(&mut stack).unwrap();
-        assert!(stack.metadata.exif_tags.is_empty());
-    }
-
-    #[test]
-    fn test_foreign_repo_load_metadata_with_image() {
-        let provider = MockProvider::new("cloud://test");
-        // Non-EXIF content — load_metadata should still succeed (just no tags parsed)
-        provider.add_file("IMG_001.jpg", b"not-a-real-jpeg");
-        let repo = ForeignRepository::new(Box::new(provider));
-        let stacks = repo.scan().unwrap();
-        assert_eq!(stacks.len(), 1);
-
-        let mut stack = stacks[0].clone();
-        repo.load_metadata(&mut stack).unwrap();
-        // Non-EXIF data won't produce tags, but the call should not error
-    }
-
-    #[test]
-    fn test_foreign_repo_rotate_stack_jpeg() {
-        // Create a minimal valid JPEG in memory
-        let img = image::DynamicImage::new_rgb8(4, 4);
-        let mut jpeg_bytes = Vec::new();
-        img.write_to(
-            &mut io::Cursor::new(&mut jpeg_bytes),
-            image::ImageFormat::Jpeg,
-        )
-        .unwrap();
-
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.jpg", &jpeg_bytes);
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        let stacks = repo.scan().unwrap();
-        assert_eq!(stacks.len(), 1);
-        let id = stacks[0].id.clone();
-
-        // Rotate CW90 — all targets
-        let result = repo.rotate_stack(&id, Rotation::Cw90, RotationTarget::All);
-        assert!(result.is_ok());
-
-        // Rotate CCW90 — front only
-        let result = repo.rotate_stack(&id, Rotation::Ccw90, RotationTarget::Front);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_foreign_repo_rotate_stack_with_back() {
-        let img = image::DynamicImage::new_rgb8(4, 4);
-        let mut jpeg_bytes = Vec::new();
-        img.write_to(
-            &mut io::Cursor::new(&mut jpeg_bytes),
-            image::ImageFormat::Jpeg,
-        )
-        .unwrap();
-
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.jpg", &jpeg_bytes);
-        provider.add_file("IMG_001_a.jpg", &jpeg_bytes);
-        provider.add_file("IMG_001_b.jpg", &jpeg_bytes);
-
-        let config = ScannerConfig {
-            recursive: false,
-            ..ScannerConfig::default()
-        };
-        let repo = ForeignRepository::with_config(Box::new(provider), config);
-        let stacks = repo.scan().unwrap();
-        assert_eq!(stacks.len(), 1);
-        let id = stacks[0].id.clone();
-
-        // Rotate 180 — back only
-        let result = repo.rotate_stack(&id, Rotation::Cw180, RotationTarget::Back);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_foreign_repo_rotate_unsupported_format() {
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.bmp", b"fake-bmp");
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        // rotate_foreign_image directly with an unsupported extension
-        let result = repo.rotate_foreign_image("IMG_001.bmp", Rotation::Cw90);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("Unsupported image format"), "got: {err}");
-    }
-
-    #[test]
-    fn test_foreign_repo_rotate_tiff() {
-        let img = image::DynamicImage::new_rgb8(4, 4);
-        let mut tiff_bytes = Vec::new();
-        img.write_to(
-            &mut io::Cursor::new(&mut tiff_bytes),
-            image::ImageFormat::Tiff,
-        )
-        .unwrap();
-
-        let provider = MockProvider::new("cloud://test");
-        provider.add_file("IMG_001.tif", &tiff_bytes);
-
-        let repo = ForeignRepository::new(Box::new(provider));
-        let stacks = repo.scan().unwrap();
-        assert_eq!(stacks.len(), 1);
-        let id = stacks[0].id.clone();
-
-        let result = repo.rotate_stack(&id, Rotation::Cw90, RotationTarget::All);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_apply_rotation_all_variants() {
-        let img = image::DynamicImage::new_rgb8(4, 6);
-        let r90 = apply_rotation(img.clone(), Rotation::Cw90);
-        assert_eq!(r90.width(), 6);
-        assert_eq!(r90.height(), 4);
-
-        let r270 = apply_rotation(img.clone(), Rotation::Ccw90);
-        assert_eq!(r270.width(), 6);
-        assert_eq!(r270.height(), 4);
-
-        let r180 = apply_rotation(img.clone(), Rotation::Cw180);
-        assert_eq!(r180.width(), 4);
-        assert_eq!(r180.height(), 6);
+        let rx = repo.subscribe().unwrap();
+        assert!(rx.try_recv().is_err());
     }
 }
