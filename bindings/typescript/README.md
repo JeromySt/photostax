@@ -17,6 +17,16 @@ Epson FastFoto scanners produce multiple files per scanned photo:
 
 This library groups these files into `PhotoStack` objects and provides access to their metadata from EXIF, XMP, and a sidecar database.
 
+## Architecture
+
+`PhotostaxRepository` is a native Node.js addon (via napi-rs) that wraps the Rust `StackManager` — the unified cache and query engine powering photostax. Each instance creates a `StackManager` internally with a single repository, giving you:
+
+- **O(1) stack lookups** by opaque ID
+- **Unified `query()` API** for search + pagination in one call
+- **Lazy metadata loading** — scan first, load EXIF/XMP on demand
+
+> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is not yet exposed in the Node.js binding — each `PhotostaxRepository` wraps one directory. Multi-repo projection is on the roadmap.
+
 ## Installation
 
 ```bash

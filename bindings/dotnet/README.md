@@ -9,6 +9,17 @@
 
 This package provides idiomatic C# access to Epson FastFoto photo repositories. It groups scanner output files (original, enhanced, back scans) into `PhotoStack` objects and provides metadata reading and writing.
 
+## Architecture
+
+`PhotostaxRepository` is a managed wrapper around the Rust `StackManager` — the unified cache and query engine that powers photostax. Each `PhotostaxRepository` instance creates a `StackManager` internally with a single repository, giving you:
+
+- **O(1) stack lookups** by opaque ID
+- **Unified `Query()` API** for search + pagination in one call
+- **Lazy metadata loading** — scan first, load EXIF/XMP on demand
+- **Filesystem watching** and reactive cache updates (Rust-only for now)
+
+> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is not yet exposed in the .NET binding — each `PhotostaxRepository` wraps one directory. Multi-repo projection is on the roadmap.
+
 ## Installation
 
 ```bash
