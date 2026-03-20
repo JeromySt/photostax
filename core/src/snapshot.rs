@@ -227,22 +227,45 @@ impl ScanSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::image_handle::ImageRef;
+    use std::sync::Arc;
 
     struct MockImg;
     impl crate::image_handle::ImageHandle for MockImg {
-        fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError> {
+        fn read(
+            &self,
+        ) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError>
+        {
             Ok(Box::new(std::io::Cursor::new(vec![])))
         }
-        fn stream(&self) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, crate::repository::RepositoryError> {
-            Ok(crate::hashing::HashingReader::new(Box::new(std::io::Cursor::new(vec![]))))
+        fn stream(
+            &self,
+        ) -> Result<
+            crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>,
+            crate::repository::RepositoryError,
+        > {
+            Ok(crate::hashing::HashingReader::new(Box::new(
+                std::io::Cursor::new(vec![]),
+            )))
         }
-        fn hash(&self) -> Result<String, crate::repository::RepositoryError> { Ok("0000000000000000".into()) }
-        fn dimensions(&self) -> Result<(u32, u32), crate::repository::RepositoryError> { Ok((1, 1)) }
-        fn size(&self) -> u64 { 0 }
-        fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), crate::repository::RepositoryError> { Ok(()) }
-        fn is_valid(&self) -> bool { true }
+        fn hash(&self) -> Result<String, crate::repository::RepositoryError> {
+            Ok("0000000000000000".into())
+        }
+        fn dimensions(&self) -> Result<(u32, u32), crate::repository::RepositoryError> {
+            Ok((1, 1))
+        }
+        fn size(&self) -> u64 {
+            0
+        }
+        fn rotate(
+            &self,
+            _: crate::photo_stack::Rotation,
+        ) -> Result<(), crate::repository::RepositoryError> {
+            Ok(())
+        }
+        fn is_valid(&self) -> bool {
+            true
+        }
         fn invalidate(&self) {}
     }
 

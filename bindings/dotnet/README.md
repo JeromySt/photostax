@@ -7,18 +7,18 @@
 
 ## Overview
 
-This package provides idiomatic C# access to Epson FastFoto photo repositories. It groups scanner output files (original, enhanced, back scans) into `PhotoStack` objects and provides metadata reading and writing.
+This package provides idiomatic C# access to Epson FastFoto photo repositories. It groups scanner output files (original, enhanced, back scans) into `PhotoStack` objects with lazy, cached accessors for image data and metadata.
 
 ## Architecture
 
-`PhotostaxRepository` is a managed wrapper around the Rust `StackManager` — the unified cache and query engine that powers photostax. Each `PhotostaxRepository` instance creates a `StackManager` internally with a single repository, giving you:
+`PhotostaxRepository` is a managed wrapper around the Rust `SessionManager` (formerly `StackManager`) — the unified cache and query engine that powers photostax. Each `PhotostaxRepository` instance creates a `SessionManager` internally with a single repository, giving you:
 
 - **O(1) stack lookups** by opaque ID
-- **Unified `Query()` API** for search + pagination in one call
-- **Lazy metadata loading** — scan first, load EXIF/XMP on demand
-- **Filesystem watching** and reactive cache updates (Rust-only for now)
+- **PhotoStack-centric I/O** — `stack.Original.Read()`, `stack.Metadata.Read()`, etc.
+- **Lazy, cached accessors** — image data and metadata loaded on demand
+- **ScanSnapshot queries** — `Query()` returns a snapshot for consistent pagination
 
-> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is now also available in the .NET binding via the `StackManager` class.
+> **Multi-repo support:** Use the `StackManager` class to manage multiple repositories through a single cache.
 
 ### Multi-repo with StackManager
 
@@ -30,10 +30,20 @@ mgr.AddRepo("/photos/2023", recursive: true);
 mgr.Scan();
 Console.WriteLine($"Managing {mgr.RepoCount} repos");
 
-// Query across all repos
-var page = mgr.Query(new SearchQuery().WithText("birthday"), offset: 0, limit: 20);
+// Query across all repos — returns a ScanSnapshot
+var snap = mgr.Query(new SearchQuery().WithText("birthday"));
+var page = snap.GetPage(0, 20);
 foreach (var stack in page.Items)
+{
     Console.WriteLine($"{stack.Name} ({stack.Id})");
+
+    // Per-stack image I/O (no manager methods needed)
+    if (stack.Original.IsPresent)
+    {
+        using var stream = stack.Original.Read();
+        // ... process image ...
+    }
+}
 ```
 
 ### Custom Repository Providers
@@ -49,7 +59,6 @@ public class OneDriveProvider : IRepositoryProvider
 
     public IReadOnlyList<FileEntry> ListEntries(string prefix, bool recursive)
     {
-        // Return file listings from OneDrive API
         return new List<FileEntry>
         {
             new("IMG_001.jpg", "vacation", "onedrive://user/photos/vacation/IMG_001.jpg", 2048576),
@@ -82,54 +91,43 @@ using Photostax;
 // Open a repository
 using var repo = new PhotostaxRepository("/path/to/photos");
 
-// Query all stacks (no filter, no pagination)
-var all = repo.Query();
+// Query all stacks — returns a ScanSnapshot
+var snap = repo.Query();
 
-foreach (var stack in all.Items)
+foreach (var stack in snap.Stacks)
 {
-    // stack.Id is a 16-char hex hash (e.g. "a1b2c3d4e5f67890")
-    // stack.Name is the human-readable display name
     Console.WriteLine($"{stack.Name} ({stack.Id})");
     Console.WriteLine($"  Folder: {stack.Folder ?? "(root)"}");
-    Console.WriteLine($"  Original: {stack.OriginalPath}");
-    Console.WriteLine($"  Enhanced: {stack.EnhancedPath}");
-    Console.WriteLine($"  Back: {stack.BackPath}");
-    Console.WriteLine($"  Format: {stack.Format}");
+
+    // Read images via ImageRef (lazy, cached)
+    if (stack.Original.IsPresent)
+    {
+        using var stream = stack.Original.Read();
+        Console.WriteLine($"  Original: {stack.Original.Size} bytes");
+        Console.WriteLine($"  Hash: {stack.Original.Hash()}");
+    }
+
+    // Read metadata via MetadataRef (lazy-loaded)
+    var meta = stack.Metadata.Read();
+    Console.WriteLine($"  Camera: {meta.ExifTags.GetValueOrDefault("Make", "unknown")}");
 }
 
-// Search with filter and pagination using Query()
-var page = repo.Query(
-    new SearchQuery().WithText("birthday").WithHasBack(true),
-    offset: 0,
-    limit: 20
+// Search with pagination via ScanSnapshot
+var snap2 = repo.Query(
+    new SearchQuery().WithText("birthday").WithHasBack(true)
 );
-
+var page = snap2.GetPage(0, 20);
 Console.WriteLine($"Page has {page.Items.Count} of {page.TotalCount} total");
-Console.WriteLine($"Has more: {page.HasMore}");
-
-// Iterate pages
-foreach (var stack in page.Items)
-    Console.WriteLine($"{stack.Name} ({stack.Id})");
 
 if (page.HasMore)
 {
-    var nextPage = repo.Query(
-        new SearchQuery().WithText("birthday"),
-        offset: 20, limit: 20);
+    var page2 = snap2.GetPage(20, 20);
 }
 
-// Read image bytes
-var imageData = repo.ReadImage(all.Items[0].OriginalPath!);
-
-// Write metadata (use stack.Id for lookups)
+// Write metadata directly on the stack
 var metadata = new Metadata().WithCustomTag("album", "Family Photos");
-repo.WriteMetadata(all.Items[0].Id, metadata);
+snap.Stacks[0].Metadata.Write(metadata);
 ```
-
-> **Note — Stack IDs changed in v0.2.x:** Stack IDs are now opaque 16-character
-> hex strings (truncated SHA-256 hashes) rather than human-readable stems.
-> Use `stack.Name` when displaying a stack to users and `stack.Id` for
-> programmatic lookups such as `GetStack()` or `WriteMetadata()`.
 
 ## API Overview
 
@@ -139,14 +137,8 @@ The main entry point for working with photo repositories.
 
 | Method | Description |
 |--------|-------------|
-| `Query()` | **(v0.2.x)** Search and paginate in one call. Accepts an optional `SearchQuery`, `offset`, and `limit`. Returns a `PagedResult<PhotoStack>`. |
+| `Query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. |
 | `Scan()` | Discover all photo stacks in the repository |
-| `GetStack(id)` | Get a specific stack by its opaque hash ID |
-| `ReadImage(path)` | Read raw image bytes |
-| `WriteMetadata(id, metadata)` | Write metadata to a stack |
-| `Search(query)` | Find stacks matching a query (convenience wrapper around `Query()`) |
-| `ScanPaginated(offset, limit)` | Scan with pagination (convenience wrapper around `Query()`) |
-| `SearchPaginated(query, offset, limit)` | Search with pagination (convenience wrapper around `Query()`) |
 
 ### StackManager
 
@@ -158,16 +150,46 @@ Multi-repository manager for unified access across directories and custom backen
 | `AddRepo(path, ...)` | Register a local directory |
 | `AddRepo(IRepositoryProvider, ...)` | Register a custom repository provider |
 | `RepoCount` | Number of registered repositories |
-| `StackCount` | Total stacks in cache |
 | `Scan()` | Scan all registered repos |
-| `ScanWithMetadata()` | Scan with full EXIF/XMP loading |
 | `GetStack(id)` | Retrieve a single stack by opaque ID |
-| `LoadMetadata(id)` | Load metadata for a specific stack |
-| `ReadImage(path)` | Read raw image bytes |
-| `WriteMetadata(id, metadata)` | Write metadata to a stack |
-| `Query(filter?, offset, limit)` | Search + paginate across all repos |
-| `RotateStack(id, degrees, target?)` | Rotate images in a stack |
-| `CreateSnapshot(loadMetadata?)` | Create a point-in-time snapshot |
+| `Query(filter?)` | Search across all repos, returns `ScanSnapshot` |
+| `CreateSnapshot()` | Create a point-in-time snapshot |
+
+### PhotoStack (v0.4.0)
+
+All I/O operations are accessed directly on the stack object:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Id` | `string` | Opaque 16-char hex hash (SHA-256). Use for lookups. |
+| `Name` | `string` | Human-readable display name for the stack. |
+| `Folder` | `string?` | Subfolder within the repository, or `null` if at root. |
+| `Original` | `ImageRef` | Original front scan accessor — `Read()`, `Hash()`, `Dimensions()`, `Rotate()` |
+| `Enhanced` | `ImageRef` | Enhanced scan accessor |
+| `Back` | `ImageRef` | Back scan accessor |
+| `Metadata` | `MetadataRef` | Metadata accessor — `Read()`, `Write()` |
+
+### ImageRef
+
+Lazy, cached accessor for a single image variant:
+
+| Method | Description |
+|--------|-------------|
+| `IsPresent` | Whether this image variant exists |
+| `Read()` | Read image bytes as a `Stream` |
+| `Hash()` | SHA-256 content hash (cached after first call) |
+| `Dimensions()` | Image width and height (cached) |
+| `Size` | File size in bytes |
+| `Rotate(degrees)` | Rotate image in place |
+
+### MetadataRef
+
+Lazy accessor for stack metadata:
+
+| Method | Description |
+|--------|-------------|
+| `Read()` | Load EXIF, XMP, and custom tags (lazy-loaded) |
+| `Write(metadata)` | Write metadata back |
 
 ### IRepositoryProvider
 
@@ -185,50 +207,6 @@ public interface IRepositoryProvider
 public record FileEntry(string Name, string Folder, string Path, long Size);
 ```
 
-#### `Query()` — Preferred Search & Pagination API
-
-`Query()` is the recommended way to search and paginate as of v0.2.x.
-The older `Search()`, `ScanPaginated()`, and `SearchPaginated()` methods still
-work but are now convenience wrappers around `Query()`.
-
-```csharp
-// All stacks (no filter, no pagination)
-var all = repo.Query();
-
-// With filter and pagination
-var page = repo.Query(
-    new SearchQuery().WithText("birthday").WithHasBack(true),
-    offset: 0,
-    limit: 20
-);
-
-// Iterate pages
-foreach (var stack in page.Items)
-    Console.WriteLine($"{stack.Name} ({stack.Id})");
-
-if (page.HasMore)
-{
-    var nextPage = repo.Query(
-        new SearchQuery().WithText("birthday"),
-        offset: 20, limit: 20);
-}
-```
-
-### PhotoStack
-
-Represents a photo stack with its associated images and metadata.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `Id` | `string` | Opaque 16-char hex hash (SHA-256). Use for lookups. |
-| `Name` | `string` | **(v0.2.x)** Human-readable display name for the stack. |
-| `Folder` | `string?` | **(v0.2.x)** Subfolder within the repository, or `null` if at root. |
-| `OriginalPath` | `string?` | Path to original scan |
-| `EnhancedPath` | `string?` | Path to enhanced scan |
-| `BackPath` | `string?` | Path to back scan |
-| `Metadata` | `Metadata` | EXIF, XMP, and custom tags |
-| `Format` | `ImageFormat?` | JPEG, TIFF, or Unknown |
-
 ### SearchQuery
 
 Builder for constructing search queries.
@@ -239,7 +217,7 @@ var query = new SearchQuery()
     .WithExifFilter("Make", "EPSON") // EXIF tag filter
     .WithCustomFilter("album", "2020") // Custom tag filter
     .WithHasBack(true)              // Has back scan
-    .WithHasEnhanced(true);         // Has enhanced scan
+    .WithRepoId("a1b2c3d4");       // Filter by repository (v0.4.0)
 ```
 
 ## Building from Source

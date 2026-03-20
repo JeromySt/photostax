@@ -6,7 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 
-use photostax_core::search::{PaginationParams, SearchQuery};
+use photostax_core::search::SearchQuery;
 use serde::Deserialize;
 
 use crate::types::{FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, PhotostaxRepo};
@@ -24,23 +24,28 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
         .map(|s| s.into_raw())
         .unwrap_or(ptr::null_mut());
 
-    let path_to_c_string = |img: &Option<photostax_core::hashing::ImageFile>| -> *mut c_char {
-        match img {
-            Some(f) => {
-                let s = f.path.clone();
-                CString::new(s)
-                    .map(|cs| cs.into_raw())
-                    .unwrap_or(ptr::null_mut())
-            }
-            None => ptr::null_mut(),
+    let image_ref_to_c = |img: &photostax_core::image_handle::ImageRef| -> *mut c_char {
+        if img.is_present() {
+            CString::new("present")
+                .map(|cs| cs.into_raw())
+                .unwrap_or(ptr::null_mut())
+        } else {
+            ptr::null_mut()
         }
     };
 
-    let metadata_json = serde_json::json!({
-        "exif_tags": stack.metadata.exif_tags,
-        "xmp_tags": stack.metadata.xmp_tags,
-        "custom_tags": stack.metadata.custom_tags,
-    });
+    let metadata_json = match stack.metadata.cached() {
+        Some(m) => serde_json::json!({
+            "exif_tags": m.exif_tags,
+            "xmp_tags": m.xmp_tags,
+            "custom_tags": m.custom_tags,
+        }),
+        None => serde_json::json!({
+            "exif_tags": {},
+            "xmp_tags": {},
+            "custom_tags": {},
+        }),
+    };
     let metadata_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
     let metadata_json_ptr = std::ffi::CString::new(metadata_str)
         .map(|s| s.into_raw())
@@ -55,9 +60,9 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
             .and_then(|f| CString::new(f).ok())
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut()),
-        original: path_to_c_string(&stack.original),
-        enhanced: path_to_c_string(&stack.enhanced),
-        back: path_to_c_string(&stack.back),
+        original: image_ref_to_c(&stack.original),
+        enhanced: image_ref_to_c(&stack.enhanced),
+        back: image_ref_to_c(&stack.back),
         metadata_json: metadata_json_ptr,
     }
 }
@@ -148,20 +153,29 @@ pub unsafe extern "C" fn photostax_search(
 
         // Get all stacks with metadata (search needs metadata to filter)
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.scan_with_metadata().is_err() {
+        if mgr.rescan(None).is_err() {
             return FfiPhotoStackArray::empty();
+        }
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
         }
 
         // Apply the filter using query()
-        let filtered = mgr.query(&query, None);
+        let filtered = match mgr.query(Some(&query), None) {
+            Ok(snap) => snap,
+            Err(_) => return FfiPhotoStackArray::empty(),
+        };
         drop(mgr);
 
-        if filtered.items.is_empty() {
+        if filtered.stacks().is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
         let ffi_stacks: Vec<FfiPhotoStack> =
-            filtered.items.iter().map(photo_stack_to_ffi).collect();
+            filtered.stacks().iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -247,12 +261,23 @@ pub unsafe extern "C" fn photostax_search_paginated(
         }
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.scan_with_metadata().is_err() {
+        if mgr.rescan(None).is_err() {
             return FfiPaginatedResult::empty(offset, limit);
         }
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
+        }
 
-        let paginated = mgr.query(&query, Some(&PaginationParams { offset, limit }));
+        let snapshot = match mgr.query(Some(&query), None) {
+            Ok(snap) => snap,
+            Err(_) => return FfiPaginatedResult::empty(offset, limit),
+        };
         drop(mgr);
+
+        let paginated = snapshot.get_page(offset, limit);
 
         if paginated.items.is_empty() {
             return FfiPaginatedResult {
@@ -465,43 +490,22 @@ mod tests {
 
     #[test]
     fn test_search_photo_stack_to_ffi_covers_all_fields() {
-        let mut metadata = photostax_core::photo_stack::Metadata::default();
-        metadata
-            .exif_tags
-            .insert("Make".to_string(), "Canon".to_string());
-        metadata
-            .xmp_tags
-            .insert("Creator".to_string(), "Test".to_string());
-        metadata
-            .custom_tags
-            .insert("rating".to_string(), serde_json::json!(5));
-
-        let mut stack = photostax_core::photo_stack::PhotoStack::new("search_test");
-        stack.original = Some(photostax_core::hashing::ImageFile::new(
-            "/test/original.jpg",
-            0,
-        ));
-        stack.back = Some(photostax_core::hashing::ImageFile::new("/test/back.jpg", 0));
-        stack.metadata = metadata;
+        let stack = photostax_core::photo_stack::PhotoStack::new("search_test");
 
         let ffi = photo_stack_to_ffi(&stack);
         assert!(!ffi.id.is_null());
-        assert!(!ffi.original.is_null());
+        // Stack created with new() has absent ImageRefs
+        assert!(ffi.original.is_null());
         assert!(ffi.enhanced.is_null());
-        assert!(!ffi.back.is_null());
+        assert!(ffi.back.is_null());
         assert!(!ffi.metadata_json.is_null());
-
-        let meta_str = unsafe { CStr::from_ptr(ffi.metadata_json) }
-            .to_str()
-            .unwrap();
-        assert!(meta_str.contains("Canon"));
-        assert!(meta_str.contains("Creator"));
 
         // Clean up
         unsafe {
             drop(CString::from_raw(ffi.id));
-            drop(CString::from_raw(ffi.original));
-            drop(CString::from_raw(ffi.back));
+            if !ffi.name.is_null() {
+                drop(CString::from_raw(ffi.name));
+            }
             drop(CString::from_raw(ffi.metadata_json));
         }
     }

@@ -593,11 +593,21 @@ mod tests {
     }
 
     impl crate::image_handle::ImageHandle for MockImageHandle {
-        fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError> {
+        fn read(
+            &self,
+        ) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError>
+        {
             Ok(Box::new(std::io::Cursor::new(vec![])))
         }
-        fn stream(&self) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, crate::repository::RepositoryError> {
-            Ok(crate::hashing::HashingReader::new(Box::new(std::io::Cursor::new(vec![]))))
+        fn stream(
+            &self,
+        ) -> Result<
+            crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>,
+            crate::repository::RepositoryError,
+        > {
+            Ok(crate::hashing::HashingReader::new(Box::new(
+                std::io::Cursor::new(vec![]),
+            )))
         }
         fn hash(&self) -> Result<String, crate::repository::RepositoryError> {
             Ok("0000000000000000".to_string())
@@ -605,13 +615,18 @@ mod tests {
         fn dimensions(&self) -> Result<(u32, u32), crate::repository::RepositoryError> {
             Ok((640, 480))
         }
-        fn size(&self) -> u64 { 0 }
-        fn rotate(&self, _: Rotation) -> Result<(), crate::repository::RepositoryError> { Ok(()) }
+        fn size(&self) -> u64 {
+            0
+        }
+        fn rotate(&self, _: Rotation) -> Result<(), crate::repository::RepositoryError> {
+            Ok(())
+        }
         fn is_valid(&self) -> bool {
             self.valid.load(std::sync::atomic::Ordering::Relaxed)
         }
         fn invalidate(&self) {
-            self.valid.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.valid
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

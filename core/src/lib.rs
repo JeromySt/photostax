@@ -29,17 +29,16 @@
 //! // Create a StackManager with a local repository
 //! let repo = LocalRepository::new("/path/to/photos");
 //! let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
-//! mgr.scan().unwrap();
 //!
-//! // Query all stacks → returns a ScanSnapshot
-//! let snap = mgr.query(&SearchQuery::new());
+//! // Query all stacks (auto-scans on first call) → returns a ScanSnapshot
+//! let snap = mgr.query(None, None).unwrap();
 //! for stack in snap.stacks() {
 //!     println!("Photo: {} ({})", stack.name, stack.id);
 //! }
 //!
-//! // Search with pagination via snapshot
+//! // Search with filters + pagination via snapshot
 //! let query = SearchQuery::new().with_has_back(true);
-//! let snap = mgr.query(&query);
+//! let snap = mgr.query(Some(&query), None).unwrap();
 //! let page = snap.get_page(0, 20);
 //! println!("{} of {} stacks", page.items.len(), page.total_count);
 //!

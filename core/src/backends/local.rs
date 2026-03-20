@@ -69,9 +69,7 @@ use crate::events::{FileVariant, RepoEvent, StackEvent};
 use crate::file_access::{FileAccess, ReadSeek};
 use crate::metadata::detect_image_format;
 use crate::metadata_handle::MetadataRef;
-use crate::photo_stack::{
-    PhotoStack, ScanPhase, ScanProgress, ScannerProfile,
-};
+use crate::photo_stack::{PhotoStack, ScanPhase, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, classify_stem, ScannerConfig};
 
@@ -195,9 +193,7 @@ impl LocalRepository {
 
         // Try to find the best image path for EXIF/XMP reading
         let image_path = self.find_image_path(stack);
-        let image_format = image_path
-            .as_ref()
-            .and_then(|p| detect_image_format(p));
+        let image_format = image_path.as_ref().and_then(|p| detect_image_format(p));
 
         let handle = LocalMetadataHandle::with_folder(
             stack.name.clone(),
@@ -262,7 +258,6 @@ impl LocalRepository {
         }
         Ok(stacks)
     }
-
 }
 
 impl FileAccess for LocalRepository {
@@ -598,7 +593,12 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         assert_eq!(
-            stacks[0].metadata.cached().unwrap().custom_tags.get("album"),
+            stacks[0]
+                .metadata
+                .cached()
+                .unwrap()
+                .custom_tags
+                .get("album"),
             Some(&serde_json::json!("Test Album"))
         );
     }
@@ -913,10 +913,7 @@ mod tests {
         );
         assert!(!meta.custom_tags.contains_key("folder_month_or_season"));
         assert_eq!(meta.xmp_tags.get("date"), Some(&"1984".to_string()));
-        assert_eq!(
-            meta.xmp_tags.get("subject"),
-            Some(&"Mexico".to_string())
-        );
+        assert_eq!(meta.xmp_tags.get("subject"), Some(&"Mexico".to_string()));
     }
 
     #[test]
@@ -1063,8 +1060,14 @@ mod tests {
         let stacks = repo.scan().unwrap();
         let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
-        stack.original.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
-        stack.enhanced.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
+        stack
+            .original
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
+        stack
+            .enhanced
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
 
         // After 90° CW rotation, 4×2 → 2×4
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
@@ -1086,7 +1089,10 @@ mod tests {
         let stacks = repo.scan().unwrap();
         let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
-        stack.original.rotate(crate::photo_stack::Rotation::Ccw90).unwrap();
+        stack
+            .original
+            .rotate(crate::photo_stack::Rotation::Ccw90)
+            .unwrap();
 
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
         assert_eq!(img.width(), 2);
@@ -1104,7 +1110,10 @@ mod tests {
         let stacks = repo.scan().unwrap();
         let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
-        stack.original.rotate(crate::photo_stack::Rotation::Cw180).unwrap();
+        stack
+            .original
+            .rotate(crate::photo_stack::Rotation::Cw180)
+            .unwrap();
 
         // 180° preserves dimensions
         let img = image::open(dir.join("IMG_001.jpg")).unwrap();
@@ -1126,9 +1135,18 @@ mod tests {
         let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert_eq!(stack.image_count(), 3);
 
-        stack.original.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
-        stack.enhanced.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
-        stack.back.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
+        stack
+            .original
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
+        stack
+            .enhanced
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
+        stack
+            .back
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
 
         // All three files should be rotated
         for name in &["IMG_001.jpg", "IMG_001_a.jpg", "IMG_001_b.jpg"] {
@@ -1187,11 +1205,7 @@ mod tests {
         let has_exif = snap
             .stacks()
             .iter()
-            .any(|s| {
-                s.metadata
-                    .cached()
-                    .is_some_and(|m| !m.exif_tags.is_empty())
-            });
+            .any(|s| s.metadata.cached().is_some_and(|m| !m.exif_tags.is_empty()));
         assert!(has_exif, "At least one stack should have EXIF tags");
     }
 

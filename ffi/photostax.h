@@ -563,18 +563,23 @@ struct FfiPhotoStackArray photostax_repo_scan_with_progress(const struct Photost
 struct FfiPhotoStack *photostax_repo_get_stack(const struct PhotostaxRepo *repo, const char *id);
 
 /**
- * Read image bytes.
+ * Read image bytes from a stack's image variant.
+ *
+ * The `stack_id` identifies the stack and `variant` selects which image:
+ * - `0` = original
+ * - `1` = enhanced
+ * - `2` = back
  *
  * # Safety
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `path` must be a valid null-terminated UTF-8 string (file path)
+ * - `stack_id` must be a valid null-terminated UTF-8 string
  * - `out_data` must be a valid pointer to receive the data pointer
  * - `out_len` must be a valid pointer to receive the data length
  * - On success, caller owns `*out_data` and must call [`photostax_bytes_free`]
  */
 struct FfiResult photostax_read_image(const struct PhotostaxRepo *repo,
-                                      const char *path,
+                                      const char *stack_id,
                                       uint8_t **out_data,
                                       uintptr_t *out_len);
 

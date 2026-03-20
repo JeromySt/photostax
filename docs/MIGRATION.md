@@ -1,5 +1,197 @@
 # Migration Guide
 
+## v0.3.x → v0.4.0
+
+### ⚠️ Breaking: PhotoStack-Centric API
+
+v0.4.0 is a major architecture redesign. I/O operations move from `Repository`/`StackManager` onto the `PhotoStack` itself via `ImageRef` and `MetadataRef` accessors.
+
+### Reading images
+
+**Before (v0.3.x):**
+```rust
+// Rust — read via repository
+let data = repo.read_image(&stack.original.as_ref().unwrap().path)?;
+
+// TypeScript — read via manager
+const buf = mgr.readImage(stack.original);
+
+// C# — read via manager
+var bytes = mgr.ReadImage(stack.OriginalPath);
+```
+
+**After (v0.4.0):**
+```rust
+// Rust — read via ImageRef on the stack
+let mut reader = stack.original.read()?;
+
+// TypeScript — read via ImageRef
+const buf = stack.original.read();
+
+// C# — read via ImageRef
+using var stream = stack.Original.Read();
+```
+
+### Reading metadata
+
+**Before (v0.3.x):**
+```rust
+// Rust
+let meta = mgr.load_metadata(&stack.id)?;
+
+// TypeScript
+const meta = mgr.loadMetadata(stack.id);
+
+// C#
+var meta = mgr.LoadMetadata(stack.Id);
+```
+
+**After (v0.4.0):**
+```rust
+// Rust — lazy-loaded MetadataRef
+let meta = stack.metadata.read()?;
+
+// TypeScript
+const meta = stack.metadata.read();
+
+// C#
+var meta = stack.Metadata.Read();
+```
+
+### Writing metadata
+
+**Before (v0.3.x):**
+```rust
+// Rust
+mgr.write_metadata(&stack.id, &metadata)?;
+
+// TypeScript
+mgr.writeMetadata(stack.id, metadata);
+
+// C#
+mgr.WriteMetadata(stack.Id, metadata);
+```
+
+**After (v0.4.0):**
+```rust
+// Rust
+stack.metadata.write(&metadata)?;
+
+// TypeScript
+stack.metadata.write(metadata);
+
+// C#
+stack.Metadata.Write(metadata);
+```
+
+### Rotating images
+
+**Before (v0.3.x):**
+```rust
+// Rust
+mgr.rotate_stack(&stack.id, Rotation::Cw90, RotationTarget::All)?;
+
+// TypeScript
+mgr.rotateStack(stack.id, 90);
+
+// C#
+mgr.RotateStack(stack.Id, 90);
+```
+
+**After (v0.4.0):**
+```rust
+// Rust — rotate specific variant via ImageRef
+stack.original.rotate(Rotation::Cw90)?;
+stack.back.rotate(Rotation::Cw90)?;
+
+// TypeScript
+stack.original.rotate(90);
+stack.back.rotate(90);
+
+// C#
+stack.Original.Rotate(90);
+stack.Back.Rotate(90);
+```
+
+### Checking image presence
+
+**Before (v0.3.x):**
+```rust
+if stack.back.is_some() { /* has back scan */ }
+```
+
+**After (v0.4.0):**
+```rust
+if stack.back.is_present() { /* has back scan */ }
+```
+
+### Querying stacks
+
+**Before (v0.3.x):**
+```rust
+// Rust — returned PaginatedResult directly
+let page = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+```
+
+**After (v0.4.0):**
+```rust
+// Rust — returns ScanSnapshot, paginate from snapshot
+let snap = mgr.query(&query);
+let page = snap.get_page(0, 20);
+
+// Check staleness with O(1)
+if snap.is_stale() {
+    let fresh = mgr.query(&query);
+}
+```
+
+### PhotoStack field changes
+
+| v0.3.x | v0.4.0 |
+|--------|--------|
+| `stack.original: Option<ImageFile>` | `stack.original: ImageRef` |
+| `stack.enhanced: Option<ImageFile>` | `stack.enhanced: ImageRef` |
+| `stack.back: Option<ImageFile>` | `stack.back: ImageRef` |
+| `stack.metadata: Metadata` (eager) | `stack.metadata: MetadataRef` (lazy) |
+| `stack.format()` | Removed |
+| `#[derive(Serialize, Deserialize)]` | Removed from PhotoStack |
+
+### Repository trait changes
+
+| Removed | Replacement |
+|---------|-------------|
+| `repo.load_metadata(id)` | `stack.metadata.read()` |
+| `repo.get_stack(id)` | `mgr.get_stack(id)` |
+| `repo.read_image(path)` | `stack.original.read()` |
+| `repo.write_metadata(id, meta)` | `stack.metadata.write(meta)` |
+| `repo.rotate_stack(id, rot, target)` | `stack.original.rotate(rot)` |
+
+| Added | Purpose |
+|-------|---------|
+| `repo.generation()` | Monotonic counter for staleness detection |
+| `repo.set_classifier(c)` | Pluggable image classification via DI |
+| `repo.subscribe()` | Event notifications |
+
+### StackManager → SessionManager
+
+`SessionManager` is the new name. `StackManager` remains as a type alias for backward compatibility.
+
+```rust
+// Both work:
+use photostax_core::stack_manager::SessionManager;
+use photostax_core::stack_manager::StackManager; // still available
+```
+
+### New: SearchQuery repo filter
+
+```rust
+let query = SearchQuery::new()
+    .with_text("vacation")
+    .with_repo_id("a1b2c3d4"); // filter to specific repo
+```
+
+---
+
 ## v0.2.2 → v0.3.0
 
 ### New: Foreign Repository Support

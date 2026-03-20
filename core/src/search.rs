@@ -504,19 +504,25 @@ mod tests {
         exif: Vec<(&str, &str)>,
         custom: Vec<(&str, &str)>,
     ) -> PhotoStack {
-        use std::sync::Arc;
         use crate::image_handle::ImageRef;
         use crate::metadata_handle::{MetadataHandle, MetadataRef};
         use crate::repository::RepositoryError;
+        use std::sync::Arc;
 
         // Inline metadata handle that returns the provided metadata
         struct InlineMetadataHandle {
             data: Metadata,
         }
         impl MetadataHandle for InlineMetadataHandle {
-            fn load(&self) -> Result<Metadata, RepositoryError> { Ok(self.data.clone()) }
-            fn write(&self, _: &Metadata) -> Result<(), RepositoryError> { Ok(()) }
-            fn is_valid(&self) -> bool { true }
+            fn load(&self) -> Result<Metadata, RepositoryError> {
+                Ok(self.data.clone())
+            }
+            fn write(&self, _: &Metadata) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+            fn is_valid(&self) -> bool {
+                true
+            }
         }
 
         // Mock image handle
@@ -525,14 +531,29 @@ mod tests {
             fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
                 Ok(Box::new(std::io::Cursor::new(vec![])))
             }
-            fn stream(&self) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, RepositoryError> {
-                Ok(crate::hashing::HashingReader::new(Box::new(std::io::Cursor::new(vec![]))))
+            fn stream(
+                &self,
+            ) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, RepositoryError>
+            {
+                Ok(crate::hashing::HashingReader::new(Box::new(
+                    std::io::Cursor::new(vec![]),
+                )))
             }
-            fn hash(&self) -> Result<String, RepositoryError> { Ok("0000000000000000".into()) }
-            fn dimensions(&self) -> Result<(u32, u32), RepositoryError> { Ok((1, 1)) }
-            fn size(&self) -> u64 { 0 }
-            fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), RepositoryError> { Ok(()) }
-            fn is_valid(&self) -> bool { true }
+            fn hash(&self) -> Result<String, RepositoryError> {
+                Ok("0000000000000000".into())
+            }
+            fn dimensions(&self) -> Result<(u32, u32), RepositoryError> {
+                Ok((1, 1))
+            }
+            fn size(&self) -> u64 {
+                0
+            }
+            fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+            fn is_valid(&self) -> bool {
+                true
+            }
             fn invalidate(&self) {}
         }
 
@@ -772,10 +793,7 @@ mod tests {
             "IMG_001",
             false,
             vec![],
-            vec![
-                ("count", "42"),
-                ("tags", "[\"a\",\"b\",\"c\"]"),
-            ],
+            vec![("count", "42"), ("tags", "[\"a\",\"b\",\"c\"]")],
         )];
 
         // Number value search

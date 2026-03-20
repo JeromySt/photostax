@@ -52,9 +52,7 @@ use std::sync::Arc;
 use crate::classifier::ImageClassifier;
 use crate::events::{RepoEvent, StackEvent};
 use crate::file_access::{FileAccess, ReadSeek};
-use crate::photo_stack::{
-    PhotoStack, ScanPhase, ScanProgress, ScannerProfile,
-};
+use crate::photo_stack::{PhotoStack, ScanPhase, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
 use crate::scanner::{self, FileEntry, ScannerConfig};
 

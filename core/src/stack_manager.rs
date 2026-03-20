@@ -10,15 +10,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::backends::local_handles::LocalImageHandle;
 use crate::classifier::{DefaultClassifier, ImageClassifier};
 use crate::events::{CacheEvent, FileVariant, StackEvent};
-use crate::backends::local_handles::LocalImageHandle;
 use crate::image_handle::ImageRef;
-use crate::photo_stack::{
-    PhotoStack, ScanProgress, ScannerProfile,
-};
+use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
-use crate::search::{SearchQuery};
+use crate::search::SearchQuery;
 use crate::snapshot::ScanSnapshot;
 
 /// Type alias: `SessionManager` is the new name for `StackManager`.
@@ -119,22 +117,9 @@ impl StackManager {
 
     /// Scan all registered repos and populate the cache.
     ///
-    /// Clears any existing cache entries first.
-    pub fn scan(&mut self) -> Result<usize, StackManagerError> {
-        self.cache.clear();
-        let mut all_stacks = Vec::new();
-        for reg in self.repos.values() {
-            let stacks = reg.repo.scan_with_progress(reg.profile, None)?;
-            all_stacks.extend(stacks);
-        }
-        for stack in all_stacks {
-            self.cache.insert(stack.id.clone(), stack);
-        }
-        Ok(self.cache.len())
-    }
-
-    /// Scan all repos with a progress callback.
-    pub fn scan_with_progress(
+    /// This is called automatically by [`query`](Self::query) when the
+    /// cache is empty. You typically don't need to call it directly.
+    fn scan_repos(
         &mut self,
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
     ) -> Result<usize, StackManagerError> {
@@ -215,41 +200,67 @@ impl StackManager {
 
     /// Query the cache with optional filtering, returning a [`ScanSnapshot`].
     ///
-    /// This is the primary entry point for retrieving stacks. It filters
-    /// directly over the cache without cloning, then returns a snapshot
-    /// for consistent pagination.
+    /// This is the **primary entry point** for retrieving stacks. If the
+    /// cache is empty (no scan has been performed yet), it automatically
+    /// scans all registered repos first. Pass a progress callback to
+    /// receive scan progress notifications.
     ///
-    /// - Empty `SearchQuery` = snapshot of all stacks
-    /// - `SearchQuery` with filters = snapshot of matching stacks
+    /// - `query: None` = scan + return all stacks
+    /// - `query: Some(&SearchQuery)` = scan (if needed) + filter + return matching
+    ///
+    /// The returned [`ScanSnapshot`] supports pagination via
+    /// [`get_page(offset, limit)`](ScanSnapshot::get_page).
     ///
     /// # Examples
     ///
     /// ```rust,no_run
     /// # use photostax_core::stack_manager::StackManager;
     /// # use photostax_core::search::SearchQuery;
-    /// # let mgr = StackManager::new();
-    /// // All stacks
-    /// let snap = mgr.query(&SearchQuery::new());
+    /// # let mut mgr = StackManager::new();
+    /// // All stacks (auto-scans on first call)
+    /// let snap = mgr.query(None, None).unwrap();
     ///
-    /// // Filtered
+    /// // Filtered + progress feedback
     /// let query = SearchQuery::new().with_has_back(true);
-    /// let snap = mgr.query(&query);
+    /// let snap = mgr.query(Some(&query), Some(&mut |p| {
+    ///     println!("Phase {:?}: {}/{}", p.phase, p.current, p.total);
+    /// })).unwrap();
     /// let page1 = snap.get_page(0, 20);
     /// ```
     pub fn query(
-        &self,
-        query: &SearchQuery,
-    ) -> ScanSnapshot {
-        use crate::search::matches_query_ref;
+        &mut self,
+        query: Option<&SearchQuery>,
+        progress: Option<&mut dyn FnMut(&ScanProgress)>,
+    ) -> Result<ScanSnapshot, StackManagerError> {
+        // Auto-scan if cache is empty and we have repos
+        if self.cache.is_empty() && !self.repos.is_empty() {
+            self.scan_repos(progress)?;
+        }
 
+        let default_query = SearchQuery::new();
+        let q = query.unwrap_or(&default_query);
+
+        use crate::search::matches_query_ref;
         let filtered: Vec<PhotoStack> = self
             .cache
             .values()
-            .filter(|stack| matches_query_ref(stack, query))
+            .filter(|stack| matches_query_ref(stack, q))
             .cloned()
             .collect();
 
-        ScanSnapshot::from_stacks(filtered)
+        Ok(ScanSnapshot::from_stacks(filtered))
+    }
+
+    /// Force a rescan of all repositories, replacing the cache.
+    ///
+    /// Unlike [`query`](Self::query) which auto-scans only when the cache
+    /// is empty, this always performs a fresh scan. Use when you know the
+    /// underlying files have changed.
+    pub fn rescan(
+        &mut self,
+        progress: Option<&mut dyn FnMut(&ScanProgress)>,
+    ) -> Result<usize, StackManagerError> {
+        self.scan_repos(progress)
     }
 
     /// Total number of stacks in the cache.
@@ -265,15 +276,6 @@ impl StackManager {
     /// Number of registered repositories.
     pub fn repo_count(&self) -> usize {
         self.repos.len()
-    }
-
-    /// Scan all repos and load metadata for every stack (slow path).
-    pub fn scan_with_metadata(&mut self) -> Result<usize, StackManagerError> {
-        self.scan()?;
-        for stack in self.cache.values_mut() {
-            let _ = stack.metadata.read()?;
-        }
-        Ok(self.cache.len())
     }
 
     /// Subscribe to cache-level events (stack added/updated/removed).
@@ -430,7 +432,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.scan().unwrap();
+        let count = mgr.rescan(None).unwrap();
         assert_eq!(count, 1);
         assert_eq!(mgr.len(), 1);
         assert!(!mgr.is_empty());
@@ -469,7 +471,7 @@ mod tests {
         mgr.add_repo(Box::new(repo2), ScannerProfile::EnhancedAndBack)
             .unwrap();
 
-        let count = mgr.scan().unwrap();
+        let count = mgr.rescan(None).unwrap();
         assert_eq!(count, 2);
         assert_eq!(mgr.repo_count(), 2);
 
@@ -524,7 +526,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let snapshot = mgr.snapshot();
         assert_eq!(snapshot.total_count(), 1);
@@ -545,7 +547,7 @@ mod tests {
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr2.scan().unwrap();
+        mgr2.rescan(None).unwrap();
 
         // Old snapshot vs new cache should be stale
         let status = mgr2.check_status(&snapshot);
@@ -574,7 +576,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
         assert_eq!(mgr.len(), 2);
 
         // Look up each by ID
@@ -598,7 +600,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let id = mgr.stacks()[0].id.clone();
 
@@ -627,13 +629,16 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let id = mgr.stacks()[0].id.clone();
 
         // Rotation via ImageRef handle
         let stack = mgr.get_stack(&id).unwrap();
-        stack.original.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
+        stack
+            .original
+            .rotate(crate::photo_stack::Rotation::Cw90)
+            .unwrap();
         assert_eq!(stack.name, "IMG_001");
     }
 
@@ -672,7 +677,7 @@ mod tests {
             .unwrap();
         mgr.add_repo(Box::new(repo2), ScannerProfile::EnhancedAndBack)
             .unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let snap1 = mgr.snapshot_repo(&repo1_loc);
         let snap2 = mgr.snapshot_repo(&repo2_loc);
@@ -695,7 +700,7 @@ mod tests {
 
         let mut progress_called = false;
         let count = mgr
-            .scan_with_progress(Some(&mut |_progress: &ScanProgress| {
+            .rescan(Some(&mut |_progress: &ScanProgress| {
                 progress_called = true;
             }))
             .unwrap();
@@ -711,7 +716,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let id = mgr.stacks()[0].id.clone();
         let stack = mgr.get_stack_mut(&id).unwrap();
@@ -828,7 +833,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.scan_with_progress(None).unwrap();
+        let count = mgr.rescan(None).unwrap();
         assert_eq!(count, 1);
     }
 
@@ -840,7 +845,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let snap = mgr.snapshot_repo("file:///nonexistent");
         assert_eq!(snap.total_count(), 0);
@@ -854,7 +859,7 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
         assert_eq!(mgr.len(), 2);
 
         let snapshot = mgr.snapshot();
@@ -864,7 +869,7 @@ mod tests {
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr2.scan().unwrap();
+        mgr2.rescan(None).unwrap();
 
         let status = mgr2.check_status(&snapshot);
         assert!(status.is_stale);
@@ -883,8 +888,16 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.scan_with_metadata().unwrap();
+        let count = mgr.rescan(None).unwrap();
         assert_eq!(count, 2);
+
+        // Load metadata for all stacks
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
+        }
 
         // All stacks should be in the cache
         for stack in mgr.stacks() {
@@ -1018,9 +1031,9 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
-        let snap = mgr.query(&SearchQuery::new());
+        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
         assert_eq!(snap.total_count(), 3);
         assert_eq!(snap.stacks().len(), 3);
     }
@@ -1042,9 +1055,9 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
-        let snap = mgr.query(&SearchQuery::new());
+        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
         assert_eq!(snap.total_count(), 5);
 
         let page1 = snap.get_page(0, 2);
@@ -1069,10 +1082,10 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(&query);
+        let snap = mgr.query(Some(&query), None).unwrap();
         assert_eq!(snap.total_count(), 1);
         assert_eq!(snap.stacks()[0].name, "IMG_001");
     }
@@ -1096,10 +1109,10 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
+        mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(&query);
+        let snap = mgr.query(Some(&query), None).unwrap();
         assert_eq!(snap.total_count(), 3);
 
         let page = snap.get_page(0, 2);
@@ -1110,8 +1123,8 @@ mod tests {
 
     #[test]
     fn query_empty_cache() {
-        let mgr = StackManager::new();
-        let snap = mgr.query(&SearchQuery::new());
+        let mut mgr = StackManager::new();
+        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
         assert_eq!(snap.total_count(), 0);
         assert!(snap.stacks().is_empty());
     }

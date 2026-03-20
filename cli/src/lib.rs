@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use photostax_core::backends::local::LocalRepository;
-use photostax_core::metadata::ImageFormat;
 use photostax_core::photo_stack::{Metadata, PhotoStack, Rotation, RotationTarget, ScannerProfile};
 use photostax_core::scanner::ScannerConfig;
 use photostax_core::search::{paginate_stacks, PaginationParams, SearchQuery};
@@ -308,6 +307,36 @@ pub fn parse_key_value(s: &str) -> Result<(String, String), String> {
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
+/// Convert a PhotoStack to a JSON-serializable value.
+fn stack_to_json(stack: &PhotoStack) -> serde_json::Value {
+    let metadata = stack.metadata.cached().map_or_else(
+        || serde_json::json!({"exif_tags": {}, "xmp_tags": {}, "custom_tags": {}}),
+        |m| {
+            serde_json::json!({
+                "exif_tags": m.exif_tags,
+                "xmp_tags": m.xmp_tags,
+                "custom_tags": m.custom_tags,
+            })
+        },
+    );
+    serde_json::json!({
+        "id": stack.id,
+        "name": stack.name,
+        "folder": stack.folder,
+        "location": stack.location,
+        "original": stack.original.is_present(),
+        "enhanced": stack.enhanced.is_present(),
+        "back": stack.back.is_present(),
+        "image_count": stack.image_count(),
+        "metadata": metadata,
+    })
+}
+
+/// Convert a slice of PhotoStacks to a JSON-serializable array.
+fn stacks_to_json(stacks: &[PhotoStack]) -> serde_json::Value {
+    serde_json::Value::Array(stacks.iter().map(stack_to_json).collect())
+}
+
 /// Run the CLI with parsed arguments, writing output to `out` and errors to `err`.
 /// Returns the exit code.
 pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -421,8 +450,8 @@ pub fn cmd_scan(
     format: OutputFormat,
     show_metadata: bool,
     metadata: bool,
-    tiff_only: bool,
-    jpeg_only: bool,
+    _tiff_only: bool,
+    _jpeg_only: bool,
     with_back: bool,
     recursive: bool,
     limit: usize,
@@ -457,28 +486,30 @@ pub fn cmd_scan(
         }
     };
 
-    let scan_result = if load_metadata {
-        mgr.scan_with_metadata()
-    } else {
-        mgr.scan_with_progress(Some(&mut progress_cb))
-    };
-    if let Err(e) = scan_result {
+    if load_metadata {
+        if let Err(e) = mgr.rescan(None) {
+            let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
+            return EXIT_ERROR;
+        }
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
+        }
+    } else if let Err(e) = mgr.query(None, Some(&mut progress_cb)) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(&photostax_core::search::SearchQuery::new(), None)
-        .items;
+        .query(None, None)
+        .expect("cache already populated")
+        .stacks()
+        .to_vec();
     let filtered: Vec<_> = stacks
         .into_iter()
         .filter(|s| {
-            if tiff_only && s.format() != Some(ImageFormat::Tiff) {
-                return false;
-            }
-            if jpeg_only && s.format() != Some(ImageFormat::Jpeg) {
-                return false;
-            }
-            if with_back && s.back.is_none() {
+            if with_back && !s.back.is_present() {
                 return false;
             }
             true
@@ -539,9 +570,15 @@ pub fn cmd_search(
             return EXIT_ERROR;
         }
     };
-    if let Err(e) = mgr.scan_with_metadata() {
+    if let Err(e) = mgr.rescan(None) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
+    }
+    let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+    for id in &ids {
+        if let Some(s) = mgr.get_stack_mut(id) {
+            let _ = s.metadata.read();
+        }
     }
 
     // Build search query
@@ -565,7 +602,14 @@ pub fn cmd_search(
 
     // Apply pagination if limit > 0
     if limit > 0 {
-        let paginated = mgr.query(&search, Some(&PaginationParams { offset, limit }));
+        let snapshot = match mgr.query(Some(&search), None) {
+            Ok(snap) => snap,
+            Err(e) => {
+                let _ = writeln!(err, "Error querying: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        let paginated = snapshot.get_page(offset, limit);
         output_stacks(out, &paginated.items, format, false, directory);
         if format == OutputFormat::Json {
             let _ = writeln!(
@@ -588,8 +632,14 @@ pub fn cmd_search(
             );
         }
     } else {
-        let results = mgr.query(&search, None);
-        output_stacks(out, &results.items, format, false, directory);
+        let results = match mgr.query(Some(&search), None) {
+            Ok(snap) => snap,
+            Err(e) => {
+                let _ = writeln!(err, "Error querying: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        output_stacks(out, results.stacks(), format, false, directory);
     }
     EXIT_SUCCESS
 }
@@ -602,7 +652,7 @@ fn resolve_stack(
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
     if mgr.is_empty() {
-        mgr.scan()
+        mgr.rescan(None)
             .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     }
     if let Some(s) = mgr.get_stack(id_or_name) {
@@ -610,8 +660,14 @@ fn resolve_stack(
     }
     // Fall back: find by name
     let query = SearchQuery::new().with_text(id_or_name);
-    let results = mgr.query(&query, None);
-    let found = results.items.into_iter().find(|s| s.name == id_or_name);
+    let results = mgr
+        .query(Some(&query), None)
+        .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
+    let found = results
+        .stacks()
+        .iter()
+        .find(|s| s.name == id_or_name)
+        .cloned();
     found.ok_or_else(|| {
         photostax_core::repository::RepositoryError::NotFound(id_or_name.to_string())
     })
@@ -633,7 +689,7 @@ pub fn cmd_info(
             return EXIT_ERROR;
         }
     };
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let mut stack = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -645,15 +701,18 @@ pub fn cmd_info(
         }
     };
 
-    if let Err(e) = mgr.load_metadata(&stack.id) {
+    if let Err(e) = stack.metadata.read() {
         let _ = writeln!(err, "Error loading metadata: {e}");
         return EXIT_ERROR;
     }
-    let stack = mgr.get_stack(&stack.id).cloned().unwrap();
 
     match format {
         OutputFormat::Json => {
-            let _ = writeln!(out, "{}", serde_json::to_string_pretty(&stack).unwrap());
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&stack_to_json(&stack)).unwrap()
+            );
         }
         OutputFormat::Csv => {
             output_info_csv(out, &stack);
@@ -682,7 +741,7 @@ pub fn cmd_metadata_read(
             return EXIT_ERROR;
         }
     };
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let mut stack = match resolve_stack(&mut mgr, stack_id) {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -694,25 +753,23 @@ pub fn cmd_metadata_read(
         }
     };
 
-    if let Err(e) = mgr.load_metadata(&stack.id) {
-        let _ = writeln!(err, "Error loading metadata: {e}");
-        return EXIT_ERROR;
-    }
-    let stack = mgr.get_stack(&stack.id).cloned().unwrap();
+    let metadata = match stack.metadata.read() {
+        Ok(m) => m.clone(),
+        Err(e) => {
+            let _ = writeln!(err, "Error loading metadata: {e}");
+            return EXIT_ERROR;
+        }
+    };
 
     match format {
         OutputFormat::Json => {
-            let _ = writeln!(
-                out,
-                "{}",
-                serde_json::to_string_pretty(&stack.metadata).unwrap()
-            );
+            let _ = writeln!(out, "{}", serde_json::to_string_pretty(&metadata).unwrap());
         }
         OutputFormat::Csv => {
-            output_metadata_csv(out, &stack.metadata);
+            output_metadata_csv(out, &metadata);
         }
         OutputFormat::Table => {
-            output_metadata_table(out, &stack.metadata);
+            output_metadata_table(out, &metadata);
         }
     }
 
@@ -747,11 +804,6 @@ pub fn cmd_metadata_write(
         }
     };
 
-    if let Err(e) = mgr.load_metadata(&stack.id) {
-        let _ = writeln!(err, "Error loading metadata: {e}");
-        return EXIT_ERROR;
-    }
-
     let mut new_tags = Metadata::default();
     for (key, value) in tags {
         new_tags
@@ -759,7 +811,8 @@ pub fn cmd_metadata_write(
             .insert(key.clone(), serde_json::Value::String(value.clone()));
     }
 
-    if let Err(e) = mgr.write_metadata(&stack.id, &new_tags) {
+    // Use the stack's MetadataRef to write
+    if let Err(e) = stack.metadata.write(&new_tags) {
         let _ = writeln!(err, "Error writing metadata: {e}");
         return EXIT_ERROR;
     }
@@ -822,15 +875,23 @@ pub fn cmd_export(
             return EXIT_ERROR;
         }
     };
-    if let Err(e) = mgr.scan_with_metadata() {
+    if let Err(e) = mgr.rescan(None) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
+    let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+    for id in &ids {
+        if let Some(s) = mgr.get_stack_mut(id) {
+            let _ = s.metadata.read();
+        }
+    }
     let stacks: Vec<PhotoStack> = mgr
-        .query(&photostax_core::search::SearchQuery::new(), None)
-        .items;
+        .query(None, None)
+        .expect("cache already populated")
+        .stacks()
+        .to_vec();
 
-    let json = serde_json::to_string_pretty(&stacks).unwrap();
+    let json = serde_json::to_string_pretty(&stacks_to_json(&stacks)).unwrap();
 
     match output {
         Some(path) => {
@@ -884,8 +945,8 @@ pub fn cmd_rotate(
     };
 
     // Resolve the stack ID (supports both opaque IDs and display names)
-    let resolved_id = match resolve_stack(&mut mgr, stack_id) {
-        Ok(s) => s.id,
+    let stack = match resolve_stack(&mut mgr, stack_id) {
+        Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
             return EXIT_NOT_FOUND;
@@ -896,19 +957,30 @@ pub fn cmd_rotate(
         }
     };
 
-    let stack = match mgr.rotate_stack(&resolved_id, rotation, target) {
-        Ok(s) => s.clone(),
-        Err(photostax_core::stack_manager::StackManagerError::Repository(
-            photostax_core::repository::RepositoryError::NotFound(_),
-        )) => {
-            let _ = writeln!(err, "Stack not found: {stack_id}");
-            return EXIT_NOT_FOUND;
+    // Perform rotation on each ImageRef based on target
+    let rotate_front = matches!(target, RotationTarget::All | RotationTarget::Front);
+    let rotate_back = matches!(target, RotationTarget::All | RotationTarget::Back);
+
+    if rotate_front {
+        if stack.original.is_present() {
+            if let Err(e) = stack.original.rotate(rotation) {
+                let _ = writeln!(err, "Error rotating original: {e}");
+                return EXIT_ERROR;
+            }
         }
-        Err(e) => {
-            let _ = writeln!(err, "Error rotating stack: {e}");
+        if stack.enhanced.is_present() {
+            if let Err(e) = stack.enhanced.rotate(rotation) {
+                let _ = writeln!(err, "Error rotating enhanced: {e}");
+                return EXIT_ERROR;
+            }
+        }
+    }
+    if rotate_back && stack.back.is_present() {
+        if let Err(e) = stack.back.rotate(rotation) {
+            let _ = writeln!(err, "Error rotating back: {e}");
             return EXIT_ERROR;
         }
-    };
+    }
 
     let _ = writeln!(
         out,
@@ -919,7 +991,11 @@ pub fn cmd_rotate(
     );
 
     if format == OutputFormat::Json {
-        let _ = writeln!(out, "{}", serde_json::to_string_pretty(&stack).unwrap());
+        let _ = writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&stack_to_json(&stack)).unwrap()
+        );
     }
 
     EXIT_SUCCESS
@@ -939,7 +1015,11 @@ pub fn output_stacks(
 ) {
     match format {
         OutputFormat::Json => {
-            let _ = writeln!(out, "{}", serde_json::to_string_pretty(stacks).unwrap());
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&stacks_to_json(stacks)).unwrap()
+            );
         }
         OutputFormat::Csv => {
             output_stacks_csv(out, stacks, show_metadata);
@@ -995,56 +1075,37 @@ pub fn output_stacks_table(
     );
 
     for stack in stacks {
-        let format_str = match stack.format() {
-            Some(ImageFormat::Jpeg) => "JPEG",
-            Some(ImageFormat::Tiff) => "TIFF",
-            None => "-",
+        let orig = if stack.original.is_present() {
+            "✓"
+        } else {
+            "-"
         };
-        let orig = if stack.original.is_some() { "✓" } else { "-" };
-        let enh = if stack.enhanced.is_some() { "✓" } else { "-" };
-        let back = if stack.back.is_some() { "✓" } else { "-" };
-        let tags = stack.metadata.exif_tags.len() + stack.metadata.custom_tags.len();
+        let enh = if stack.enhanced.is_present() {
+            "✓"
+        } else {
+            "-"
+        };
+        let back = if stack.back.is_present() { "✓" } else { "-" };
+        let tags = stack
+            .metadata
+            .cached()
+            .map_or(0, |m| m.exif_tags.len() + m.custom_tags.len());
 
         let _ = writeln!(
             out,
             "│ {:<max_id$} │ {:<7} │    {:<5} │  {:<3} │  {:<3} │ {:>6} │",
-            stack.name, format_str, orig, enh, back, tags
+            stack.name, "-", orig, enh, back, tags
         );
 
         if show_metadata {
-            // Show file paths
-            if let Some(ref f) = stack.original {
-                let _ = writeln!(
-                    out,
-                    "│ {:<max_id$} │         │ {}",
-                    "",
-                    Path::new(&f.path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                );
+            if stack.original.is_present() {
+                let _ = writeln!(out, "│ {:<max_id$} │         │ (original)", "");
             }
-            if let Some(ref f) = stack.enhanced {
-                let _ = writeln!(
-                    out,
-                    "│ {:<max_id$} │         │ {}",
-                    "",
-                    Path::new(&f.path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                );
+            if stack.enhanced.is_present() {
+                let _ = writeln!(out, "│ {:<max_id$} │         │ (enhanced)", "");
             }
-            if let Some(ref f) = stack.back {
-                let _ = writeln!(
-                    out,
-                    "│ {:<max_id$} │         │ {}",
-                    "",
-                    Path::new(&f.path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                );
+            if stack.back.is_present() {
+                let _ = writeln!(out, "│ {:<max_id$} │         │ (back)", "");
             }
         }
     }
@@ -1071,49 +1132,41 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
     }
 
     for stack in stacks {
-        let format_str = match stack.format() {
-            Some(ImageFormat::Jpeg) => "jpeg",
-            Some(ImageFormat::Tiff) => "tiff",
-            None => "",
-        };
-
         if show_metadata {
-            let orig = stack
-                .original
-                .as_ref()
-                .map(|f| f.path.clone())
-                .unwrap_or_default();
-            let enh = stack
-                .enhanced
-                .as_ref()
-                .map(|f| f.path.clone())
-                .unwrap_or_default();
-            let back = stack
-                .back
-                .as_ref()
-                .map(|f| f.path.clone())
-                .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "{},{},\"{}\",\"{}\",\"{}\",{},{}",
+                "{},-,{},{},{},{},{}",
                 stack.name,
-                format_str,
-                orig,
-                enh,
-                back,
-                stack.metadata.exif_tags.len(),
-                stack.metadata.custom_tags.len()
+                if stack.original.is_present() {
+                    "present"
+                } else {
+                    ""
+                },
+                if stack.enhanced.is_present() {
+                    "present"
+                } else {
+                    ""
+                },
+                if stack.back.is_present() {
+                    "present"
+                } else {
+                    ""
+                },
+                stack.metadata.cached().map_or(0, |m| m.exif_tags.len()),
+                stack.metadata.cached().map_or(0, |m| m.custom_tags.len())
             );
         } else {
-            let tags = stack.metadata.exif_tags.len() + stack.metadata.custom_tags.len();
+            let tags = stack
+                .metadata
+                .cached()
+                .map_or(0, |m| m.exif_tags.len() + m.custom_tags.len());
             let _ = writeln!(
                 out,
-                "{},{},{},{},{},{}",
+                "{},-,{},{},{},{}",
                 stack.name,
-                format_str,
-                stack.original.is_some(),
-                stack.enhanced.is_some(),
-                stack.back.is_some(),
+                stack.original.is_present(),
+                stack.enhanced.is_present(),
+                stack.back.is_present(),
                 tags
             );
         }
@@ -1122,12 +1175,6 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
 
 /// Output stack info as table
 pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
-    let format_str = match stack.format() {
-        Some(ImageFormat::Jpeg) => "JPEG",
-        Some(ImageFormat::Tiff) => "TIFF",
-        None => "Unknown",
-    };
-
     let _ = writeln!(
         out,
         "┌──────────────────────────────────────────────────────────────────┐"
@@ -1137,7 +1184,6 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         out,
         "├──────────────────────────────────────────────────────────────────┤"
     );
-    let _ = writeln!(out, "│ Format: {:<56} │", format_str);
 
     // Files section
     let _ = writeln!(
@@ -1148,97 +1194,90 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         out,
         "│ Files:                                                           │"
     );
-    if let Some(ref f) = stack.original {
-        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
+    if stack.original.is_present() {
+        let size = stack.original.size().unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Original: {:<40} ({:>8}) │",
-            Path::new(&f.path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            "(present)",
             format_size(size)
         );
     }
-    if let Some(ref f) = stack.enhanced {
-        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
+    if stack.enhanced.is_present() {
+        let size = stack.enhanced.size().unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Enhanced: {:<40} ({:>8}) │",
-            Path::new(&f.path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            "(present)",
             format_size(size)
         );
     }
-    if let Some(ref f) = stack.back {
-        let size = std::fs::metadata(&f.path).map(|m| m.len()).unwrap_or(0);
+    if stack.back.is_present() {
+        let size = stack.back.size().unwrap_or(0);
         let _ = writeln!(
             out,
             "│   Back:     {:<40} ({:>8}) │",
-            Path::new(&f.path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            "(present)",
             format_size(size)
         );
     }
 
-    // EXIF tags
-    if !stack.metadata.exif_tags.is_empty() {
-        let _ = writeln!(
-            out,
-            "├──────────────────────────────────────────────────────────────────┤"
-        );
-        let _ = writeln!(out, "│ EXIF Tags ({}):", stack.metadata.exif_tags.len());
-        let width = 62;
-        for (key, value) in &stack.metadata.exif_tags {
-            let kv = format!("{}: {}", key, value);
-            let truncated = if kv.len() > width {
-                format!("{}...", &kv[..width - 3])
-            } else {
-                kv
-            };
-            let _ = writeln!(out, "│   {:<width$} │", truncated);
+    if let Some(m) = stack.metadata.cached() {
+        // EXIF tags
+        if !m.exif_tags.is_empty() {
+            let _ = writeln!(
+                out,
+                "├──────────────────────────────────────────────────────────────────┤"
+            );
+            let _ = writeln!(out, "│ EXIF Tags ({}):", m.exif_tags.len());
+            let width = 62;
+            for (key, value) in &m.exif_tags {
+                let kv = format!("{}: {}", key, value);
+                let truncated = if kv.len() > width {
+                    format!("{}...", &kv[..width - 3])
+                } else {
+                    kv
+                };
+                let _ = writeln!(out, "│   {:<width$} │", truncated);
+            }
         }
-    }
 
-    // XMP tags
-    if !stack.metadata.xmp_tags.is_empty() {
-        let _ = writeln!(
-            out,
-            "├──────────────────────────────────────────────────────────────────┤"
-        );
-        let _ = writeln!(out, "│ XMP Tags ({}):", stack.metadata.xmp_tags.len());
-        let width = 62;
-        for (key, value) in &stack.metadata.xmp_tags {
-            let kv = format!("{}: {}", key, value);
-            let truncated = if kv.len() > width {
-                format!("{}...", &kv[..width - 3])
-            } else {
-                kv
-            };
-            let _ = writeln!(out, "│   {:<width$} │", truncated);
+        // XMP tags
+        if !m.xmp_tags.is_empty() {
+            let _ = writeln!(
+                out,
+                "├──────────────────────────────────────────────────────────────────┤"
+            );
+            let _ = writeln!(out, "│ XMP Tags ({}):", m.xmp_tags.len());
+            let width = 62;
+            for (key, value) in &m.xmp_tags {
+                let kv = format!("{}: {}", key, value);
+                let truncated = if kv.len() > width {
+                    format!("{}...", &kv[..width - 3])
+                } else {
+                    kv
+                };
+                let _ = writeln!(out, "│   {:<width$} │", truncated);
+            }
         }
-    }
 
-    // Custom tags
-    if !stack.metadata.custom_tags.is_empty() {
-        let _ = writeln!(
-            out,
-            "├──────────────────────────────────────────────────────────────────┤"
-        );
-        let _ = writeln!(out, "│ Custom Tags ({}):", stack.metadata.custom_tags.len());
-        let width = 62;
-        for (key, value) in &stack.metadata.custom_tags {
-            let kv = format!("{}: {}", key, value);
-            let truncated = if kv.len() > width {
-                format!("{}...", &kv[..width - 3])
-            } else {
-                kv
-            };
-            let _ = writeln!(out, "│   {:<width$} │", truncated);
+        // Custom tags
+        if !m.custom_tags.is_empty() {
+            let _ = writeln!(
+                out,
+                "├──────────────────────────────────────────────────────────────────┤"
+            );
+            let _ = writeln!(out, "│ Custom Tags ({}):", m.custom_tags.len());
+            let width = 62;
+            for (key, value) in &m.custom_tags {
+                let kv = format!("{}: {}", key, value);
+                let truncated = if kv.len() > width {
+                    format!("{}...", &kv[..width - 3])
+                } else {
+                    kv
+                };
+                let _ = writeln!(out, "│   {:<width$} │", truncated);
+            }
         }
     }
 
@@ -1253,24 +1292,26 @@ pub fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
     let _ = writeln!(out, "type,key,value");
     let _ = writeln!(out, "id,,{}", stack.name);
 
-    if let Some(ref f) = stack.original {
-        let _ = writeln!(out, "file,original,{}", f.path);
+    if stack.original.is_present() {
+        let _ = writeln!(out, "file,original,present");
     }
-    if let Some(ref f) = stack.enhanced {
-        let _ = writeln!(out, "file,enhanced,{}", f.path);
+    if stack.enhanced.is_present() {
+        let _ = writeln!(out, "file,enhanced,present");
     }
-    if let Some(ref f) = stack.back {
-        let _ = writeln!(out, "file,back,{}", f.path);
+    if stack.back.is_present() {
+        let _ = writeln!(out, "file,back,present");
     }
 
-    for (key, value) in &stack.metadata.exif_tags {
-        let _ = writeln!(out, "exif,{},{}", key, escape_csv(value));
-    }
-    for (key, value) in &stack.metadata.xmp_tags {
-        let _ = writeln!(out, "xmp,{},{}", key, escape_csv(value));
-    }
-    for (key, value) in &stack.metadata.custom_tags {
-        let _ = writeln!(out, "custom,{},{}", key, escape_csv(&value.to_string()));
+    if let Some(m) = stack.metadata.cached() {
+        for (key, value) in &m.exif_tags {
+            let _ = writeln!(out, "exif,{},{}", key, escape_csv(value));
+        }
+        for (key, value) in &m.xmp_tags {
+            let _ = writeln!(out, "xmp,{},{}", key, escape_csv(value));
+        }
+        for (key, value) in &m.custom_tags {
+            let _ = writeln!(out, "custom,{},{}", key, escape_csv(&value.to_string()));
+        }
     }
 }
 
@@ -1405,9 +1446,39 @@ pub fn escape_csv(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use photostax_core::hashing::ImageFile;
+    use photostax_core::backends::local_handles::LocalImageHandle;
+    use photostax_core::image_handle::ImageRef;
+    use photostax_core::metadata_handle::{MetadataHandle, MetadataRef};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// A test metadata handle that returns pre-loaded metadata.
+    struct InlineMetadataHandle {
+        data: Metadata,
+    }
+    impl MetadataHandle for InlineMetadataHandle {
+        fn load(&self) -> Result<Metadata, photostax_core::repository::RepositoryError> {
+            Ok(self.data.clone())
+        }
+        fn write(&self, _: &Metadata) -> Result<(), photostax_core::repository::RepositoryError> {
+            Ok(())
+        }
+        fn is_valid(&self) -> bool {
+            true
+        }
+    }
+
+    fn make_image_ref(path: &str) -> ImageRef {
+        ImageRef::new(Arc::new(LocalImageHandle::new(path, 0)))
+    }
+
+    fn make_metadata_ref(metadata: Metadata) -> MetadataRef {
+        let handle = Arc::new(InlineMetadataHandle { data: metadata });
+        let mut mr = MetadataRef::new(handle);
+        let _ = mr.read(); // trigger load so cached() returns Some
+        mr
+    }
 
     fn testdata_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1432,9 +1503,9 @@ mod tests {
 
     fn make_stack(id: &str) -> PhotoStack {
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("/photos/{id}.jpg"), 0));
-        stack.enhanced = Some(ImageFile::new(format!("/photos/{id}_a.jpg"), 0));
-        stack.back = Some(ImageFile::new(format!("/photos/{id}_b.jpg"), 0));
+        stack.original = make_image_ref(&format!("/photos/{id}.jpg"));
+        stack.enhanced = make_image_ref(&format!("/photos/{id}_a.jpg"));
+        stack.back = make_image_ref(&format!("/photos/{id}_b.jpg"));
         stack
     }
 
@@ -1453,19 +1524,19 @@ mod tests {
         );
 
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("/photos/{id}.jpg"), 0));
-        stack.enhanced = Some(ImageFile::new(format!("/photos/{id}_a.jpg"), 0));
-        stack.metadata = Metadata {
+        stack.original = make_image_ref(&format!("/photos/{id}.jpg"));
+        stack.enhanced = make_image_ref(&format!("/photos/{id}_a.jpg"));
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags,
             xmp_tags,
             custom_tags,
-        };
+        });
         stack
     }
 
     fn make_tiff_stack(id: &str) -> PhotoStack {
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("/photos/{id}.tif"), 0));
+        stack.original = make_image_ref(&format!("/photos/{id}.tif"));
         stack
     }
 
@@ -1572,8 +1643,9 @@ mod tests {
         output_stacks_csv(&mut buf, &stacks, false);
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("id,format,has_original"));
-        assert!(output.contains("IMG_0001,jpeg,true,true,true"));
-        assert!(output.contains("IMG_0002,tiff,true,false,false"));
+        // Format is now "-" since format() was removed
+        assert!(output.contains("IMG_0001,-,true,true,true"));
+        assert!(output.contains("IMG_0002,-,true,false,false"));
     }
 
     #[test]
@@ -1602,7 +1674,8 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Found 2 photo stack(s)"));
         assert!(output.contains("IMG_0001"));
-        assert!(output.contains("JPEG"));
+        // Format is now "-" since format() was removed
+        assert!(output.contains("-"));
     }
 
     #[test]
@@ -1611,9 +1684,10 @@ mod tests {
         let mut buf = Vec::new();
         output_stacks_table(&mut buf, &stacks, true, &PathBuf::from("/photos"));
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("IMG_0001.jpg"));
-        assert!(output.contains("IMG_0001_a.jpg"));
-        assert!(output.contains("IMG_0001_b.jpg"));
+        // Paths are no longer exposed; show_metadata shows "(original)", "(enhanced)", "(back)"
+        assert!(output.contains("(original)"));
+        assert!(output.contains("(enhanced)"));
+        assert!(output.contains("(back)"));
     }
 
     #[test]
@@ -1623,7 +1697,7 @@ mod tests {
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Stack: IMG_0001"));
-        assert!(output.contains("JPEG"));
+        // Format is no longer shown; verify metadata is present
         assert!(output.contains("EXIF Tags"));
         assert!(output.contains("EPSON"));
         assert!(output.contains("XMP Tags"));
@@ -1639,7 +1713,7 @@ mod tests {
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Stack: EMPTY"));
-        assert!(output.contains("Unknown"));
+        // No "Unknown" format — format column removed
     }
 
     #[test]
@@ -1682,7 +1756,7 @@ mod tests {
     fn test_output_metadata_table_with_tags() {
         let stack = make_stack_with_metadata("test");
         let mut buf = Vec::new();
-        output_metadata_table(&mut buf, &stack.metadata);
+        output_metadata_table(&mut buf, stack.metadata.cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("EXIF Tags (2):"));
         assert!(output.contains("EPSON"));
@@ -1719,7 +1793,7 @@ mod tests {
     fn test_output_metadata_csv_with_tags() {
         let stack = make_stack_with_metadata("test");
         let mut buf = Vec::new();
-        output_metadata_csv(&mut buf, &stack.metadata);
+        output_metadata_csv(&mut buf, stack.metadata.cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("exif,Make,EPSON"));
         assert!(output.contains("xmp,Creator,Test User"));
@@ -1901,7 +1975,13 @@ mod tests {
         );
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
-        assert!(output.contains(".jpg") || output.contains(".tif"));
+        // Paths no longer shown; show_metadata shows "(original)", "(enhanced)", or "(back)"
+        assert!(
+            output.contains("(original)")
+                || output.contains("(enhanced)")
+                || output.contains("(back)")
+                || output.contains("present")
+        );
     }
 
     #[test]
@@ -2414,7 +2494,9 @@ mod tests {
         let mut buf = Vec::new();
         output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos"));
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("TIFF"));
+        // Format is now "-" since format() was removed
+        assert!(output.contains("IMG_0001"));
+        assert!(output.contains("-"));
     }
 
     #[test]
@@ -2432,7 +2514,8 @@ mod tests {
         let mut buf = Vec::new();
         output_stacks_csv(&mut buf, &stacks, false);
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("tiff"));
+        // Format is now "-" since format() was removed
+        assert!(output.contains("IMG_0001,-,true,false,false"));
     }
 
     #[test]
@@ -2441,8 +2524,8 @@ mod tests {
         let mut buf = Vec::new();
         output_stacks_csv(&mut buf, &stacks, false);
         let output = String::from_utf8(buf).unwrap();
-        // Empty format when no images
-        assert!(output.contains("IMG_0001,,false,false,false"));
+        // Format is now always "-"
+        assert!(output.contains("IMG_0001,-,false,false,false"));
     }
 
     #[test]
@@ -2450,11 +2533,11 @@ mod tests {
         let mut exif_tags = HashMap::new();
         exif_tags.insert("Description".to_string(), "A".repeat(100));
         let mut stack = PhotoStack::new("TRUNC");
-        stack.metadata = Metadata {
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags,
             xmp_tags: HashMap::new(),
             custom_tags: HashMap::new(),
-        };
+        });
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
@@ -2467,7 +2550,7 @@ mod tests {
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("TIFF"));
+        assert!(output.contains("Stack: TIFF_0001"));
     }
 
     // ======================== run_cli dispatch tests ========================
@@ -2610,12 +2693,12 @@ mod tests {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Creator".to_string(), "John Doe".to_string());
         let mut stack = PhotoStack::new("XMP_TEST");
-        stack.original = Some(ImageFile::new("/photos/XMP_TEST.jpg", 0));
-        stack.metadata = Metadata {
+        stack.original = make_image_ref("/photos/XMP_TEST.jpg");
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags: HashMap::new(),
-        };
+        });
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
@@ -2631,11 +2714,11 @@ mod tests {
             serde_json::Value::String("vacation".to_string()),
         );
         let mut stack = PhotoStack::new("CUSTOM_TEST");
-        stack.metadata = Metadata {
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags: HashMap::new(),
             xmp_tags: HashMap::new(),
             custom_tags,
-        };
+        });
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
@@ -2666,14 +2749,14 @@ mod tests {
         let mut custom_tags = HashMap::new();
         custom_tags.insert("rating".to_string(), serde_json::Value::from(5));
         let mut stack = PhotoStack::new("CSV_TAGS");
-        stack.original = Some(ImageFile::new("/photos/CSV_TAGS.jpg", 0));
-        stack.enhanced = Some(ImageFile::new("/photos/CSV_TAGS_a.jpg", 0));
-        stack.back = Some(ImageFile::new("/photos/CSV_TAGS_b.jpg", 0));
-        stack.metadata = Metadata {
+        stack.original = make_image_ref("/photos/CSV_TAGS.jpg");
+        stack.enhanced = make_image_ref("/photos/CSV_TAGS_a.jpg");
+        stack.back = make_image_ref("/photos/CSV_TAGS_b.jpg");
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags,
-        };
+        });
         let mut buf = Vec::new();
         output_info_csv(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
@@ -2704,11 +2787,11 @@ mod tests {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Description".to_string(), "X".repeat(100));
         let mut stack = PhotoStack::new("LONG_XMP");
-        stack.metadata = Metadata {
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags: HashMap::new(),
-        };
+        });
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();
@@ -2723,11 +2806,11 @@ mod tests {
             serde_json::Value::String("Y".repeat(100)),
         );
         let mut stack = PhotoStack::new("LONG_CUSTOM");
-        stack.metadata = Metadata {
+        stack.metadata = make_metadata_ref(Metadata {
             exif_tags: HashMap::new(),
             xmp_tags: HashMap::new(),
             custom_tags,
-        };
+        });
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack);
         let output = String::from_utf8(buf).unwrap();

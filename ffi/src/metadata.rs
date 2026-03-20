@@ -40,22 +40,25 @@ pub unsafe extern "C" fn photostax_get_metadata(
 
         let mut mgr = repo_ref.inner.borrow_mut();
         // Ensure cache is populated
-        if mgr.is_empty() && mgr.scan().is_err() {
-            return ptr::null_mut();
-        }
-        if mgr.load_metadata(stack_id_str).is_err() {
+        if mgr.is_empty() && mgr.rescan(None).is_err() {
             return ptr::null_mut();
         }
 
-        let stack = match mgr.get_stack(stack_id_str) {
+        let stack = match mgr.get_stack_mut(stack_id_str) {
             Some(s) => s,
             None => return ptr::null_mut(),
         };
 
+        // Load metadata via MetadataRef
+        let metadata = match stack.metadata.read() {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
         let metadata_json = serde_json::json!({
-            "exif_tags": stack.metadata.exif_tags,
-            "xmp_tags": stack.metadata.xmp_tags,
-            "custom_tags": stack.metadata.custom_tags,
+            "exif_tags": metadata.exif_tags,
+            "xmp_tags": metadata.xmp_tags,
+            "custom_tags": metadata.custom_tags,
         });
 
         let json_str =
@@ -101,19 +104,21 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
         };
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.is_empty() && mgr.scan().is_err() {
-            return ptr::null_mut();
-        }
-        if mgr.load_metadata(stack_id_str).is_err() {
+        if mgr.is_empty() && mgr.rescan(None).is_err() {
             return ptr::null_mut();
         }
 
-        let stack = match mgr.get_stack(stack_id_str) {
+        let stack = match mgr.get_stack_mut(stack_id_str) {
             Some(s) => s,
             None => return ptr::null_mut(),
         };
 
-        match stack.metadata.exif_tags.get(tag_name_str) {
+        let metadata = match stack.metadata.read() {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        match metadata.exif_tags.get(tag_name_str) {
             Some(value) => CString::new(value.as_str())
                 .map(|s| s.into_raw())
                 .unwrap_or(ptr::null_mut()),
@@ -157,16 +162,21 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
         };
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.load_metadata(stack_id_str).is_err() {
+        if mgr.is_empty() && mgr.rescan(None).is_err() {
             return ptr::null_mut();
         }
 
-        let stack = match mgr.get_stack(stack_id_str) {
+        let stack = match mgr.get_stack_mut(stack_id_str) {
             Some(s) => s,
             None => return ptr::null_mut(),
         };
 
-        match stack.metadata.custom_tags.get(tag_name_str) {
+        let metadata = match stack.metadata.read() {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        match metadata.custom_tags.get(tag_name_str) {
             Some(value) => {
                 let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
                 CString::new(json_str)
@@ -241,13 +251,16 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
         };
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        if mgr.is_empty() && mgr.scan().is_err() {
+        if mgr.is_empty() && mgr.rescan(None).is_err() {
             return FfiResult::error("Failed to scan repository");
         }
-        drop(mgr);
 
-        let mgr = repo_ref.inner.borrow();
-        match mgr.write_metadata(stack_id_str, &metadata) {
+        let stack = match mgr.get_stack_mut(stack_id_str) {
+            Some(s) => s,
+            None => return FfiResult::error(&format!("Stack not found: {stack_id_str}")),
+        };
+
+        match stack.metadata.write(&metadata) {
             Ok(()) => FfiResult::success(),
             Err(e) => FfiResult::error(&e.to_string()),
         }

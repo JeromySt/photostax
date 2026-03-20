@@ -121,9 +121,7 @@ fn test_end_to_end_scan_search_metadata() {
     // XMP tags should be readable
     assert!(
         meta_after.xmp_tags.contains_key("description")
-            || meta_after
-                .custom_tags
-                .contains_key("xmp:description")
+            || meta_after.custom_tags.contains_key("xmp:description")
     );
 }
 

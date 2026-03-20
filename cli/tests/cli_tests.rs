@@ -207,9 +207,9 @@ fn test_scan_csv_output() {
 
     assert!(output.status.success());
     assert!(stdout.contains("id,format,"));
-    assert!(stdout.contains("IMG_001,jpeg,"));
-    assert!(stdout.contains("IMG_002,jpeg,"));
-    assert!(stdout.contains("IMG_003,jpeg,"));
+    assert!(stdout.contains("IMG_001,-,"));
+    assert!(stdout.contains("IMG_002,-,"));
+    assert!(stdout.contains("IMG_003,-,"));
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn test_info_existing_stack() {
 
     assert!(output.status.success());
     assert!(stdout.contains("IMG_001"));
-    assert!(stdout.contains("JPEG"));
+    assert!(stdout.contains("Original"));
 }
 
 #[test]

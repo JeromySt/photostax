@@ -240,16 +240,13 @@ impl MetadataHandle for LocalMetadataHandle {
                             .insert("folder_year".to_string(), serde_json::json!(year));
                     }
                     if !meta.xmp_tags.contains_key("date") {
-                        meta.xmp_tags
-                            .insert("date".to_string(), format!("{year}"));
+                        meta.xmp_tags.insert("date".to_string(), format!("{year}"));
                     }
                 }
                 if let Some(ref ms) = fm.month_or_season {
                     if !meta.custom_tags.contains_key("folder_month_or_season") {
-                        meta.custom_tags.insert(
-                            "folder_month_or_season".to_string(),
-                            serde_json::json!(ms),
-                        );
+                        meta.custom_tags
+                            .insert("folder_month_or_season".to_string(), serde_json::json!(ms));
                     }
                 }
                 if let Some(ref subj) = fm.subject {
