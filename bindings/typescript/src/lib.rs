@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use napi::bindgen_prelude::*;
 use napi::{NapiRaw, NapiValue};
@@ -80,30 +81,19 @@ impl From<JsMetadata> for CoreMetadata {
     }
 }
 
-/// A unified representation of a single scanned photo from an Epson FastFoto scanner.
-///
-/// Groups the original scan, enhanced version, and back-of-photo image into
-/// a single logical unit with associated metadata.
-#[napi(object)]
+// Internal data container — NOT exported to JS.
 #[derive(Clone)]
-pub struct JsPhotoStack {
-    /// Unique identifier derived from the base filename
-    pub id: String,
-    /// Human-readable display name (file stem)
-    pub name: String,
-    /// Subfolder within the repository (null if root-level)
-    pub folder: Option<String>,
-    /// Path to the original front scan (may be null)
-    pub original: Option<String>,
-    /// Path to the enhanced/color-corrected scan (may be null)
-    pub enhanced: Option<String>,
-    /// Path to the back-of-photo scan (may be null)
-    pub back: Option<String>,
-    /// Combined metadata from all sources
-    pub metadata: JsMetadata,
+struct PhotoStackData {
+    id: String,
+    name: String,
+    folder: Option<String>,
+    original: Option<String>,
+    enhanced: Option<String>,
+    back: Option<String>,
+    metadata: JsMetadata,
 }
 
-impl From<CorePhotoStack> for JsPhotoStack {
+impl From<CorePhotoStack> for PhotoStackData {
     fn from(s: CorePhotoStack) -> Self {
         Self {
             id: s.id,
@@ -117,7 +107,7 @@ impl From<CorePhotoStack> for JsPhotoStack {
     }
 }
 
-impl From<&CorePhotoStack> for JsPhotoStack {
+impl From<&CorePhotoStack> for PhotoStackData {
     fn from(s: &CorePhotoStack) -> Self {
         Self {
             id: s.id.clone(),
@@ -127,6 +117,161 @@ impl From<&CorePhotoStack> for JsPhotoStack {
             enhanced: s.enhanced.as_ref().map(|f| f.path.clone()),
             back: s.back.as_ref().map(|f| f.path.clone()),
             metadata: s.metadata.clone().into(),
+        }
+    }
+}
+
+/// A photo stack with methods for reading, writing, and rotating images.
+///
+/// Get stacks via `StackManager.scan()`, `StackManager.query()`, etc.
+/// Operations like metadata loading, writing, rotation, and image reading
+/// are available directly on the stack object.
+#[napi(js_name = "PhotoStack")]
+pub struct JsPhotoStack {
+    manager: Rc<std::cell::RefCell<StackManager>>,
+    data: PhotoStackData,
+}
+
+// SAFETY: Single-threaded Node.js — all access on main thread via RefCell.
+unsafe impl Send for JsPhotoStack {}
+
+#[napi]
+impl JsPhotoStack {
+    #[napi(getter)]
+    pub fn id(&self) -> String {
+        self.data.id.clone()
+    }
+
+    #[napi(getter)]
+    pub fn name(&self) -> String {
+        self.data.name.clone()
+    }
+
+    #[napi(getter)]
+    pub fn folder(&self) -> Option<String> {
+        self.data.folder.clone()
+    }
+
+    #[napi(getter)]
+    pub fn original(&self) -> Option<String> {
+        self.data.original.clone()
+    }
+
+    #[napi(getter)]
+    pub fn enhanced(&self) -> Option<String> {
+        self.data.enhanced.clone()
+    }
+
+    #[napi(getter)]
+    pub fn back(&self) -> Option<String> {
+        self.data.back.clone()
+    }
+
+    #[napi(getter)]
+    pub fn metadata(&self) -> JsMetadata {
+        self.data.metadata.clone()
+    }
+
+    /// Load full metadata (EXIF, XMP, sidecar) for this stack on demand.
+    #[napi]
+    pub fn load_metadata(&self, env: Env) -> napi::Result<JsMetadata> {
+        with_env_stashed(env, || {
+            let mut mgr = self.manager.borrow_mut();
+            mgr.load_metadata(&self.data.id)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let stack = mgr.get_stack(&self.data.id)
+                .ok_or_else(|| napi::Error::from_reason(format!("Stack not found: {}", self.data.id)))?;
+            Ok(stack.metadata.clone().into())
+        })
+    }
+
+    /// Write metadata to this stack.
+    #[napi]
+    pub fn write_metadata(&self, env: Env, metadata: JsMetadata) -> napi::Result<()> {
+        with_env_stashed(env, || {
+            let mgr = self.manager.borrow();
+            let core_metadata: photostax_core::photo_stack::Metadata = metadata.into();
+            mgr.write_metadata(&self.data.id, &core_metadata)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    /// Rotate images in this stack.
+    /// @param degrees - Rotation degrees: 90, -90, 180, -180
+    /// @param target - Which images: "all" (default), "front", "back"
+    #[napi]
+    pub fn rotate(&self, env: Env, degrees: i32, target: Option<String>) -> napi::Result<JsPhotoStack> {
+        with_env_stashed(env, || {
+            let rotation = CoreRotation::from_degrees(degrees).ok_or_else(|| {
+                napi::Error::from_reason(format!(
+                    "Invalid rotation: {degrees}°. Use 90, -90, 180, or -180."
+                ))
+            })?;
+            let rotation_target = match target.as_deref() {
+                None | Some("all") => CoreRotationTarget::All,
+                Some("front") => CoreRotationTarget::Front,
+                Some("back") => CoreRotationTarget::Back,
+                Some(other) => {
+                    return Err(napi::Error::from_reason(format!(
+                        "Invalid rotation target: '{other}'. Accepted values: all, front, back"
+                    )));
+                }
+            };
+            let mut mgr = self.manager.borrow_mut();
+            let stack = mgr.rotate_stack(&self.data.id, rotation, rotation_target)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            Ok(JsPhotoStack {
+                manager: self.manager.clone(),
+                data: PhotoStackData::from(stack),
+            })
+        })
+    }
+
+    /// Read the raw bytes of the original scan image.
+    #[napi]
+    pub fn read_original_image(&self, env: Env) -> napi::Result<Buffer> {
+        let path = self.data.original.as_ref()
+            .ok_or_else(|| napi::Error::from_reason("This stack has no original image."))?
+            .clone();
+        self.read_image_internal(env, &path)
+    }
+
+    /// Read the raw bytes of the enhanced (color-corrected) scan image.
+    #[napi]
+    pub fn read_enhanced_image(&self, env: Env) -> napi::Result<Buffer> {
+        let path = self.data.enhanced.as_ref()
+            .ok_or_else(|| napi::Error::from_reason("This stack has no enhanced image."))?
+            .clone();
+        self.read_image_internal(env, &path)
+    }
+
+    /// Read the raw bytes of the back-of-photo scan image.
+    #[napi]
+    pub fn read_back_image(&self, env: Env) -> napi::Result<Buffer> {
+        let path = self.data.back.as_ref()
+            .ok_or_else(|| napi::Error::from_reason("This stack has no back image."))?
+            .clone();
+        self.read_image_internal(env, &path)
+    }
+}
+
+impl JsPhotoStack {
+    fn read_image_internal(&self, env: Env, path: &str) -> napi::Result<Buffer> {
+        with_env_stashed(env, || {
+            let mgr = self.manager.borrow();
+            let mut reader = mgr.read_image(path)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            Ok(buf.into())
+        })
+    }
+
+    fn from_core(manager: &Rc<std::cell::RefCell<StackManager>>, stack: &CorePhotoStack) -> Self {
+        Self {
+            manager: manager.clone(),
+            data: PhotoStackData::from(stack),
         }
     }
 }
@@ -196,19 +341,53 @@ impl From<JsSearchQuery> for CoreSearchQuery {
 }
 
 /// A paginated result containing a page of photo stacks and pagination metadata.
-#[napi(object)]
-#[derive(Clone)]
+#[napi(js_name = "PaginatedResult")]
 pub struct JsPaginatedResult {
+    items_data: Vec<PhotoStackData>,
+    manager: Rc<std::cell::RefCell<StackManager>>,
+    total_count: u32,
+    offset: u32,
+    limit: u32,
+    has_more: bool,
+}
+
+// SAFETY: Single-threaded Node.js.
+unsafe impl Send for JsPaginatedResult {}
+
+#[napi]
+impl JsPaginatedResult {
     /// The photo stacks in this page.
-    pub items: Vec<JsPhotoStack>,
+    #[napi(getter)]
+    pub fn items(&self) -> Vec<JsPhotoStack> {
+        self.items_data.iter().map(|data| JsPhotoStack {
+            manager: self.manager.clone(),
+            data: data.clone(),
+        }).collect()
+    }
+
     /// Total number of stacks across all pages.
-    pub total_count: u32,
+    #[napi(getter)]
+    pub fn total_count(&self) -> u32 {
+        self.total_count
+    }
+
     /// The offset used for this page.
-    pub offset: u32,
+    #[napi(getter)]
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
+
     /// The page size limit used for this page.
-    pub limit: u32,
+    #[napi(getter)]
+    pub fn limit(&self) -> u32 {
+        self.limit
+    }
+
     /// Whether there are more items beyond this page.
-    pub has_more: bool,
+    #[napi(getter)]
+    pub fn has_more(&self) -> bool {
+        self.has_more
+    }
 }
 
 /// Options for creating a PhotostaxRepository.
@@ -226,8 +405,11 @@ pub struct RepositoryOptions {
 /// Provides methods to scan, retrieve, and modify photo stacks and their metadata.
 #[napi]
 pub struct PhotostaxRepository {
-    inner: std::cell::RefCell<StackManager>,
+    inner: Rc<std::cell::RefCell<StackManager>>,
 }
+
+// SAFETY: Single-threaded Node.js.
+unsafe impl Send for PhotostaxRepository {}
 
 #[napi]
 impl PhotostaxRepository {
@@ -247,7 +429,7 @@ impl PhotostaxRepository {
         let mgr = StackManager::single(Box::new(repo), CoreScannerProfile::Auto)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(Self {
-            inner: std::cell::RefCell::new(mgr),
+            inner: Rc::new(std::cell::RefCell::new(mgr)),
         })
     }
 
@@ -264,7 +446,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(|s| JsPhotoStack::from_core(&self.inner, s)).collect())
     }
 
     /// Scan with a scanner profile and progress callback.
@@ -318,7 +500,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_progress(progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(|s| JsPhotoStack::from_core(&self.inner, s)).collect())
     }
 
     /// Scan the repository and return all photo stacks with full metadata loaded.
@@ -333,7 +515,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.scan_with_metadata()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(JsPhotoStack::from).collect())
+        Ok(mgr.query(&photostax_core::search::SearchQuery::new(), None).items.iter().map(|s| JsPhotoStack::from_core(&self.inner, s)).collect())
     }
 
     /// Retrieve a single photo stack by its ID.
@@ -348,8 +530,7 @@ impl PhotostaxRepository {
             mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
         }
         mgr.get_stack(&id)
-            .cloned()
-            .map(JsPhotoStack::from)
+            .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .ok_or_else(|| napi::Error::from_reason(format!("Stack not found: {id}")))
     }
 
@@ -358,6 +539,7 @@ impl PhotostaxRepository {
     /// Use this with `scan()` for lazy-loading: scan first to get lightweight
     /// stacks, then load metadata on demand for individual stacks.
     ///
+    /// @deprecated Use `stack.loadMetadata()` instead.
     /// @param stackId - The stack identifier
     /// @returns The loaded metadata
     /// @throws Error if the stack is not found or metadata cannot be read
@@ -376,6 +558,7 @@ impl PhotostaxRepository {
 
     /// Read the raw bytes of an image file.
     ///
+    /// @deprecated Use `stack.readOriginalImage()`, `stack.readEnhancedImage()`, or `stack.readBackImage()` instead.
     /// @param path - Path to the image file (from a PhotoStack)
     /// @returns Buffer containing the image bytes
     /// @throws Error if the file cannot be read
@@ -397,6 +580,7 @@ impl PhotostaxRepository {
     /// XMP tags are written to the image file (or sidecar for TIFF).
     /// Custom and EXIF tags are stored in the sidecar database.
     ///
+    /// @deprecated Use `stack.writeMetadata(metadata)` instead.
     /// @param stackId - The ID of the stack to update
     /// @param metadata - The metadata to write
     /// @throws Error if the stack is not found or metadata cannot be written
@@ -425,7 +609,7 @@ impl PhotostaxRepository {
         let results = mgr.query(&core_query, None);
         drop(mgr);
 
-        Ok(results.items.iter().map(JsPhotoStack::from).collect())
+        Ok(results.items.iter().map(|s| JsPhotoStack::from_core(&self.inner, s)).collect())
     }
 
     /// Unified query: search + paginate the cache in a single call.
@@ -461,7 +645,8 @@ impl PhotostaxRepository {
         drop(mgr);
 
         Ok(JsPaginatedResult {
-            items: paginated.items.iter().map(JsPhotoStack::from).collect(),
+            items_data: paginated.items.iter().map(PhotoStackData::from).collect(),
+            manager: self.inner.clone(),
             total_count: paginated.total_count as u32,
             offset: paginated.offset as u32,
             limit: paginated.limit as u32,
@@ -495,10 +680,9 @@ impl PhotostaxRepository {
         );
         drop(mgr);
 
-        let items: Vec<JsPhotoStack> = paginated.items.into_iter().map(JsPhotoStack::from).collect();
-
         Ok(JsPaginatedResult {
-            items,
+            items_data: paginated.items.iter().map(PhotoStackData::from).collect(),
+            manager: self.inner.clone(),
             total_count: paginated.total_count as u32,
             offset: paginated.offset as u32,
             limit: paginated.limit as u32,
@@ -535,7 +719,8 @@ impl PhotostaxRepository {
         drop(mgr);
 
         Ok(JsPaginatedResult {
-            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            items_data: paginated.items.iter().map(PhotoStackData::from).collect(),
+            manager: self.inner.clone(),
             total_count: paginated.total_count as u32,
             offset: paginated.offset as u32,
             limit: paginated.limit as u32,
@@ -548,6 +733,7 @@ impl PhotostaxRepository {
     /// Image files are decoded, rotated at the pixel level, and re-encoded
     /// on disk. Returns the refreshed stack.
     ///
+    /// @deprecated Use `stack.rotate(degrees, target)` instead.
     /// @param stackId - The ID of the stack to rotate
     /// @param degrees - Rotation angle: 90, -90, 180, or -180
     /// @param target - Which images to rotate: "all" (default), "front", or "back"
@@ -582,7 +768,7 @@ impl PhotostaxRepository {
             mgr.scan().map_err(|e| napi::Error::from_reason(e.to_string()))?;
         }
         mgr.rotate_stack(&stack_id, rotation, rotation_target)
-            .map(|s| JsPhotoStack::from(s.clone()))
+            .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
@@ -606,7 +792,7 @@ impl PhotostaxRepository {
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         }
         let snapshot = mgr.snapshot();
-        Ok(JsScanSnapshot { inner: snapshot })
+        Ok(JsScanSnapshot { inner: snapshot, manager: self.inner.clone() })
     }
 
     /// Create a snapshot with a scanner profile and progress callback.
@@ -663,7 +849,7 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr.snapshot();
-        Ok(JsScanSnapshot { inner: snapshot })
+        Ok(JsScanSnapshot { inner: snapshot, manager: self.inner.clone() })
     }
 
     /// Check whether a snapshot is still current.
@@ -713,7 +899,11 @@ pub struct JsSnapshotStatus {
 #[napi]
 pub struct JsScanSnapshot {
     inner: CoreScanSnapshot,
+    manager: Rc<std::cell::RefCell<StackManager>>,
 }
+
+// SAFETY: Single-threaded Node.js.
+unsafe impl Send for JsScanSnapshot {}
 
 #[napi]
 impl JsScanSnapshot {
@@ -735,7 +925,8 @@ impl JsScanSnapshot {
     pub fn get_page(&self, offset: u32, limit: u32) -> JsPaginatedResult {
         let paginated = self.inner.get_page(offset as usize, limit as usize);
         JsPaginatedResult {
-            items: paginated.items.into_iter().map(JsPhotoStack::from).collect(),
+            items_data: paginated.items.iter().map(PhotoStackData::from).collect(),
+            manager: self.manager.clone(),
             total_count: paginated.total_count as u32,
             offset: paginated.offset as u32,
             limit: paginated.limit as u32,
@@ -755,25 +946,26 @@ impl JsScanSnapshot {
         let core_query: CoreSearchQuery = query.into();
         JsScanSnapshot {
             inner: self.inner.filter(&core_query),
+            manager: self.manager.clone(),
         }
     }
 }
 
 // ── Shared helpers for StackManager operations ─────────────────────────
 
-fn mgr_scan(mgr: &std::cell::RefCell<StackManager>) -> napi::Result<Vec<JsPhotoStack>> {
+fn mgr_scan(mgr: &Rc<std::cell::RefCell<StackManager>>) -> napi::Result<Vec<JsPhotoStack>> {
     let mut m = mgr.borrow_mut();
     m.scan()
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(m.query(&photostax_core::search::SearchQuery::new(), None)
         .items
         .iter()
-        .map(JsPhotoStack::from)
+        .map(|s| JsPhotoStack::from_core(mgr, s))
         .collect())
 }
 
 fn mgr_scan_with_metadata(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
 ) -> napi::Result<Vec<JsPhotoStack>> {
     let mut m = mgr.borrow_mut();
     m.scan_with_metadata()
@@ -781,12 +973,12 @@ fn mgr_scan_with_metadata(
     Ok(m.query(&photostax_core::search::SearchQuery::new(), None)
         .items
         .iter()
-        .map(JsPhotoStack::from)
+        .map(|s| JsPhotoStack::from_core(mgr, s))
         .collect())
 }
 
 fn mgr_get_stack(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     id: &str,
 ) -> napi::Result<JsPhotoStack> {
     let mut m = mgr.borrow_mut();
@@ -795,13 +987,12 @@ fn mgr_get_stack(
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     }
     m.get_stack(id)
-        .cloned()
-        .map(JsPhotoStack::from)
+        .map(|s| JsPhotoStack::from_core(mgr, s))
         .ok_or_else(|| napi::Error::from_reason(format!("Stack not found: {id}")))
 }
 
 fn mgr_load_metadata(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     stack_id: &str,
 ) -> napi::Result<JsMetadata> {
     let mut m = mgr.borrow_mut();
@@ -818,7 +1009,7 @@ fn mgr_load_metadata(
 }
 
 fn mgr_read_image(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     path: &str,
 ) -> napi::Result<Buffer> {
     let m = mgr.borrow();
@@ -833,7 +1024,7 @@ fn mgr_read_image(
 }
 
 fn mgr_write_metadata(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     stack_id: &str,
     metadata: JsMetadata,
 ) -> napi::Result<()> {
@@ -848,7 +1039,7 @@ fn mgr_write_metadata(
 }
 
 fn mgr_query(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     query: Option<JsSearchQuery>,
     offset: Option<u32>,
     limit: Option<u32>,
@@ -872,7 +1063,8 @@ fn mgr_query(
     drop(m);
 
     Ok(JsPaginatedResult {
-        items: paginated.items.iter().map(JsPhotoStack::from).collect(),
+        items_data: paginated.items.iter().map(PhotoStackData::from).collect(),
+        manager: mgr.clone(),
         total_count: paginated.total_count as u32,
         offset: paginated.offset as u32,
         limit: paginated.limit as u32,
@@ -881,7 +1073,7 @@ fn mgr_query(
 }
 
 fn mgr_rotate_stack(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     stack_id: &str,
     degrees: i32,
     target: Option<String>,
@@ -909,12 +1101,12 @@ fn mgr_rotate_stack(
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     }
     m.rotate_stack(stack_id, rotation, rotation_target)
-        .map(|s| JsPhotoStack::from(s.clone()))
+        .map(|s| JsPhotoStack::from_core(mgr, s))
         .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
 fn mgr_create_snapshot(
-    mgr: &std::cell::RefCell<StackManager>,
+    mgr: &Rc<std::cell::RefCell<StackManager>>,
     load_metadata: Option<bool>,
 ) -> napi::Result<JsScanSnapshot> {
     let mut m = mgr.borrow_mut();
@@ -926,7 +1118,7 @@ fn mgr_create_snapshot(
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     }
     let snapshot = m.snapshot();
-    Ok(JsScanSnapshot { inner: snapshot })
+    Ok(JsScanSnapshot { inner: snapshot, manager: mgr.clone() })
 }
 
 // ── NapiProvider: JS object → RepositoryProvider bridge ────────────────
@@ -1122,8 +1314,11 @@ pub struct AddRepoOptions {
 /// For single-repo convenience, use `PhotostaxRepository` instead.
 #[napi(js_name = "StackManager")]
 pub struct PhotostaxStackManager {
-    inner: std::cell::RefCell<StackManager>,
+    inner: Rc<std::cell::RefCell<StackManager>>,
 }
+
+// SAFETY: Single-threaded Node.js.
+unsafe impl Send for PhotostaxStackManager {}
 
 #[napi]
 impl PhotostaxStackManager {
@@ -1133,7 +1328,7 @@ impl PhotostaxStackManager {
     #[napi(constructor)]
     pub fn new() -> Self {
         Self {
-            inner: std::cell::RefCell::new(StackManager::new()),
+            inner: Rc::new(std::cell::RefCell::new(StackManager::new())),
         }
     }
 
@@ -1323,18 +1518,24 @@ impl PhotostaxStackManager {
     }
 
     /// Load full metadata for a specific stack on demand.
+    ///
+    /// @deprecated Use `stack.loadMetadata()` instead.
     #[napi]
     pub fn load_metadata(&self, env: Env, stack_id: String) -> napi::Result<JsMetadata> {
         with_env_stashed(env, || mgr_load_metadata(&self.inner, &stack_id))
     }
 
     /// Read the raw bytes of an image file.
+    ///
+    /// @deprecated Use `stack.readOriginalImage()`, `stack.readEnhancedImage()`, or `stack.readBackImage()` instead.
     #[napi]
     pub fn read_image(&self, env: Env, path: String) -> napi::Result<Buffer> {
         with_env_stashed(env, || mgr_read_image(&self.inner, &path))
     }
 
     /// Write metadata tags to a photo stack.
+    ///
+    /// @deprecated Use `stack.writeMetadata(metadata)` instead.
     #[napi]
     pub fn write_metadata(&self, env: Env, stack_id: String, metadata: JsMetadata) -> napi::Result<()> {
         with_env_stashed(env, || mgr_write_metadata(&self.inner, &stack_id, metadata))
@@ -1353,6 +1554,8 @@ impl PhotostaxStackManager {
     }
 
     /// Rotate images in a photo stack.
+    ///
+    /// @deprecated Use `stack.rotate(degrees, target)` instead.
     #[napi]
     pub fn rotate_stack(
         &self,
