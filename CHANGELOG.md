@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-20
+
+### Added
+
+- **Foreign repository support** — host languages (.NET, TypeScript) can now implement custom repository backends (e.g., OneDrive, Google Drive, Azure Blob Storage) and register them with `StackManager`
+- Core: `RepositoryProvider` trait with `location()`, `list_entries()`, `open_read()`, `open_write()` — hosts provide I/O primitives while Rust handles all scanning, naming convention parsing, and metadata logic
+- Core: `ForeignRepository` wraps any `RepositoryProvider` into a full `Repository + FileAccess` implementation; reuses the backend-agnostic `scan_entries()` scanner
+- Core: `scan_entries()` extracted from `scan_directory()` — accepts abstract `Vec<FileEntry>` instead of requiring filesystem access
+- FFI: C-compatible callback types (`FfiProviderCallbacks`, `FfiFileEntry`, `FfiStreamHandle`, etc.) and `photostax_manager_add_foreign_repo()` function
+- FFI: `FfiRepositoryProvider` wraps C function pointers into `RepositoryProvider`; `FfiReader` (Read+Seek) and `FfiWriter` (Write) handle callback-based streaming with proper Drop cleanup
+- .NET: `IRepositoryProvider` interface with `Location`, `ListEntries()`, `OpenRead()`, `OpenWrite()` methods
+- .NET: `FileEntry` record type and `StackManager.AddRepo(IRepositoryProvider)` overload with `ProviderBridge` marshaling
+- TypeScript: `RepositoryProvider` interface with `location`, `listEntries()`, `readFile()`, `writeFile()` methods
+- TypeScript: `StackManager.addForeignRepo(provider)` with thread-local `Env` stashing for safe JS↔Rust callbacks
+- 20+ new tests for foreign repository (13 core with MockProvider, 7 FFI with mock C callbacks)
+
+### Changed
+
+- Scanner refactored: `scan_directory()` now delegates to `scan_entries()` which is fully backend-agnostic
+- `FileEntry` struct added to scanner module (name, folder, path, size)
+- Regenerated `photostax.h` C header with new types and functions
+
 ## [0.2.2] - 2026-03-20
 
 ### Added

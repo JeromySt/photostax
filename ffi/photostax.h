@@ -167,6 +167,195 @@ typedef struct FfiPaginatedResult {
 } FfiPaginatedResult;
 
 /**
+ * A file entry returned by the foreign list_entries callback.
+ *
+ * All string pointers must remain valid until the `free_entries` callback
+ * is called. The Rust side copies these strings immediately.
+ */
+typedef struct FfiFileEntry {
+  /**
+   * File name including extension (e.g., "IMG_001_a.jpg"). Never null.
+   */
+  const char *name;
+  /**
+   * Relative folder path using forward slashes (empty string for root). Never null.
+   */
+  const char *folder;
+  /**
+   * Full path or URI to the file. Never null.
+   */
+  const char *path;
+  /**
+   * File size in bytes.
+   */
+  uint64_t size;
+} FfiFileEntry;
+
+/**
+ * Result of a list_entries callback.
+ */
+typedef struct FfiFileEntryArray {
+  /**
+   * Pointer to array of entries (null if len == 0).
+   */
+  const struct FfiFileEntry *data;
+  /**
+   * Number of entries.
+   */
+  uintptr_t len;
+  /**
+   * Non-zero indicates an error (entries are invalid).
+   */
+  int32_t error;
+} FfiFileEntryArray;
+
+/**
+ * Result of an open_read or open_write callback.
+ */
+typedef struct FfiStreamHandle {
+  /**
+   * Opaque stream handle. Zero indicates failure.
+   */
+  uint64_t handle;
+  /**
+   * Non-zero indicates an error.
+   */
+  int32_t error;
+} FfiStreamHandle;
+
+/**
+ * Result of a read callback.
+ */
+typedef struct FfiReadResult {
+  /**
+   * Number of bytes actually read.
+   */
+  uintptr_t bytes_read;
+  /**
+   * Non-zero indicates an error.
+   */
+  int32_t error;
+} FfiReadResult;
+
+/**
+ * Result of a seek callback.
+ */
+typedef struct FfiSeekResult {
+  /**
+   * New position after seeking.
+   */
+  uint64_t position;
+  /**
+   * Non-zero indicates an error.
+   */
+  int32_t error;
+} FfiSeekResult;
+
+/**
+ * Result of a write callback.
+ */
+typedef struct FfiWriteResult {
+  /**
+   * Number of bytes actually written.
+   */
+  uintptr_t bytes_written;
+  /**
+   * Non-zero indicates an error.
+   */
+  int32_t error;
+} FfiWriteResult;
+
+/**
+ * Callback function pointers for a foreign repository provider.
+ *
+ * The host language fills this struct with function pointers that implement
+ * file I/O operations. The `ctx` pointer is passed through to every callback
+ * and can be used to maintain state in the host language (e.g., a managed
+ * object reference, a COM pointer, or a JavaScript reference).
+ *
+ * # Lifetime
+ *
+ * The `ctx` pointer and all callback functions must remain valid for the
+ * lifetime of the repository (until the `StackManager` handle is freed).
+ *
+ * # Thread Safety
+ *
+ * Callbacks may be invoked from any Rust thread. Host implementations must
+ * be thread-safe or serialize access internally.
+ */
+typedef struct FfiProviderCallbacks {
+  /**
+   * Opaque context pointer passed to every callback.
+   */
+  void *ctx;
+  /**
+   * Location URI for this repository (e.g., "onedrive://user/Photos").
+   * Must be a valid null-terminated UTF-8 string. Remains valid for
+   * the lifetime of the provider.
+   */
+  const char *location;
+  /**
+   * List file entries under a prefix.
+   *
+   * - `ctx`: the context pointer
+   * - `prefix`: null-terminated UTF-8 folder prefix (empty string for root)
+   * - `recursive`: whether to recurse into subdirectories
+   *
+   * Returns an `FfiFileEntryArray`. The caller (Rust) copies entries
+   * immediately, then calls `free_entries` so the host can release memory.
+   */
+  struct FfiFileEntryArray (*list_entries)(void *ctx, const char *prefix, bool recursive);
+  /**
+   * Free an entry array previously returned by `list_entries`.
+   */
+  void (*free_entries)(void *ctx, struct FfiFileEntryArray entries);
+  /**
+   * Open a file for reading.
+   *
+   * Returns an `FfiStreamHandle` with a non-zero handle on success.
+   */
+  struct FfiStreamHandle (*open_read)(void *ctx, const char *path);
+  /**
+   * Read bytes from a stream.
+   *
+   * - `handle`: stream handle from `open_read`
+   * - `buf`: buffer to read into
+   * - `len`: maximum number of bytes to read
+   */
+  struct FfiReadResult (*read)(void *ctx, uint64_t handle, uint8_t *buf, uintptr_t len);
+  /**
+   * Seek within a stream.
+   *
+   * - `handle`: stream handle from `open_read`
+   * - `offset`: byte offset
+   * - `whence`: 0 = from start, 1 = from current, 2 = from end
+   */
+  struct FfiSeekResult (*seek)(void *ctx, uint64_t handle, int64_t offset, int32_t whence);
+  /**
+   * Close a read stream.
+   */
+  void (*close_read)(void *ctx, uint64_t handle);
+  /**
+   * Open a file for writing.
+   *
+   * Returns an `FfiStreamHandle` with a non-zero handle on success.
+   */
+  struct FfiStreamHandle (*open_write)(void *ctx, const char *path);
+  /**
+   * Write bytes to a stream.
+   *
+   * - `handle`: stream handle from `open_write`
+   * - `buf`: bytes to write
+   * - `len`: number of bytes to write
+   */
+  struct FfiWriteResult (*write)(void *ctx, uint64_t handle, const uint8_t *buf, uintptr_t len);
+  /**
+   * Close a write stream.
+   */
+  void (*close_write)(void *ctx, uint64_t handle);
+} FfiProviderCallbacks;
+
+/**
  * Staleness information returned by [`photostax_snapshot_check_status`].
  */
 typedef struct FfiSnapshotStatus {
@@ -514,6 +703,29 @@ struct FfiResult photostax_manager_add_repo(struct PhotostaxRepo *mgr,
  * - Returns 0 if `mgr` is null
  */
 uintptr_t photostax_manager_repo_count(const struct PhotostaxRepo *mgr);
+
+/**
+ * Add a foreign (host-language-provided) repository to a [`StackManager`].
+ *
+ * The host language provides I/O callbacks via [`FfiProviderCallbacks`].
+ * The Rust core handles scanning, naming conventions, and metadata operations.
+ *
+ * `recursive` and `profile` control scanning behaviour (same as
+ * [`photostax_manager_add_repo`]).
+ *
+ * # Safety
+ *
+ * - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+ *   [`photostax_repo_open`]
+ * - `callbacks` must contain valid function pointers and a valid `ctx`
+ * - The `ctx` pointer and all callbacks must remain valid for the lifetime
+ *   of the manager handle
+ * - `callbacks.location` must be a valid null-terminated UTF-8 string
+ */
+struct FfiResult photostax_manager_add_foreign_repo(struct PhotostaxRepo *mgr,
+                                                    struct FfiProviderCallbacks callbacks,
+                                                    bool recursive,
+                                                    int32_t profile);
 
 /**
  * Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it

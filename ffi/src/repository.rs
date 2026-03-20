@@ -26,7 +26,8 @@ pub type ScanProgressFn =
     Option<unsafe extern "C" fn(phase: i32, current: usize, total: usize, user_data: *mut c_void)>;
 
 use crate::types::{
-    FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, FfiResult, PhotostaxRepo,
+    FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, FfiProviderCallbacks, FfiResult,
+    PhotostaxRepo,
 };
 
 /// Helper to convert an `Option<ImageFile>` path to a C string (null if None).
@@ -752,6 +753,63 @@ pub unsafe extern "C" fn photostax_manager_repo_count(mgr: *const PhotostaxRepo)
         mgr_ref.inner.borrow().repo_count()
     }));
     result.unwrap_or(0)
+}
+
+/// Add a foreign (host-language-provided) repository to a [`StackManager`].
+///
+/// The host language provides I/O callbacks via [`FfiProviderCallbacks`].
+/// The Rust core handles scanning, naming conventions, and metadata operations.
+///
+/// `recursive` and `profile` control scanning behaviour (same as
+/// [`photostax_manager_add_repo`]).
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+///   [`photostax_repo_open`]
+/// - `callbacks` must contain valid function pointers and a valid `ctx`
+/// - The `ctx` pointer and all callbacks must remain valid for the lifetime
+///   of the manager handle
+/// - `callbacks.location` must be a valid null-terminated UTF-8 string
+#[no_mangle]
+pub unsafe extern "C" fn photostax_manager_add_foreign_repo(
+    mgr: *mut PhotostaxRepo,
+    callbacks: FfiProviderCallbacks,
+    recursive: bool,
+    profile: i32,
+) -> FfiResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if mgr.is_null() {
+            return FfiResult::error("null manager pointer");
+        }
+
+        let provider = match unsafe {
+            crate::foreign_provider::FfiRepositoryProvider::new(callbacks)
+        } {
+            Ok(p) => p,
+            Err(e) => return FfiResult::error(&format!("invalid provider: {e}")),
+        };
+
+        let config = ScannerConfig {
+            recursive,
+            ..ScannerConfig::default()
+        };
+        let repo =
+            photostax_core::backends::foreign::ForeignRepository::with_config(
+                Box::new(provider),
+                config,
+            );
+
+        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+
+        let mgr_ref = unsafe { &*mgr };
+        let mut mgr_inner = mgr_ref.inner.borrow_mut();
+        match mgr_inner.add_repo(Box::new(repo), scanner_profile) {
+            Ok(_) => FfiResult::success(),
+            Err(e) => FfiResult::error(&e.to_string()),
+        }
+    }));
+    result.unwrap_or_else(|_| FfiResult::error("panic in photostax_manager_add_foreign_repo"))
 }
 
 /// Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it

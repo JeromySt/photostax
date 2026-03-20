@@ -36,6 +36,38 @@ foreach (var stack in page.Items)
     Console.WriteLine($"{stack.Name} ({stack.Id})");
 ```
 
+### Custom Repository Providers
+
+Register a custom backend (e.g., cloud storage) by implementing `IRepositoryProvider`:
+
+```csharp
+using Photostax;
+
+public class OneDriveProvider : IRepositoryProvider
+{
+    public string Location => "onedrive://user/photos";
+
+    public IReadOnlyList<FileEntry> ListEntries(string prefix, bool recursive)
+    {
+        // Return file listings from OneDrive API
+        return new List<FileEntry>
+        {
+            new("IMG_001.jpg", "vacation", "onedrive://user/photos/vacation/IMG_001.jpg", 2048576),
+            new("IMG_001_a.jpg", "vacation", "onedrive://user/photos/vacation/IMG_001_a.jpg", 2148576),
+        };
+    }
+
+    public Stream OpenRead(string path) => DownloadFromOneDrive(path);
+    public Stream OpenWrite(string path) => CreateUploadStream(path);
+}
+
+using var mgr = new StackManager();
+mgr.AddRepo(new OneDriveProvider(), recursive: true);
+mgr.Scan();
+```
+
+The host provides I/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
+
 ## Installation
 
 ```bash
@@ -115,6 +147,43 @@ The main entry point for working with photo repositories.
 | `Search(query)` | Find stacks matching a query (convenience wrapper around `Query()`) |
 | `ScanPaginated(offset, limit)` | Scan with pagination (convenience wrapper around `Query()`) |
 | `SearchPaginated(query, offset, limit)` | Search with pagination (convenience wrapper around `Query()`) |
+
+### StackManager
+
+Multi-repository manager for unified access across directories and custom backends.
+
+| Method | Description |
+|--------|-------------|
+| `new StackManager()` | Create an empty manager |
+| `AddRepo(path, ...)` | Register a local directory |
+| `AddRepo(IRepositoryProvider, ...)` | Register a custom repository provider |
+| `RepoCount` | Number of registered repositories |
+| `StackCount` | Total stacks in cache |
+| `Scan()` | Scan all registered repos |
+| `ScanWithMetadata()` | Scan with full EXIF/XMP loading |
+| `GetStack(id)` | Retrieve a single stack by opaque ID |
+| `LoadMetadata(id)` | Load metadata for a specific stack |
+| `ReadImage(path)` | Read raw image bytes |
+| `WriteMetadata(id, metadata)` | Write metadata to a stack |
+| `Query(filter?, offset, limit)` | Search + paginate across all repos |
+| `RotateStack(id, degrees, target?)` | Rotate images in a stack |
+| `CreateSnapshot(loadMetadata?)` | Create a point-in-time snapshot |
+
+### IRepositoryProvider
+
+Interface for custom repository backends:
+
+```csharp
+public interface IRepositoryProvider
+{
+    string Location { get; }
+    IReadOnlyList<FileEntry> ListEntries(string prefix, bool recursive);
+    Stream OpenRead(string path);
+    Stream OpenWrite(string path);
+}
+
+public record FileEntry(string Name, string Folder, string Path, long Size);
+```
 
 #### `Query()` — Preferred Search & Pagination API
 

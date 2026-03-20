@@ -5,6 +5,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod foreign_provider;
 pub mod metadata;
 pub mod repository;
 pub mod search;

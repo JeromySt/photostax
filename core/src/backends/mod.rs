@@ -1,18 +1,14 @@
 //! Storage backend implementations.
 //!
 //! This module contains implementations of the [`Repository`] trait for different
-//! storage backends. Currently only local filesystem is implemented, with cloud
-//! storage backends planned.
+//! storage backends.
 //!
 //! ## Available Backends
 //!
 //! - [`local::LocalRepository`] — Local filesystem directory
-//!
-//! ## Planned Backends
-//!
-//! - OneDrive — Microsoft cloud storage
-//! - Google Drive — Google cloud storage
+//! - [`foreign::ForeignRepository`] — Host-language-provided I/O (OneDrive, Google Drive, etc.)
 //!
 //! [`Repository`]: crate::repository::Repository
 
+pub mod foreign;
 pub mod local;
