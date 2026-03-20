@@ -393,7 +393,10 @@ mod tests {
         let r = ImageRef::absent();
         let result = r.stream();
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), RepositoryError::NotFound(_)));
+        assert!(matches!(
+            result.err().unwrap(),
+            RepositoryError::NotFound(_)
+        ));
     }
 
     #[test]
@@ -430,7 +433,10 @@ mod tests {
         handle.invalidate();
         let result = r.stream();
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), RepositoryError::StackDeleted));
+        assert!(matches!(
+            result.err().unwrap(),
+            RepositoryError::StackDeleted
+        ));
     }
 
     #[test]
