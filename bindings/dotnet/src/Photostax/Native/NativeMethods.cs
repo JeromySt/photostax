@@ -360,4 +360,15 @@ internal static partial class NativeMethods
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void photostax_snapshot_free(IntPtr snapshot);
+
+    /// <summary>
+    /// Add a foreign (host-language-provided) repository to a StackManager.
+    /// The callbacks struct is passed by value.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_manager_add_foreign_repo(
+        IntPtr mgr,
+        FfiProviderCallbacks callbacks,
+        [MarshalAs(UnmanagedType.I1)] bool recursive,
+        int profile);
 }

@@ -1,5 +1,84 @@
 # Migration Guide
 
+## v0.2.2 → v0.3.0
+
+### New: Foreign Repository Support
+
+v0.3.0 introduces the ability for host languages to implement custom repository backends. This enables support for cloud storage providers (OneDrive, Google Drive, Azure Blob Storage) where the host handles I/O while Rust handles scanning logic.
+
+**Rust (core):**
+```rust
+use photostax_core::backends::foreign::{ForeignRepository, RepositoryProvider};
+use photostax_core::scanner::FileEntry;
+
+struct MyCloudProvider { /* ... */ }
+
+impl RepositoryProvider for MyCloudProvider {
+    fn location(&self) -> &str { "cloud://my-photos" }
+    fn list_entries(&self, _prefix: &str, _recursive: bool) -> io::Result<Vec<FileEntry>> {
+        // Return file listings from your cloud storage
+        Ok(vec![])
+    }
+    fn open_read(&self, path: &str) -> io::Result<Box<dyn ReadSeek>> {
+        // Open a file for reading from your cloud storage
+        todo!()
+    }
+    fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>> {
+        // Open a file for writing to your cloud storage
+        todo!()
+    }
+}
+
+let provider = MyCloudProvider { };
+let repo = ForeignRepository::new(Box::new(provider));
+let mut mgr = StackManager::new();
+mgr.add_repo(Box::new(repo), ScannerProfile::Auto).unwrap();
+```
+
+**TypeScript:**
+```typescript
+import { StackManager, type RepositoryProvider, type FileEntry } from '@photostax/core';
+
+const provider: RepositoryProvider = {
+  location: 'cloud://my-photos',
+  listEntries: (prefix: string, recursive: boolean): FileEntry[] => {
+    return [{ name: 'IMG_001.jpg', folder: '', path: 'cloud://my-photos/IMG_001.jpg', size: 1024 }];
+  },
+  readFile: (path: string): Buffer => fs.readFileSync(localCachePath),
+  writeFile: (path: string, data: Buffer): void => { /* upload */ },
+};
+
+const mgr = new StackManager();
+mgr.addForeignRepo(provider, { recursive: true });
+mgr.scan();
+```
+
+**.NET:**
+```csharp
+using Photostax;
+
+public class MyCloudProvider : IRepositoryProvider
+{
+    public string Location => "cloud://my-photos";
+
+    public IReadOnlyList<FileEntry> ListEntries(string prefix, bool recursive)
+        => new List<FileEntry>(); // Return cloud file listings
+
+    public Stream OpenRead(string path) => /* download stream */;
+    public Stream OpenWrite(string path) => /* upload stream */;
+}
+
+using var mgr = new StackManager();
+mgr.AddRepo(new MyCloudProvider(), recursive: true);
+mgr.Scan();
+```
+
+### No Breaking Changes
+
+This release is additive. All existing APIs continue to work unchanged.
+
+---
+
 ## v0.2.0 → v0.2.1
 
 This is a non-breaking release. All existing code continues to work. The main change is a new unified `query()` method that replaces the separate search/paginate pattern.

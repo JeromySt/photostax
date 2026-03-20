@@ -149,3 +149,178 @@ internal struct FfiSnapshotStatus
     /// </summary>
     public nuint Removed;
 }
+
+// ── Foreign repository provider types ──────────────────────────────
+
+/// <summary>
+/// A file entry from a foreign repository provider.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiFileEntry
+{
+    /// <summary>
+    /// File name including extension (e.g., "IMG_001_a.jpg"). Never null.
+    /// </summary>
+    public IntPtr Name;
+
+    /// <summary>
+    /// Containing folder path relative to the repository root. Never null, may be empty.
+    /// </summary>
+    public IntPtr Folder;
+
+    /// <summary>
+    /// Full path relative to the repository root. Never null.
+    /// </summary>
+    public IntPtr Path;
+
+    /// <summary>
+    /// File size in bytes.
+    /// </summary>
+    public ulong Size;
+}
+
+/// <summary>
+/// Result of a list_entries callback.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiFileEntryArray
+{
+    /// <summary>
+    /// Pointer to array of entries (null if len == 0).
+    /// </summary>
+    public IntPtr Data;
+
+    /// <summary>
+    /// Number of entries.
+    /// </summary>
+    public nuint Len;
+
+    /// <summary>
+    /// Non-zero indicates an error (entries are invalid).
+    /// </summary>
+    public int Error;
+}
+
+/// <summary>
+/// Result of an open_read or open_write callback.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiStreamHandle
+{
+    /// <summary>
+    /// Opaque stream handle. Zero indicates failure.
+    /// </summary>
+    public ulong Handle;
+
+    /// <summary>
+    /// Non-zero indicates an error.
+    /// </summary>
+    public int Error;
+}
+
+/// <summary>
+/// Result of a read callback.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiReadResult
+{
+    /// <summary>
+    /// Number of bytes actually read.
+    /// </summary>
+    public nuint BytesRead;
+
+    /// <summary>
+    /// Non-zero indicates an error.
+    /// </summary>
+    public int Error;
+}
+
+/// <summary>
+/// Result of a seek callback.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiSeekResult
+{
+    /// <summary>
+    /// New position after seeking.
+    /// </summary>
+    public ulong Position;
+
+    /// <summary>
+    /// Non-zero indicates an error.
+    /// </summary>
+    public int Error;
+}
+
+/// <summary>
+/// Result of a write callback.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiWriteResult
+{
+    /// <summary>
+    /// Number of bytes actually written.
+    /// </summary>
+    public nuint BytesWritten;
+
+    /// <summary>
+    /// Non-zero indicates an error.
+    /// </summary>
+    public int Error;
+}
+
+// ── Callback delegate types ────────────────────────────────────────
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiFileEntryArray ListEntriesDelegate(
+    IntPtr ctx,
+    [MarshalAs(UnmanagedType.LPUTF8Str)] string prefix,
+    [MarshalAs(UnmanagedType.I1)] bool recursive);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void FreeEntriesDelegate(IntPtr ctx, FfiFileEntryArray entries);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiStreamHandle OpenReadDelegate(
+    IntPtr ctx,
+    [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiReadResult ReadDelegate(IntPtr ctx, ulong handle, IntPtr buf, nuint len);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiSeekResult SeekDelegate(IntPtr ctx, ulong handle, long offset, int whence);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void CloseReadDelegate(IntPtr ctx, ulong handle);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiStreamHandle OpenWriteDelegate(
+    IntPtr ctx,
+    [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate FfiWriteResult WriteDelegate(IntPtr ctx, ulong handle, IntPtr buf, nuint len);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void CloseWriteDelegate(IntPtr ctx, ulong handle);
+
+/// <summary>
+/// Callback function pointers for a foreign repository provider.
+/// Field order must match the C header exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiProviderCallbacks
+{
+    public IntPtr Ctx;
+    public IntPtr Location;
+    public IntPtr ListEntries;
+    public IntPtr FreeEntries;
+    public IntPtr OpenRead;
+    public IntPtr Read;
+    public IntPtr Seek;
+    public IntPtr CloseRead;
+    public IntPtr OpenWrite;
+    public IntPtr Write;
+    public IntPtr CloseWrite;
+}

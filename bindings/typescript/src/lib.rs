@@ -4,10 +4,11 @@
 //! enabling Node.js applications to work with Epson FastFoto photo stacks.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
 
 use napi::bindgen_prelude::*;
+use napi::{NapiRaw, NapiValue};
 use napi_derive::napi;
 
 use photostax_core::backends::local::LocalRepository;
@@ -15,6 +16,34 @@ use photostax_core::photo_stack::{Metadata as CoreMetadata, PhotoStack as CorePh
 use photostax_core::search::{SearchQuery as CoreSearchQuery};
 use photostax_core::snapshot::ScanSnapshot as CoreScanSnapshot;
 use photostax_core::stack_manager::StackManager;
+
+// ── Thread-local Env for JS callback bridge ────────────────────────────
+
+// The NapiProvider needs to call back into JS from within Rust trait methods
+// that don't have access to napi::Env. Since StackManager uses RefCell (single-
+// threaded), all calls happen on the main Node thread. We stash the current
+// Env before each operation and clear it after.
+thread_local! {
+    static NAPI_ENV: std::cell::Cell<Option<napi::sys::napi_env>> = const { std::cell::Cell::new(None) };
+}
+
+fn with_env_stashed<F, R>(env: Env, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    NAPI_ENV.with(|cell| cell.set(Some(env.raw())));
+    let result = f();
+    NAPI_ENV.with(|cell| cell.set(None));
+    result
+}
+
+fn get_stashed_env() -> io::Result<Env> {
+    NAPI_ENV.with(|cell| {
+        cell.get()
+            .map(|raw| unsafe { Env::from_raw(raw) })
+            .ok_or_else(|| io::Error::other("napi Env not available (not in a napi call context)"))
+    })
+}
 
 /// Metadata associated with a photo stack.
 ///
@@ -899,6 +928,179 @@ fn mgr_create_snapshot(
     let snapshot = m.snapshot();
     Ok(JsScanSnapshot { inner: snapshot })
 }
+
+// ── NapiProvider: JS object → RepositoryProvider bridge ────────────────
+
+/// A file entry for foreign repository providers.
+#[napi(object)]
+pub struct JsFileEntry {
+    /// File name including extension (e.g., "IMG_001_a.jpg").
+    pub name: String,
+    /// Relative folder path (empty string for root).
+    pub folder: String,
+    /// Full path or URI to the file.
+    pub path: String,
+    /// File size in bytes.
+    pub size: f64, // JS numbers are f64
+}
+
+/// A RepositoryProvider backed by a JS object reference.
+///
+/// Stores pre-collected file entries and a reference to the JS provider object
+/// for lazy file I/O. The JS provider must implement:
+/// - `listEntries(prefix: string, recursive: boolean): FileEntry[]`
+/// - `readFile(path: string): Buffer`
+/// - `writeFile(path: string, data: Buffer): void`
+struct NapiProvider {
+    location: String,
+    cached_entries: Vec<photostax_core::scanner::FileEntry>,
+    /// Raw napi_ref to the JS provider object (prevents GC).
+    provider_ref: napi::sys::napi_ref,
+    /// The napi_env at creation time (valid for the addon's lifetime on main thread).
+    env_raw: napi::sys::napi_env,
+}
+
+// SAFETY: StackManager uses RefCell (single-threaded). All access happens on
+// the main Node.js thread. The napi references and env pointer are only used
+// from that same thread.
+unsafe impl Send for NapiProvider {}
+unsafe impl Sync for NapiProvider {}
+
+impl Drop for NapiProvider {
+    fn drop(&mut self) {
+        unsafe {
+            napi::sys::napi_delete_reference(self.env_raw, self.provider_ref);
+        }
+    }
+}
+
+impl photostax_core::backends::foreign::RepositoryProvider for NapiProvider {
+    fn location(&self) -> &str {
+        &self.location
+    }
+
+    fn list_entries(
+        &self,
+        _prefix: &str,
+        _recursive: bool,
+    ) -> io::Result<Vec<photostax_core::scanner::FileEntry>> {
+        Ok(self.cached_entries.clone())
+    }
+
+    fn open_read(&self, path: &str) -> io::Result<Box<dyn photostax_core::file_access::ReadSeek>> {
+        let env = get_stashed_env()?;
+
+        let provider = self.get_js_object(&env)?;
+        let read_fn: napi::JsFunction = provider
+            .get_named_property("readFile")
+            .map_err(|e| io::Error::other(format!("provider.readFile not found: {e}")))?;
+
+        let path_val = env
+            .create_string(path)
+            .map_err(|e| io::Error::other(format!("failed to create string: {e}")))?;
+
+        let result = read_fn
+            .call(Some(&provider), &[path_val])
+            .map_err(|e| io::Error::other(format!("readFile() failed: {e}")))?;
+
+        let buffer = unsafe {
+            result
+                .cast::<napi::JsBuffer>()
+                .into_value()
+                .map_err(|e| io::Error::other(format!("readFile() did not return Buffer: {e}")))?
+        };
+
+        Ok(Box::new(Cursor::new(buffer.to_vec())))
+    }
+
+    fn open_write(&self, path: &str) -> io::Result<Box<dyn io::Write + Send>> {
+        // Validate we can access the provider (env is stashed)
+        let env = get_stashed_env()?;
+        let _provider = self.get_js_object(&env)?;
+
+        // Return a writer that collects bytes, then calls writeFile on drop
+        Ok(Box::new(NapiWriter {
+            path: path.to_string(),
+            buffer: Vec::new(),
+            provider_ref: self.provider_ref,
+        }))
+    }
+}
+
+impl NapiProvider {
+    fn get_js_object(&self, env: &Env) -> io::Result<napi::JsObject> {
+        let mut result = std::ptr::null_mut();
+        let status = unsafe {
+            napi::sys::napi_get_reference_value(env.raw(), self.provider_ref, &mut result)
+        };
+        if status != napi::sys::Status::napi_ok || result.is_null() {
+            return Err(io::Error::other("failed to get JS provider reference"));
+        }
+        Ok(unsafe { napi::JsObject::from_raw_unchecked(env.raw(), result) })
+    }
+}
+
+/// Writer that collects bytes and calls provider.writeFile() on flush/drop.
+struct NapiWriter {
+    path: String,
+    buffer: Vec<u8>,
+    provider_ref: napi::sys::napi_ref,
+}
+
+// SAFETY: Same single-thread guarantee as NapiProvider.
+unsafe impl Send for NapiWriter {}
+
+impl io::Write for NapiWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for NapiWriter {
+    fn drop(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+
+        // Try to call writeFile on the provider
+        if let Ok(env) = get_stashed_env() {
+            let mut provider_raw = std::ptr::null_mut();
+            let status = unsafe {
+                napi::sys::napi_get_reference_value(
+                    env.raw(),
+                    self.provider_ref,
+                    &mut provider_raw,
+                )
+            };
+            if status != napi::sys::Status::napi_ok || provider_raw.is_null() {
+                return;
+            }
+
+            let provider =
+                unsafe { napi::JsObject::from_raw_unchecked(env.raw(), provider_raw) };
+
+            if let Ok(write_fn) =
+                provider.get_named_property::<napi::JsFunction>("writeFile")
+            {
+                if let Ok(path_val) = env.create_string(&self.path) {
+                    if let Ok(buf_val) =
+                        env.create_buffer_with_data(std::mem::take(&mut self.buffer))
+                    {
+                        let _: napi::Result<napi::JsUnknown> = write_fn.call(
+                            Some(&provider),
+                            &[path_val.into_unknown(), buf_val.into_raw().into_unknown()],
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 
 // ── PhotostaxStackManager: multi-repo manager ──────────────────────────
 
@@ -973,6 +1175,123 @@ impl PhotostaxStackManager {
         Ok(())
     }
 
+    /// Register a foreign repository backed by a JavaScript provider.
+    ///
+    /// The provider object must implement:
+    /// - `location: string` — canonical URI
+    /// - `listEntries(prefix: string, recursive: boolean): FileEntry[]`
+    /// - `readFile(path: string): Buffer`
+    /// - `writeFile(path: string, data: Buffer): void`
+    ///
+    /// @param provider - Object implementing the RepositoryProvider interface
+    /// @param options - Optional configuration (recursive, profile)
+    /// @throws Error if the provider is invalid or overlaps with an existing repo
+    #[napi]
+    pub fn add_foreign_repo(
+        &self,
+        env: Env,
+        #[napi(ts_arg_type = "RepositoryProvider")] provider: napi::JsObject,
+        options: Option<AddRepoOptions>,
+    ) -> napi::Result<()> {
+        let recursive = options
+            .as_ref()
+            .and_then(|o| o.recursive)
+            .unwrap_or(false);
+        let profile_str = options.as_ref().and_then(|o| o.profile.as_deref());
+        let scanner_profile = match profile_str {
+            Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
+            Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
+            Some("original_only") => CoreScannerProfile::OriginalOnly,
+            _ => CoreScannerProfile::Auto,
+        };
+
+        // Read location
+        let location: String = provider
+            .get_named_property::<napi::JsString>("location")
+            .map_err(|e| napi::Error::from_reason(format!("provider.location: {e}")))?
+            .into_utf8()
+            .map_err(|e| napi::Error::from_reason(format!("provider.location not UTF-8: {e}")))?
+            .as_str()
+            .map_err(|e| napi::Error::from_reason(format!("provider.location: {e}")))?
+            .to_string();
+
+        // Eagerly collect entries (lightweight — just filenames and sizes)
+        let list_fn: napi::JsFunction = provider
+            .get_named_property("listEntries")
+            .map_err(|e| napi::Error::from_reason(format!("provider.listEntries: {e}")))?;
+
+        let prefix_val = env.create_string("")?;
+        let recursive_val = env.get_boolean(recursive)?;
+        let entries_val: napi::JsUnknown = list_fn.call(Some(&provider), &[prefix_val.into_unknown(), recursive_val.into_unknown()])?;
+        let entries_array = unsafe { entries_val.cast::<napi::JsObject>() };
+        let len: u32 = entries_array
+            .get_named_property::<napi::JsNumber>("length")
+            .map_err(|e| napi::Error::from_reason(format!("entries.length: {e}")))?
+            .get_uint32()?;
+
+        let mut cached_entries = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let entry: napi::JsObject = entries_array.get_element(i)?;
+            let name: String = entry
+                .get_named_property::<napi::JsString>("name")?
+                .into_utf8()?
+                .as_str()?
+                .to_string();
+            let folder: String = entry
+                .get_named_property::<napi::JsString>("folder")?
+                .into_utf8()?
+                .as_str()?
+                .to_string();
+            let path: String = entry
+                .get_named_property::<napi::JsString>("path")?
+                .into_utf8()?
+                .as_str()?
+                .to_string();
+            let size: f64 = entry
+                .get_named_property::<napi::JsNumber>("size")?
+                .get_double()?;
+
+            cached_entries.push(photostax_core::scanner::FileEntry {
+                name,
+                folder,
+                path,
+                size: size as u64,
+            });
+        }
+
+        // Create a persistent reference to the JS provider object
+        let mut provider_ref = std::ptr::null_mut();
+        let status = unsafe {
+            napi::sys::napi_create_reference(env.raw(), provider.raw(), 1, &mut provider_ref)
+        };
+        if status != napi::sys::Status::napi_ok {
+            return Err(napi::Error::from_reason(
+                "failed to create reference to provider object",
+            ));
+        }
+
+        let napi_provider = NapiProvider {
+            location,
+            cached_entries,
+            provider_ref,
+            env_raw: env.raw(),
+        };
+
+        let config = photostax_core::scanner::ScannerConfig {
+            recursive,
+            ..photostax_core::scanner::ScannerConfig::default()
+        };
+        let repo = photostax_core::backends::foreign::ForeignRepository::with_config(
+            Box::new(napi_provider),
+            config,
+        );
+
+        let mut mgr = self.inner.borrow_mut();
+        mgr.add_repo(Box::new(repo), scanner_profile)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(())
+    }
+
     /// Number of registered repositories.
     #[napi(getter)]
     pub fn repo_count(&self) -> u32 {
@@ -987,65 +1306,67 @@ impl PhotostaxStackManager {
 
     /// Scan all registered repos and return all discovered stacks.
     #[napi]
-    pub fn scan(&self) -> napi::Result<Vec<JsPhotoStack>> {
-        mgr_scan(&self.inner)
+    pub fn scan(&self, env: Env) -> napi::Result<Vec<JsPhotoStack>> {
+        with_env_stashed(env, || mgr_scan(&self.inner))
     }
 
     /// Scan all repos and load full metadata for every stack.
     #[napi]
-    pub fn scan_with_metadata(&self) -> napi::Result<Vec<JsPhotoStack>> {
-        mgr_scan_with_metadata(&self.inner)
+    pub fn scan_with_metadata(&self, env: Env) -> napi::Result<Vec<JsPhotoStack>> {
+        with_env_stashed(env, || mgr_scan_with_metadata(&self.inner))
     }
 
     /// Retrieve a single stack by its opaque ID.
     #[napi]
-    pub fn get_stack(&self, id: String) -> napi::Result<JsPhotoStack> {
-        mgr_get_stack(&self.inner, &id)
+    pub fn get_stack(&self, env: Env, id: String) -> napi::Result<JsPhotoStack> {
+        with_env_stashed(env, || mgr_get_stack(&self.inner, &id))
     }
 
     /// Load full metadata for a specific stack on demand.
     #[napi]
-    pub fn load_metadata(&self, stack_id: String) -> napi::Result<JsMetadata> {
-        mgr_load_metadata(&self.inner, &stack_id)
+    pub fn load_metadata(&self, env: Env, stack_id: String) -> napi::Result<JsMetadata> {
+        with_env_stashed(env, || mgr_load_metadata(&self.inner, &stack_id))
     }
 
     /// Read the raw bytes of an image file.
     #[napi]
-    pub fn read_image(&self, path: String) -> napi::Result<Buffer> {
-        mgr_read_image(&self.inner, &path)
+    pub fn read_image(&self, env: Env, path: String) -> napi::Result<Buffer> {
+        with_env_stashed(env, || mgr_read_image(&self.inner, &path))
     }
 
     /// Write metadata tags to a photo stack.
     #[napi]
-    pub fn write_metadata(&self, stack_id: String, metadata: JsMetadata) -> napi::Result<()> {
-        mgr_write_metadata(&self.inner, &stack_id, metadata)
+    pub fn write_metadata(&self, env: Env, stack_id: String, metadata: JsMetadata) -> napi::Result<()> {
+        with_env_stashed(env, || mgr_write_metadata(&self.inner, &stack_id, metadata))
     }
 
     /// Unified query: search + paginate across all repos.
     #[napi]
     pub fn query(
         &self,
+        env: Env,
         query: Option<JsSearchQuery>,
         offset: Option<u32>,
         limit: Option<u32>,
     ) -> napi::Result<JsPaginatedResult> {
-        mgr_query(&self.inner, query, offset, limit)
+        with_env_stashed(env, || mgr_query(&self.inner, query, offset, limit))
     }
 
     /// Rotate images in a photo stack.
     #[napi]
     pub fn rotate_stack(
         &self,
+        env: Env,
         stack_id: String,
         degrees: i32,
         target: Option<String>,
     ) -> napi::Result<JsPhotoStack> {
-        mgr_rotate_stack(&self.inner, &stack_id, degrees, target)
+        with_env_stashed(env, || mgr_rotate_stack(&self.inner, &stack_id, degrees, target))
     }
 
     /// Create a point-in-time snapshot across all repos.
     #[napi]
-    pub fn create_snapshot(&self, load_metadata: Option<bool>) -> napi::Result<JsScanSnapshot> {
-        mgr_create_snapshot(&self.inner, load_metadata)
+    pub fn create_snapshot(&self, env: Env, load_metadata: Option<bool>) -> napi::Result<JsScanSnapshot> {
+        with_env_stashed(env, || mgr_create_snapshot(&self.inner, load_metadata))
     }
 }

@@ -46,6 +46,39 @@ for (const stack of page.items) {
 }
 ```
 
+### Custom Repository Providers
+
+Register a custom backend (e.g., cloud storage) by implementing the `RepositoryProvider` interface:
+
+```typescript
+import { StackManager, type RepositoryProvider, type FileEntry } from '@photostax/core';
+
+const oneDriveProvider: RepositoryProvider = {
+  location: 'onedrive://user/photos',
+  listEntries: (prefix: string, recursive: boolean): FileEntry[] => {
+    // Return file listings from OneDrive API
+    return [
+      { name: 'IMG_001.jpg', folder: 'vacation', path: 'onedrive://user/photos/vacation/IMG_001.jpg', size: 2048576 },
+      { name: 'IMG_001_a.jpg', folder: 'vacation', path: 'onedrive://user/photos/vacation/IMG_001_a.jpg', size: 2148576 },
+    ];
+  },
+  readFile: (path: string): Buffer => {
+    // Download and return file contents
+    return downloadFromOneDrive(path);
+  },
+  writeFile: (path: string, data: Buffer): void => {
+    // Upload file contents
+    uploadToOneDrive(path, data);
+  },
+};
+
+const mgr = new StackManager();
+mgr.addForeignRepo(oneDriveProvider, { recursive: true, profile: 'auto' });
+mgr.scan();
+```
+
+The host provides I/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
+
 ## Installation
 
 ```bash
@@ -105,6 +138,47 @@ The main class for accessing photo stacks.
 | `search(query)` | Find stacks matching a query *(convenience wrapper around `query()`)* |
 | `scanPaginated(offset, limit)` | Scan with pagination *(convenience wrapper around `query()`)* |
 | `searchPaginated(query, offset, limit)` | Search with pagination *(convenience wrapper around `query()`)* |
+
+### StackManager
+
+Multi-repository manager for unified access across directories and custom backends.
+
+| Method | Description |
+|--------|-------------|
+| `new StackManager()` | Create an empty manager |
+| `addRepo(path, options?)` | Register a local directory |
+| `addForeignRepo(provider, options?)` | Register a custom repository provider |
+| `repoCount` | Number of registered repositories |
+| `stackCount` | Total stacks in cache |
+| `scan()` | Scan all registered repos |
+| `scanWithMetadata()` | Scan with full EXIF/XMP loading |
+| `getStack(id)` | Retrieve a single stack by opaque ID |
+| `loadMetadata(id)` | Load metadata for a specific stack |
+| `readImage(path)` | Read raw image bytes |
+| `writeMetadata(id, metadata)` | Write metadata to a stack |
+| `query(filter?, offset?, limit?)` | Search + paginate across all repos |
+| `rotateStack(id, degrees, target?)` | Rotate images in a stack |
+| `createSnapshot(loadMetadata?)` | Create a point-in-time snapshot |
+
+### RepositoryProvider
+
+Interface for custom repository backends:
+
+```typescript
+interface RepositoryProvider {
+  readonly location: string;
+  listEntries(prefix: string, recursive: boolean): FileEntry[];
+  readFile(path: string): Buffer;
+  writeFile(path: string, data: Buffer): void;
+}
+
+interface FileEntry {
+  name: string;    // File name with extension
+  folder: string;  // Relative folder path (empty for root)
+  path: string;    // Full path or URI
+  size: number;    // File size in bytes
+}
+```
 
 ### PhotoStack
 

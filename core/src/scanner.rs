@@ -49,6 +49,101 @@ use std::path::Path;
 use crate::hashing::ImageFile;
 use crate::photo_stack::PhotoStack;
 
+/// A file entry for abstract scanning (filesystem-agnostic).
+///
+/// Used by [`scan_entries`] to group files into photo stacks without
+/// requiring direct filesystem access. Any backend (local, cloud, etc.)
+/// can produce these entries from its own file listing mechanism.
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    /// The file name including extension (e.g., `"IMG_001_a.jpg"`).
+    pub name: String,
+    /// The relative folder path within the repository (empty string for root).
+    /// Uses forward slashes as separators (e.g., `"2024/January"`).
+    pub folder: String,
+    /// The full path or URI to the file (stored in the resulting `ImageFile`).
+    pub path: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// Groups abstract file entries into [`PhotoStack`] objects.
+///
+/// This is the backend-agnostic core of the scanning logic. It applies the
+/// FastFoto naming convention to classify files and group them by base name.
+/// The `location` parameter is used to generate deterministic opaque stack IDs.
+///
+/// Use [`scan_directory`] for local filesystem scanning (which delegates here).
+///
+/// # Arguments
+///
+/// * `entries` - File entries to group (from any source — local FS, cloud API, etc.)
+/// * `config` - Scanner configuration specifying suffixes and extensions
+/// * `location` - Repository location URI for deterministic ID generation
+///
+/// # Returns
+///
+/// A vector of [`PhotoStack`] objects sorted by ID.
+pub fn scan_entries(
+    entries: &[FileEntry],
+    config: &ScannerConfig,
+    location: &str,
+) -> Vec<PhotoStack> {
+    let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
+
+    for entry in entries {
+        // Check extension
+        let ext = std::path::Path::new(&entry.name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase());
+
+        let is_valid_ext = ext
+            .as_ref()
+            .map(|e| config.extensions.contains(e))
+            .unwrap_or(false);
+
+        if !is_valid_ext {
+            continue;
+        }
+
+        // Extract stem and classify
+        let stem = std::path::Path::new(&entry.name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let (base_name, variant) = classify_stem(stem, config);
+
+        let opaque_id = crate::hashing::make_stack_id(location, &entry.folder, &base_name);
+
+        let stack = stacks.entry(opaque_id.clone()).or_insert_with(|| {
+            let mut s = PhotoStack::new(&opaque_id);
+            s.name = base_name.clone();
+            s.folder = if entry.folder.is_empty() {
+                None
+            } else {
+                Some(entry.folder.clone())
+            };
+            s.repo_id = Some(location.to_string());
+            s
+        });
+
+        match variant {
+            Variant::Original => {
+                stack.original = Some(ImageFile::new(entry.path.clone(), entry.size))
+            }
+            Variant::Enhanced => {
+                stack.enhanced = Some(ImageFile::new(entry.path.clone(), entry.size))
+            }
+            Variant::Back => stack.back = Some(ImageFile::new(entry.path.clone(), entry.size)),
+        }
+    }
+
+    let mut result: Vec<PhotoStack> = stacks.into_values().collect();
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    result
+}
+
 /// Configuration for the FastFoto file scanner.
 ///
 /// Controls how files are identified and grouped into photo stacks. The default
@@ -179,30 +274,35 @@ pub fn scan_directory(
     config: &ScannerConfig,
     location: &str,
 ) -> std::io::Result<Vec<PhotoStack>> {
-    let mut stacks: HashMap<String, PhotoStack> = HashMap::new();
-    scan_directory_inner(dir, dir, config, location, &mut stacks)?;
-
-    let mut result: Vec<PhotoStack> = stacks.into_values().collect();
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(result)
+    let entries = collect_fs_entries(dir, dir, config)?;
+    Ok(scan_entries(&entries, config, location))
 }
 
-/// Inner recursive helper for [`scan_directory`].
-fn scan_directory_inner(
+/// Recursively collect filesystem entries into abstract [`FileEntry`] objects.
+fn collect_fs_entries(
     dir: &Path,
     root: &Path,
     config: &ScannerConfig,
-    location: &str,
-    stacks: &mut HashMap<String, PhotoStack>,
+) -> std::io::Result<Vec<FileEntry>> {
+    let mut entries = Vec::new();
+    collect_fs_entries_inner(dir, root, config, &mut entries)?;
+    Ok(entries)
+}
+
+fn collect_fs_entries_inner(
+    dir: &Path,
+    root: &Path,
+    config: &ScannerConfig,
+    entries: &mut Vec<FileEntry>,
 ) -> std::io::Result<()> {
-    let entries = std::fs::read_dir(dir)?;
-    for entry in entries {
+    let dir_entries = std::fs::read_dir(dir)?;
+    for entry in dir_entries {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
             if config.recursive {
-                scan_directory_inner(&path, root, config, location, stacks)?;
+                collect_fs_entries_inner(&path, root, config, entries)?;
             }
             continue;
         }
@@ -211,54 +311,25 @@ fn scan_directory_inner(
             continue;
         }
 
-        let ext = path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(|s| s.to_lowercase());
-
-        let is_valid_ext = ext
-            .as_ref()
-            .map(|e| config.extensions.contains(e))
-            .unwrap_or(false);
-
-        if !is_valid_ext {
-            continue;
-        }
-
-        let stem = match path.file_stem().and_then(OsStr::to_str) {
-            Some(s) => s.to_string(),
+        let name = match path.file_name().and_then(OsStr::to_str) {
+            Some(n) => n.to_string(),
             None => continue,
         };
-
-        let (base_name, variant) = classify_stem(&stem, config);
 
         let relative_dir = dir
             .strip_prefix(root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
 
-        let opaque_id = crate::hashing::make_stack_id(location, &relative_dir, &base_name);
-
-        let stack = stacks.entry(opaque_id.clone()).or_insert_with(|| {
-            let mut s = PhotoStack::new(&opaque_id);
-            s.name = base_name.clone();
-            s.folder = if relative_dir.is_empty() {
-                None
-            } else {
-                Some(relative_dir.to_string())
-            };
-            s.repo_id = Some(location.to_string());
-            s
-        });
-
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
         let path_str = path.to_string_lossy().into_owned();
 
-        match variant {
-            Variant::Original => stack.original = Some(ImageFile::new(path_str, size)),
-            Variant::Enhanced => stack.enhanced = Some(ImageFile::new(path_str, size)),
-            Variant::Back => stack.back = Some(ImageFile::new(path_str, size)),
-        }
+        entries.push(FileEntry {
+            name,
+            folder: relative_dir,
+            path: path_str,
+            size,
+        });
     }
     Ok(())
 }

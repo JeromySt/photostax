@@ -160,6 +160,174 @@ impl FfiResult {
     }
 }
 
+// ── Foreign repository callback types ────────────────────────────────────────
+
+/// A file entry returned by the foreign list_entries callback.
+///
+/// All string pointers must remain valid until the `free_entries` callback
+/// is called. The Rust side copies these strings immediately.
+#[repr(C)]
+pub struct FfiFileEntry {
+    /// File name including extension (e.g., "IMG_001_a.jpg"). Never null.
+    pub name: *const c_char,
+    /// Relative folder path using forward slashes (empty string for root). Never null.
+    pub folder: *const c_char,
+    /// Full path or URI to the file. Never null.
+    pub path: *const c_char,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// Result of a list_entries callback.
+#[repr(C)]
+pub struct FfiFileEntryArray {
+    /// Pointer to array of entries (null if len == 0).
+    pub data: *const FfiFileEntry,
+    /// Number of entries.
+    pub len: usize,
+    /// Non-zero indicates an error (entries are invalid).
+    pub error: i32,
+}
+
+/// Result of an open_read or open_write callback.
+#[repr(C)]
+pub struct FfiStreamHandle {
+    /// Opaque stream handle. Zero indicates failure.
+    pub handle: u64,
+    /// Non-zero indicates an error.
+    pub error: i32,
+}
+
+/// Result of a read callback.
+#[repr(C)]
+pub struct FfiReadResult {
+    /// Number of bytes actually read.
+    pub bytes_read: usize,
+    /// Non-zero indicates an error.
+    pub error: i32,
+}
+
+/// Result of a seek callback.
+#[repr(C)]
+pub struct FfiSeekResult {
+    /// New position after seeking.
+    pub position: u64,
+    /// Non-zero indicates an error.
+    pub error: i32,
+}
+
+/// Result of a write callback.
+#[repr(C)]
+pub struct FfiWriteResult {
+    /// Number of bytes actually written.
+    pub bytes_written: usize,
+    /// Non-zero indicates an error.
+    pub error: i32,
+}
+
+/// Callback function pointers for a foreign repository provider.
+///
+/// The host language fills this struct with function pointers that implement
+/// file I/O operations. The `ctx` pointer is passed through to every callback
+/// and can be used to maintain state in the host language (e.g., a managed
+/// object reference, a COM pointer, or a JavaScript reference).
+///
+/// # Lifetime
+///
+/// The `ctx` pointer and all callback functions must remain valid for the
+/// lifetime of the repository (until the `StackManager` handle is freed).
+///
+/// # Thread Safety
+///
+/// Callbacks may be invoked from any Rust thread. Host implementations must
+/// be thread-safe or serialize access internally.
+#[repr(C)]
+pub struct FfiProviderCallbacks {
+    /// Opaque context pointer passed to every callback.
+    pub ctx: *mut std::os::raw::c_void,
+
+    /// Location URI for this repository (e.g., "onedrive://user/Photos").
+    /// Must be a valid null-terminated UTF-8 string. Remains valid for
+    /// the lifetime of the provider.
+    pub location: *const c_char,
+
+    /// List file entries under a prefix.
+    ///
+    /// - `ctx`: the context pointer
+    /// - `prefix`: null-terminated UTF-8 folder prefix (empty string for root)
+    /// - `recursive`: whether to recurse into subdirectories
+    ///
+    /// Returns an `FfiFileEntryArray`. The caller (Rust) copies entries
+    /// immediately, then calls `free_entries` so the host can release memory.
+    pub list_entries: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        prefix: *const c_char,
+        recursive: bool,
+    ) -> FfiFileEntryArray,
+
+    /// Free an entry array previously returned by `list_entries`.
+    pub free_entries:
+        unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, entries: FfiFileEntryArray),
+
+    /// Open a file for reading.
+    ///
+    /// Returns an `FfiStreamHandle` with a non-zero handle on success.
+    pub open_read: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        path: *const c_char,
+    ) -> FfiStreamHandle,
+
+    /// Read bytes from a stream.
+    ///
+    /// - `handle`: stream handle from `open_read`
+    /// - `buf`: buffer to read into
+    /// - `len`: maximum number of bytes to read
+    pub read: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        handle: u64,
+        buf: *mut u8,
+        len: usize,
+    ) -> FfiReadResult,
+
+    /// Seek within a stream.
+    ///
+    /// - `handle`: stream handle from `open_read`
+    /// - `offset`: byte offset
+    /// - `whence`: 0 = from start, 1 = from current, 2 = from end
+    pub seek: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        handle: u64,
+        offset: i64,
+        whence: i32,
+    ) -> FfiSeekResult,
+
+    /// Close a read stream.
+    pub close_read: unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
+
+    /// Open a file for writing.
+    ///
+    /// Returns an `FfiStreamHandle` with a non-zero handle on success.
+    pub open_write: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        path: *const c_char,
+    ) -> FfiStreamHandle,
+
+    /// Write bytes to a stream.
+    ///
+    /// - `handle`: stream handle from `open_write`
+    /// - `buf`: bytes to write
+    /// - `len`: number of bytes to write
+    pub write: unsafe extern "C" fn(
+        ctx: *mut std::os::raw::c_void,
+        handle: u64,
+        buf: *const u8,
+        len: usize,
+    ) -> FfiWriteResult,
+
+    /// Close a write stream.
+    pub close_write: unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
