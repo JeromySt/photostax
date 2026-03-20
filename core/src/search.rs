@@ -204,6 +204,9 @@ pub struct SearchQuery {
 
     /// Allowlist of stack IDs. When set, only stacks whose ID is in this list are returned.
     pub stack_ids: Option<Vec<String>>,
+
+    /// Filter to stacks from a specific repository.
+    pub repo_id: Option<String>,
 }
 
 impl SearchQuery {
@@ -340,6 +343,24 @@ impl SearchQuery {
         self.stack_ids = Some(ids);
         self
     }
+
+    /// Filter to stacks from a specific repository.
+    ///
+    /// When set, only stacks whose `repo_id` matches the given value are
+    /// included in results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use photostax_core::search::SearchQuery;
+    ///
+    /// let query = SearchQuery::new()
+    ///     .with_repo_id("file:///photos");
+    /// ```
+    pub fn with_repo_id(mut self, repo_id: impl Into<String>) -> Self {
+        self.repo_id = Some(repo_id.into());
+        self
+    }
 }
 
 /// Filter a collection of photo stacks based on a search query.
@@ -384,6 +405,14 @@ pub(crate) fn matches_query_ref(stack: &PhotoStack, query: &SearchQuery) -> bool
 
 /// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    // Check repo_id filter
+    if let Some(ref repo_id) = query.repo_id {
+        match &stack.repo_id {
+            Some(stack_repo) if stack_repo == repo_id => {}
+            _ => return false,
+        }
+    }
+
     // Check stack ID/name allowlist
     if let Some(ref ids) = query.stack_ids {
         if !ids.iter().any(|id| id == &stack.id || id == &stack.name) {
@@ -769,6 +798,7 @@ mod tests {
         assert!(q.has_back.is_none());
         assert!(q.has_enhanced.is_none());
         assert!(q.stack_ids.is_none());
+        assert!(q.repo_id.is_none());
     }
 
     #[test]

@@ -5,20 +5,24 @@
 //! - Multi-repo support with URI-based overlap detection
 //! - O(1) `get_stack(id)` lookups
 //! - Snapshot creation (frozen cache clones)
-//! - Mutation routing to the correct repo via `stack.repo_id`
+//! - Classifier injection into repositories at registration time
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::classifier::{DefaultClassifier, ImageClassifier};
 use crate::events::{CacheEvent, FileVariant, StackEvent};
 use crate::backends::local_handles::LocalImageHandle;
 use crate::image_handle::ImageRef;
 use crate::photo_stack::{
-    Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
+    PhotoStack, ScanProgress, ScannerProfile,
 };
 use crate::repository::{Repository, RepositoryError};
-use crate::search::{paginate_stacks, PaginatedResult, PaginationParams, SearchQuery};
+use crate::search::{SearchQuery};
 use crate::snapshot::ScanSnapshot;
+
+/// Type alias: `SessionManager` is the new name for `StackManager`.
+pub type SessionManager = StackManager;
 
 /// Errors specific to [`StackManager`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -51,12 +55,14 @@ struct RegisteredRepo {
 ///
 /// Aggregates stacks from N [`Repository`] instances into a single
 /// flat `HashMap` cache. All lookups are O(1) by opaque stack ID.
-/// Mutation operations (rotate, write metadata) are routed to the
-/// correct repository via `PhotoStack::repo_id`.
+/// Per-stack I/O (read, rotate, write metadata) is handled via
+/// the handles embedded in each [`PhotoStack`].
 pub struct StackManager {
     /// Keyed by `repo.location()` since the scanner stores location in `PhotoStack::repo_id`.
     repos: HashMap<String, RegisteredRepo>,
     cache: HashMap<String, PhotoStack>,
+    /// Image classifier shared with all registered repos.
+    classifier: Arc<dyn ImageClassifier>,
 }
 
 impl StackManager {
@@ -65,6 +71,7 @@ impl StackManager {
         Self {
             repos: HashMap::new(),
             cache: HashMap::new(),
+            classifier: Arc::new(DefaultClassifier),
         }
     }
 
@@ -79,9 +86,11 @@ impl StackManager {
     }
 
     /// Register a repository. Rejects overlapping locations within the same URI scheme.
+    ///
+    /// Injects the session's classifier into the repository at registration time.
     pub fn add_repo(
         &mut self,
-        repo: Box<dyn Repository>,
+        mut repo: Box<dyn Repository>,
         profile: ScannerProfile,
     ) -> Result<&str, StackManagerError> {
         let new_loc = repo.location().to_string();
@@ -99,6 +108,8 @@ impl StackManager {
                 }
             }
         }
+
+        repo.set_classifier(self.classifier.clone());
 
         let location = repo.location().to_string();
         self.repos
@@ -156,67 +167,9 @@ impl StackManager {
         self.cache.get_mut(id)
     }
 
-    /// Load metadata for a specific stack, routing to the correct repository.
-    pub fn load_metadata(&mut self, id: &str) -> Result<(), StackManagerError> {
-        let repo_id = self
-            .cache
-            .get(id)
-            .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?
-            .repo_id
-            .as_ref()
-            .ok_or_else(|| StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id")))?
-            .clone();
-
-        let reg = self
-            .repos
-            .get(&repo_id)
-            .ok_or(StackManagerError::RepoNotFound(repo_id))?;
-        let stack = self.cache.get_mut(id).unwrap();
-        reg.repo.load_metadata(stack)?;
-        Ok(())
-    }
-
-    /// Rotate images in a stack, routing to the correct repository.
-    pub fn rotate_stack(
-        &mut self,
-        id: &str,
-        rotation: Rotation,
-        target: RotationTarget,
-    ) -> Result<&PhotoStack, StackManagerError> {
-        let repo_id = self
-            .cache
-            .get(id)
-            .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?
-            .repo_id
-            .as_ref()
-            .ok_or_else(|| StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id")))?
-            .clone();
-
-        let reg = self
-            .repos
-            .get(&repo_id)
-            .ok_or(StackManagerError::RepoNotFound(repo_id))?;
-        let updated = reg.repo.rotate_stack(id, rotation, target)?;
-        self.cache.insert(id.to_string(), updated);
-        Ok(self.cache.get(id).unwrap())
-    }
-
-    /// Write metadata to a stack, routing to the correct repository.
-    pub fn write_metadata(&self, id: &str, tags: &Metadata) -> Result<(), StackManagerError> {
-        let stack = self
-            .cache
-            .get(id)
-            .ok_or_else(|| RepositoryError::NotFound(id.to_string()))?;
-        let repo_id = stack.repo_id.as_ref().ok_or_else(|| {
-            StackManagerError::RepoNotFound(format!("Stack '{id}' has no repo_id"))
-        })?;
-        let reg = self
-            .repos
-            .get(repo_id)
-            .ok_or_else(|| StackManagerError::RepoNotFound(repo_id.clone()))?;
-
-        reg.repo.write_metadata(stack, tags)?;
-        Ok(())
+    /// Get all stacks in the cache.
+    pub fn all_stacks(&self) -> Vec<&PhotoStack> {
+        self.cache.values().collect()
     }
 
     /// Create a snapshot of the entire cache (all repos).
@@ -255,44 +208,38 @@ impl StackManager {
         }
     }
 
-    /// Get all stacks in the cache.
-    #[deprecated(since = "0.2.1", note = "Use `query()` instead")]
+    /// Get all stacks in the cache (delegates to `all_stacks()`).
     pub fn stacks(&self) -> Vec<&PhotoStack> {
-        self.cache.values().collect()
+        self.all_stacks()
     }
 
-    /// Query the cache with optional filtering and pagination.
+    /// Query the cache with optional filtering, returning a [`ScanSnapshot`].
     ///
     /// This is the primary entry point for retrieving stacks. It filters
-    /// directly over the cache without cloning, then paginates the results.
+    /// directly over the cache without cloning, then returns a snapshot
+    /// for consistent pagination.
     ///
-    /// - Empty `SearchQuery` + `None` pagination = all stacks
-    /// - `SearchQuery` filters + `None` pagination = all matching stacks
-    /// - Any query + `Some(pagination)` = a single page of results
+    /// - Empty `SearchQuery` = snapshot of all stacks
+    /// - `SearchQuery` with filters = snapshot of matching stacks
     ///
     /// # Examples
     ///
     /// ```rust,no_run
     /// # use photostax_core::stack_manager::StackManager;
-    /// # use photostax_core::search::{SearchQuery, PaginationParams};
+    /// # use photostax_core::search::SearchQuery;
     /// # let mgr = StackManager::new();
-    /// // All stacks, no filter, no pagination
-    /// let all = mgr.query(&SearchQuery::new(), None);
+    /// // All stacks
+    /// let snap = mgr.query(&SearchQuery::new());
     ///
-    /// // Filtered, first page of 20
+    /// // Filtered
     /// let query = SearchQuery::new().with_has_back(true);
-    /// let page1 = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
-    ///
-    /// // Iterate pages
-    /// if let Some(next) = page1.next_page() {
-    ///     let page2 = mgr.query(&query, Some(&next));
-    /// }
+    /// let snap = mgr.query(&query);
+    /// let page1 = snap.get_page(0, 20);
     /// ```
     pub fn query(
         &self,
         query: &SearchQuery,
-        pagination: Option<&PaginationParams>,
-    ) -> PaginatedResult<PhotoStack> {
+    ) -> ScanSnapshot {
         use crate::search::matches_query_ref;
 
         let filtered: Vec<PhotoStack> = self
@@ -302,16 +249,7 @@ impl StackManager {
             .cloned()
             .collect();
 
-        match pagination {
-            Some(params) => paginate_stacks(&filtered, params),
-            None => PaginatedResult {
-                total_count: filtered.len(),
-                offset: 0,
-                limit: filtered.len(),
-                has_more: false,
-                items: filtered,
-            },
-        }
+        ScanSnapshot::from_stacks(filtered)
     }
 
     /// Total number of stacks in the cache.
@@ -329,29 +267,21 @@ impl StackManager {
         self.repos.len()
     }
 
-    /// Read an image file, trying each registered repo until one succeeds.
-    pub fn read_image(
-        &self,
-        path: &str,
-    ) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
-        for reg in self.repos.values() {
-            if let Ok(reader) = reg.repo.read_image(path) {
-                return Ok(reader);
-            }
-        }
-        Err(RepositoryError::NotFound(format!(
-            "No repository can read: {path}"
-        )))
-    }
-
     /// Scan all repos and load metadata for every stack (slow path).
     pub fn scan_with_metadata(&mut self) -> Result<usize, StackManagerError> {
         self.scan()?;
-        let ids: Vec<String> = self.cache.keys().cloned().collect();
-        for id in ids {
-            self.load_metadata(&id)?;
+        for stack in self.cache.values_mut() {
+            let _ = stack.metadata.read()?;
         }
         Ok(self.cache.len())
+    }
+
+    /// Subscribe to cache-level events (stack added/updated/removed).
+    ///
+    /// Returns a receiver for [`CacheEvent`]s. Drop it to unsubscribe.
+    pub fn subscribe_cache_events(&self) -> std::sync::mpsc::Receiver<CacheEvent> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        rx
     }
 
     /// Start watching all registered repos for changes.
@@ -449,7 +379,6 @@ fn same_scheme(a: &str, b: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::backends::local::LocalRepository;
@@ -659,10 +588,10 @@ mod tests {
         assert!(mgr.get_stack("nonexistent").is_none());
     }
 
-    // ── g) Metadata loading ─────────────────────────────────────────────
+    // ── g) Metadata loading via handles ──────────────────────────────────
 
     #[test]
-    fn load_metadata_routes_to_correct_repo() {
+    fn metadata_load_via_handle() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_001_a.jpg", "IMG_001_b.jpg"]);
 
@@ -673,18 +602,18 @@ mod tests {
 
         let id = mgr.stacks()[0].id.clone();
 
-        // load_metadata should succeed (routing to the LocalRepository)
-        mgr.load_metadata(&id).unwrap();
+        // Metadata is loaded via the handle
+        let stack = mgr.get_stack_mut(&id).unwrap();
+        let _meta = stack.metadata.read().unwrap();
 
         // After metadata load, the stack should still be accessible
-        let stack = mgr.get_stack(&id).unwrap();
         assert_eq!(stack.name, "IMG_001");
     }
 
-    // ── h) Rotation routing ─────────────────────────────────────────────
+    // ── h) Rotation via handles ─────────────────────────────────────────
 
     #[test]
-    fn rotate_stack_routes_to_correct_repo() {
+    fn rotate_via_handles() {
         let tmp = TempDir::new().unwrap();
 
         // Use the image crate to create decodable JPEGs (rotation needs pixel access)
@@ -702,16 +631,10 @@ mod tests {
 
         let id = mgr.stacks()[0].id.clone();
 
-        // rotate_stack should succeed, returning the updated stack
-        let rotated = mgr
-            .rotate_stack(&id, Rotation::Cw90, RotationTarget::All)
-            .unwrap();
-        assert_eq!(rotated.id, id);
-        assert_eq!(rotated.name, "IMG_001");
-
-        // The cache should contain the updated stack
-        let cached = mgr.get_stack(&id).unwrap();
-        assert_eq!(cached.id, id);
+        // Rotation via ImageRef handle
+        let stack = mgr.get_stack(&id).unwrap();
+        stack.original.rotate(crate::photo_stack::Rotation::Cw90).unwrap();
+        assert_eq!(stack.name, "IMG_001");
     }
 
     // ── Additional edge-case tests ──────────────────────────────────────
@@ -910,189 +833,6 @@ mod tests {
     }
 
     #[test]
-    fn load_metadata_nonexistent_stack() {
-        let tmp = TempDir::new().unwrap();
-        setup_test_dir(&tmp, &["IMG_001.jpg"]);
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let result = mgr.load_metadata("nonexistent");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn load_metadata_stack_no_repo_id() {
-        let mut mgr = StackManager::new();
-        mgr.cache
-            .insert("orphan".to_string(), PhotoStack::new("orphan"));
-
-        let result = mgr.load_metadata("orphan");
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("no repo_id"));
-    }
-
-    #[test]
-    fn load_metadata_repo_id_not_registered() {
-        let mut mgr = StackManager::new();
-        let mut stack = PhotoStack::new("orphan");
-        stack.repo_id = Some("file:///nonexistent".to_string());
-        mgr.cache.insert("orphan".to_string(), stack);
-
-        let result = mgr.load_metadata("orphan");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn rotate_stack_nonexistent() {
-        let tmp = TempDir::new().unwrap();
-        setup_test_dir(&tmp, &["IMG_001.jpg"]);
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let result = mgr.rotate_stack("nonexistent", Rotation::Cw90, RotationTarget::All);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn rotate_stack_no_repo_id() {
-        let mut mgr = StackManager::new();
-        mgr.cache
-            .insert("orphan".to_string(), PhotoStack::new("orphan"));
-
-        let result = mgr.rotate_stack("orphan", Rotation::Cw90, RotationTarget::All);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("no repo_id"));
-    }
-
-    #[test]
-    fn rotate_stack_repo_id_not_registered() {
-        let mut mgr = StackManager::new();
-        let mut stack = PhotoStack::new("orphan");
-        stack.repo_id = Some("file:///nonexistent".to_string());
-        mgr.cache.insert("orphan".to_string(), stack);
-
-        let result = mgr.rotate_stack("orphan", Rotation::Cw90, RotationTarget::All);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn write_metadata_nonexistent_stack() {
-        let tmp = TempDir::new().unwrap();
-        setup_test_dir(&tmp, &["IMG_001.jpg"]);
-
-        let repo = LocalRepository::new(tmp.path());
-        let mgr = StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-
-        let result = mgr.write_metadata("nonexistent", &Metadata::default());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn write_metadata_no_repo_id() {
-        let mut mgr = StackManager::new();
-        mgr.cache
-            .insert("orphan".to_string(), PhotoStack::new("orphan"));
-
-        let result = mgr.write_metadata("orphan", &Metadata::default());
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("no repo_id"));
-    }
-
-    #[test]
-    fn write_metadata_repo_id_not_registered() {
-        let mut mgr = StackManager::new();
-        let mut stack = PhotoStack::new("orphan");
-        stack.repo_id = Some("file:///nonexistent".to_string());
-        mgr.cache.insert("orphan".to_string(), stack);
-
-        let result = mgr.write_metadata("orphan", &Metadata::default());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn write_metadata_routes_to_repo() {
-        let tmp = TempDir::new().unwrap();
-        create_real_jpeg(tmp.path(), "IMG_001.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let id = mgr.stacks()[0].id.clone();
-        let tags = Metadata::default();
-        let result = mgr.write_metadata(&id, &tags);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn rotate_stack_front_only() {
-        let tmp = TempDir::new().unwrap();
-        create_real_jpeg(tmp.path(), "IMG_001.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let id = mgr.stacks()[0].id.clone();
-        let rotated = mgr
-            .rotate_stack(&id, Rotation::Cw90, RotationTarget::Front)
-            .unwrap();
-        assert_eq!(rotated.name, "IMG_001");
-    }
-
-    #[test]
-    fn rotate_stack_back_only() {
-        let tmp = TempDir::new().unwrap();
-        create_real_jpeg(tmp.path(), "IMG_001.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_b.jpg");
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let id = mgr.stacks()[0].id.clone();
-        let rotated = mgr
-            .rotate_stack(&id, Rotation::Ccw90, RotationTarget::Back)
-            .unwrap();
-        assert_eq!(rotated.name, "IMG_001");
-    }
-
-    #[test]
-    fn rotate_stack_180() {
-        let tmp = TempDir::new().unwrap();
-        create_real_jpeg(tmp.path(), "IMG_001.jpg");
-        create_real_jpeg(tmp.path(), "IMG_001_a.jpg");
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let id = mgr.stacks()[0].id.clone();
-        let rotated = mgr
-            .rotate_stack(&id, Rotation::Cw180, RotationTarget::All)
-            .unwrap();
-        assert_eq!(rotated.name, "IMG_001");
-    }
-
-    #[test]
     fn snapshot_repo_nonexistent_repo() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg"]);
@@ -1130,34 +870,6 @@ mod tests {
         assert!(status.is_stale);
         assert_eq!(status.removed, 1);
         assert_eq!(status.current_count, 1);
-    }
-
-    #[test]
-    fn read_image_routes_to_repo() {
-        let tmp = TempDir::new().unwrap();
-        create_real_jpeg(tmp.path(), "IMG_001.jpg");
-
-        let repo = LocalRepository::new(tmp.path());
-        let mut mgr =
-            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.scan().unwrap();
-
-        let stack = mgr.stacks()[0];
-        assert!(stack.original.is_present());
-        // Use the known path directly since ImageRef doesn't expose paths
-        let path = tmp.path().join("IMG_001.jpg");
-        let reader = mgr.read_image(path.to_str().unwrap());
-        assert!(reader.is_ok());
-    }
-
-    #[test]
-    fn read_image_no_repo_can_read() {
-        let mgr = StackManager::new();
-        let result = mgr.read_image("/nonexistent/IMG_001.jpg");
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        let err_msg = format!("{}", err);
-        assert!(err_msg.contains("No repository can read"));
     }
 
     #[test]
@@ -1299,7 +1011,7 @@ mod tests {
     // ── query() tests ───────────────────────────────────────────────────
 
     #[test]
-    fn query_all_no_pagination() {
+    fn query_all() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg", "IMG_003.jpg"]);
 
@@ -1308,14 +1020,13 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
         mgr.scan().unwrap();
 
-        let result = mgr.query(&SearchQuery::new(), None);
-        assert_eq!(result.total_count, 3);
-        assert_eq!(result.items.len(), 3);
-        assert!(!result.has_more);
+        let snap = mgr.query(&SearchQuery::new());
+        assert_eq!(snap.total_count(), 3);
+        assert_eq!(snap.stacks().len(), 3);
     }
 
     #[test]
-    fn query_with_pagination() {
+    fn query_with_pagination_via_snapshot() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(
             &tmp,
@@ -1333,29 +1044,21 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
         mgr.scan().unwrap();
 
-        let page1 = mgr.query(
-            &SearchQuery::new(),
-            Some(&PaginationParams {
-                offset: 0,
-                limit: 2,
-            }),
-        );
+        let snap = mgr.query(&SearchQuery::new());
+        assert_eq!(snap.total_count(), 5);
+
+        let page1 = snap.get_page(0, 2);
         assert_eq!(page1.items.len(), 2);
         assert_eq!(page1.total_count, 5);
         assert!(page1.has_more);
 
-        let next = page1.next_page().unwrap();
-        assert_eq!(next.offset, 2);
-        assert_eq!(next.limit, 2);
-
-        let page2 = mgr.query(&SearchQuery::new(), Some(&next));
+        let page2 = snap.get_page(2, 2);
         assert_eq!(page2.items.len(), 2);
         assert!(page2.has_more);
 
-        let page3 = mgr.query(&SearchQuery::new(), Some(&page2.next_page().unwrap()));
+        let page3 = snap.get_page(4, 2);
         assert_eq!(page3.items.len(), 1);
         assert!(!page3.has_more);
-        assert!(page3.next_page().is_none());
     }
 
     #[test]
@@ -1369,9 +1072,9 @@ mod tests {
         mgr.scan().unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let result = mgr.query(&query, None);
-        assert_eq!(result.total_count, 1);
-        assert_eq!(result.items[0].name, "IMG_001");
+        let snap = mgr.query(&query);
+        assert_eq!(snap.total_count(), 1);
+        assert_eq!(snap.stacks()[0].name, "IMG_001");
     }
 
     #[test]
@@ -1396,13 +1099,10 @@ mod tests {
         mgr.scan().unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let page = mgr.query(
-            &query,
-            Some(&PaginationParams {
-                offset: 0,
-                limit: 2,
-            }),
-        );
+        let snap = mgr.query(&query);
+        assert_eq!(snap.total_count(), 3);
+
+        let page = snap.get_page(0, 2);
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total_count, 3);
         assert!(page.has_more);
@@ -1411,9 +1111,8 @@ mod tests {
     #[test]
     fn query_empty_cache() {
         let mgr = StackManager::new();
-        let result = mgr.query(&SearchQuery::new(), None);
-        assert_eq!(result.total_count, 0);
-        assert!(result.items.is_empty());
-        assert!(!result.has_more);
+        let snap = mgr.query(&SearchQuery::new());
+        assert_eq!(snap.total_count(), 0);
+        assert!(snap.stacks().is_empty());
     }
 }

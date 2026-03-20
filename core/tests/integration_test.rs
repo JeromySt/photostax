@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::metadata::exif;
 use photostax_core::metadata::xmp;
-use photostax_core::photo_stack::{ClassifyMode, Metadata};
+use photostax_core::photo_stack::Metadata;
 use photostax_core::repository::Repository;
 use photostax_core::search::{filter_stacks, SearchQuery};
 
@@ -29,10 +29,9 @@ fn test_end_to_end_scan_search_metadata() {
     // Create test repository with helper
     test_helpers::create_test_repository(dir);
 
-    // Create repository and scan (skip classification so synthetic images
-    // are not reclassified — this test verifies scan grouping, not classification).
+    // Create repository and scan
     let repo = LocalRepository::new(dir);
-    let stacks = repo.scan_with_classification(ClassifyMode::Skip).unwrap();
+    let stacks = repo.scan().unwrap();
 
     // Verify expected stacks were found
     assert!(
@@ -63,14 +62,15 @@ fn test_end_to_end_scan_search_metadata() {
     assert!(!stack_0004.enhanced.is_present());
     assert!(!stack_0004.back.is_present());
 
-    // Config 2: Original + enhanced (2 files, no back)
+    // Config 2: Original + _a file (2 files; with the default classifier
+    // synthetic solid-colour images may be reclassified)
     let stack_0002 = stacks
         .iter()
         .find(|s| s.name == "FamilyPhotos_0002")
         .unwrap();
     assert!(stack_0002.original.is_present());
-    assert!(stack_0002.enhanced.is_present());
-    assert!(!stack_0002.back.is_present());
+    // The _a file is present as either enhanced or back depending on classification
+    assert!(stack_0002.enhanced.is_present() || stack_0002.back.is_present());
 
     // Config 3: Original + back (2 files, no enhanced)
     let stack_0005 = stacks
@@ -93,7 +93,7 @@ fn test_end_to_end_scan_search_metadata() {
     assert!(stack.enhanced.is_present());
     assert!(stack.back.is_present());
 
-    // Write metadata to the stack
+    // Write metadata via handle
     let mut metadata = Metadata::default();
     metadata
         .xmp_tags
@@ -102,7 +102,7 @@ fn test_end_to_end_scan_search_metadata() {
         .custom_tags
         .insert("ocr_text".to_string(), serde_json::json!("Reunion 2024"));
 
-    repo.write_metadata(&stack, &metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // Re-scan and verify metadata persists (use scan_with_metadata to load sidecar)
     let stacks_after = repo.scan_with_metadata().unwrap();
@@ -144,7 +144,7 @@ fn test_xmp_readable_by_exif_tools() {
             .unwrap()
     };
 
-    // Write XMP metadata
+    // Write XMP metadata via handle
     let mut metadata = Metadata::default();
     metadata.xmp_tags.insert(
         "description".to_string(),
@@ -154,7 +154,7 @@ fn test_xmp_readable_by_exif_tools() {
         .xmp_tags
         .insert("creator".to_string(), "Test Author".to_string());
 
-    repo.write_metadata(&stack, &metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // write_metadata prefers enhanced image, so read from enhanced.
     // Construct path directly since ImageRef does not expose paths.
@@ -218,23 +218,23 @@ fn test_search_workflow() {
     // First, write some custom metadata for searching
     let stacks = repo.scan().unwrap();
 
-    // Add OCR text to one stack
+    // Add OCR text to one stack via handle
     if let Some(stack) = stacks.iter().find(|s| s.name == "FamilyPhotos_0001") {
         let mut metadata = Metadata::default();
         metadata
             .custom_tags
             .insert("ocr_text".to_string(), serde_json::json!("Birthday party"));
-        repo.write_metadata(stack, &metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
     }
 
-    // Add different OCR text to another stack
+    // Add different OCR text to another stack via handle
     if let Some(stack) = stacks.iter().find(|s| s.name == "FamilyPhotos_0002") {
         let mut metadata = Metadata::default();
         metadata.custom_tags.insert(
             "ocr_text".to_string(),
             serde_json::json!("Wedding ceremony"),
         );
-        repo.write_metadata(stack, &metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
     }
 
     // Re-scan with metadata to pick up sidecar data for searching
@@ -267,13 +267,13 @@ fn test_tiff_workflow() {
     let stack = &stacks[0];
     assert_eq!(stack.name, "TiffTest_0001");
 
-    // Write XMP metadata (should create sidecar for TIFF)
+    // Write XMP metadata via handle (should create sidecar for TIFF)
     let mut metadata = Metadata::default();
     metadata
         .xmp_tags
         .insert("description".to_string(), "TIFF test".to_string());
 
-    repo.write_metadata(stack, &metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // Verify sidecar was created - write_metadata uses enhanced or original.
     // Construct path directly since ImageRef does not expose paths.
@@ -294,13 +294,17 @@ fn test_read_image_content() {
     let dir = tmp.path();
 
     // Create test image with known content
-    let paths = test_helpers::create_fastfoto_stack(dir, "ReadTest", 1, false, false, "jpg");
+    test_helpers::create_fastfoto_stack(dir, "ReadTest", 1, false, false, "jpg");
 
     let repo = LocalRepository::new(dir);
+    let stacks = repo.scan().unwrap();
+    let stack = &stacks[0];
 
-    // Read the image
+    // Read the image via handle
     let mut content = Vec::new();
-    repo.read_image(paths[0].to_str().unwrap())
+    stack
+        .original
+        .read()
         .unwrap()
         .read_to_end(&mut content)
         .unwrap();

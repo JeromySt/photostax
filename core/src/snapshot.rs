@@ -36,7 +36,7 @@
 //! # Ok::<(), photostax_core::repository::RepositoryError>(())
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
 use crate::repository::{Repository, RepositoryError};
@@ -54,6 +54,8 @@ use crate::search::{
 pub struct ScanSnapshot {
     stacks: Vec<PhotoStack>,
     ids: HashSet<String>,
+    /// Per-repo generation counters captured at snapshot time.
+    repo_generations: HashMap<String, u64>,
 }
 
 /// Result of checking a snapshot against the current repository state.
@@ -124,11 +126,15 @@ impl ScanSnapshot {
         let mut stacks = repo.scan_with_progress(profile, progress)?;
         if load_metadata {
             for stack in &mut stacks {
-                repo.load_metadata(stack)?;
+                let _ = stack.metadata.read()?;
             }
         }
         let ids = stacks.iter().map(|s| s.id.clone()).collect();
-        Ok(Self { stacks, ids })
+        Ok(Self {
+            stacks,
+            ids,
+            repo_generations: HashMap::new(),
+        })
     }
 
     /// Create a snapshot from a pre-existing vector of stacks.
@@ -136,7 +142,11 @@ impl ScanSnapshot {
     /// Useful for creating filtered sub-snapshots or testing.
     pub fn from_stacks(stacks: Vec<PhotoStack>) -> Self {
         let ids = stacks.iter().map(|s| s.id.clone()).collect();
-        Self { stacks, ids }
+        Self {
+            stacks,
+            ids,
+            repo_generations: HashMap::new(),
+        }
     }
 
     /// Total number of stacks in the snapshot.
@@ -169,6 +179,24 @@ impl ScanSnapshot {
     /// The set of stack IDs captured at snapshot time.
     pub fn ids(&self) -> &HashSet<String> {
         &self.ids
+    }
+
+    /// Returns `true` if any repo generation has advanced since this snapshot
+    /// was created, meaning cached data may be out of date.
+    pub fn is_stale(&self, current_generations: &HashMap<String, u64>) -> bool {
+        for (repo_id, &snap_gen) in &self.repo_generations {
+            if let Some(&current_gen) = current_generations.get(repo_id) {
+                if current_gen > snap_gen {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Set the repo generation map (used by `StackManager` when building a snapshot).
+    pub fn set_repo_generations(&mut self, gens: HashMap<String, u64>) {
+        self.repo_generations = gens;
     }
 
     /// Check whether the snapshot is still current.
