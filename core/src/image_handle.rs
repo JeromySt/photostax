@@ -387,4 +387,76 @@ mod tests {
         assert!(r2.is_present());
         assert_eq!(r2.cached_hash(), r1.cached_hash());
     }
+
+    #[test]
+    fn test_image_ref_absent_stream_error() {
+        let r = ImageRef::absent();
+        let result = r.stream();
+        assert!(result.is_err());
+        assert!(matches!(result.err().unwrap(), RepositoryError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_image_ref_absent_hash_error() {
+        let mut r = ImageRef::absent();
+        let err = r.hash().unwrap_err();
+        assert!(matches!(err, RepositoryError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_image_ref_absent_dimensions_error() {
+        let mut r = ImageRef::absent();
+        let err = r.dimensions().unwrap_err();
+        assert!(matches!(err, RepositoryError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_image_ref_absent_rotate_error() {
+        let r = ImageRef::absent();
+        let err = r.rotate(Rotation::Cw90).unwrap_err();
+        assert!(matches!(err, RepositoryError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_image_ref_absent_cached_hash_none() {
+        let r = ImageRef::absent();
+        assert!(r.cached_hash().is_none());
+    }
+
+    #[test]
+    fn test_image_ref_invalidated_stream_error() {
+        let handle = Arc::new(MockImageHandle::new(b"data".to_vec()));
+        let r = ImageRef::new(handle.clone());
+        handle.invalidate();
+        let result = r.stream();
+        assert!(result.is_err());
+        assert!(matches!(result.err().unwrap(), RepositoryError::StackDeleted));
+    }
+
+    #[test]
+    fn test_image_ref_invalidated_hash_error() {
+        let handle = Arc::new(MockImageHandle::new(b"data".to_vec()));
+        let mut r = ImageRef::new(handle.clone());
+        handle.invalidate();
+        let err = r.hash().unwrap_err();
+        assert!(matches!(err, RepositoryError::StackDeleted));
+    }
+
+    #[test]
+    fn test_image_ref_invalidated_dimensions_error() {
+        let handle = Arc::new(MockImageHandle::new(b"data".to_vec()));
+        let mut r = ImageRef::new(handle.clone());
+        handle.invalidate();
+        let err = r.dimensions().unwrap_err();
+        assert!(matches!(err, RepositoryError::StackDeleted));
+    }
+
+    #[test]
+    fn test_image_ref_invalidated_rotate_error() {
+        let handle = Arc::new(MockImageHandle::new(b"data".to_vec()));
+        let r = ImageRef::new(handle.clone());
+        handle.invalidate();
+        let err = r.rotate(Rotation::Cw90).unwrap_err();
+        assert!(matches!(err, RepositoryError::StackDeleted));
+    }
 }

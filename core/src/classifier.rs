@@ -169,4 +169,22 @@ mod tests {
         let result = classifier.classify(&mut reader).unwrap();
         assert_eq!(result, Classification::Back);
     }
+
+    #[test]
+    fn test_classification_display() {
+        // Verify Debug output
+        let debug_enhanced = format!("{:?}", Classification::Enhanced);
+        let debug_back = format!("{:?}", Classification::Back);
+        assert!(debug_enhanced.contains("Enhanced"));
+        assert!(debug_back.contains("Back"));
+
+        // Verify round-trip via from_int / as_int
+        for val in 0..=1 {
+            let cls = Classification::from_int(val).unwrap();
+            assert_eq!(cls.as_int(), val);
+        }
+        assert!(Classification::from_int(2).is_none());
+        assert!(Classification::from_int(-1).is_none());
+        assert!(Classification::from_int(i32::MAX).is_none());
+    }
 }

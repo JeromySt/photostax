@@ -1128,4 +1128,90 @@ mod tests {
         assert_eq!(snap.total_count(), 0);
         assert!(snap.stacks().is_empty());
     }
+
+    #[test]
+    fn test_query_auto_scans_on_first_call() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        // Do NOT call rescan(); query should auto-scan
+        let snap = mgr.query(None, None).unwrap();
+        assert!(snap.total_count() > 0);
+        assert_eq!(snap.total_count(), 2);
+    }
+
+    #[test]
+    fn test_query_with_text_filter() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg", "IMG_003.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+        mgr.rescan(None).unwrap();
+
+        let query = SearchQuery::new().with_text("IMG_001");
+        let snap = mgr.query(Some(&query), None).unwrap();
+        assert_eq!(snap.total_count(), 1);
+        assert_eq!(snap.stacks()[0].name, "IMG_001");
+    }
+
+    #[test]
+    fn test_query_with_progress() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let mut call_count = 0usize;
+        let snap = mgr
+            .query(
+                None,
+                Some(&mut |_p: &ScanProgress| {
+                    call_count += 1;
+                }),
+            )
+            .unwrap();
+        assert!(snap.total_count() > 0);
+        assert!(call_count > 0);
+    }
+
+    #[test]
+    fn test_rescan_replaces_cache() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        let count = mgr.rescan(None).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(mgr.len(), 2);
+    }
+
+    #[test]
+    fn test_is_empty_and_len() {
+        let tmp = TempDir::new().unwrap();
+        setup_test_dir(&tmp, &["IMG_001.jpg"]);
+
+        let repo = LocalRepository::new(tmp.path());
+        let mut mgr =
+            StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
+
+        // Before scan
+        assert!(mgr.is_empty());
+        assert_eq!(mgr.len(), 0);
+
+        // After scan
+        mgr.rescan(None).unwrap();
+        assert!(!mgr.is_empty());
+        assert_eq!(mgr.len(), 1);
+    }
 }

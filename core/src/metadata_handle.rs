@@ -268,4 +268,33 @@ mod tests {
         assert!(r2.is_loaded());
         assert!(r2.cached().is_some());
     }
+
+    #[test]
+    fn test_null_metadata_handle_load() {
+        let handle = NullMetadataHandle;
+        let meta = handle.load().unwrap();
+        assert!(meta.exif_tags.is_empty());
+    }
+
+    #[test]
+    fn test_null_metadata_handle_write_error() {
+        let handle = NullMetadataHandle;
+        let err = handle.write(&Metadata::default()).unwrap_err();
+        assert!(matches!(err, RepositoryError::Other(_)));
+    }
+
+    #[test]
+    fn test_null_metadata_handle_is_valid() {
+        let handle = NullMetadataHandle;
+        assert!(handle.is_valid());
+    }
+
+    #[test]
+    fn test_metadata_ref_with_null_handle() {
+        let handle = Arc::new(NullMetadataHandle);
+        let mut r = MetadataRef::new(handle);
+        let meta = r.read().unwrap();
+        assert!(meta.exif_tags.is_empty());
+        assert!(r.write(&Metadata::default()).is_err());
+    }
 }

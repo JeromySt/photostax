@@ -461,10 +461,9 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
         }
     }
 
-    // Check free-text search
+    // Check free-text search (matches name, folder, and metadata — NOT opaque ID)
     if let Some(ref text) = query.text_query {
         let text_lower = text.to_lowercase();
-        let found_in_id = stack.id.to_lowercase().contains(&text_lower);
         let found_in_name = stack.name.to_lowercase().contains(&text_lower);
         let found_in_folder = stack
             .folder
@@ -484,8 +483,7 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             s.to_lowercase().contains(&text_lower)
         });
 
-        if !found_in_id && !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom
-        {
+        if !found_in_name && !found_in_folder && !found_in_exif && !found_in_custom {
             return false;
         }
     }
@@ -775,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn test_text_query_matches_stack_id() {
+    fn test_text_query_matches_stack_name() {
         let stacks = vec![
             make_stack("FamilyPhotos_001", false, vec![], vec![]),
             make_stack("VacationPics_002", false, vec![], vec![]),
@@ -784,7 +782,19 @@ mod tests {
         let q = SearchQuery::new().with_text("Family");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "FamilyPhotos_001");
+        assert_eq!(results[0].name, "FamilyPhotos_001");
+    }
+
+    #[test]
+    fn test_text_query_does_not_match_opaque_id() {
+        // Opaque hex IDs should not be searchable by text
+        let mut stack = make_stack("IMG_001", false, vec![], vec![]);
+        stack.id = "abc123def456".to_string();
+        stack.name = "IMG_001".to_string();
+
+        let q = SearchQuery::new().with_text("abc123");
+        let results = filter_stacks(&[stack], &q);
+        assert_eq!(results.len(), 0); // should NOT match opaque ID
     }
 
     #[test]
