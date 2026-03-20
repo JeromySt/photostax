@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-20
+
+### Added
+
+- `StackManager` class in TypeScript and .NET bindings for multi-repo management
+- FFI: `photostax_manager_new()`, `photostax_manager_add_repo()`, `photostax_manager_repo_count()`
+- TypeScript: `StackManager` with `addRepo()`, `repoCount`, and all scan/query/rotate methods
+- .NET: `StackManager` with `AddRepo()`, `RepoCount`, and all Scan/Query/Rotate methods
+- 6 new FFI tests for multi-repo StackManager functions
+
+### Changed
+
+- Binding READMEs now document StackManager architecture and multi-repo usage
+
 ## [0.2.1] - 2026-03-19
 
 ### Added

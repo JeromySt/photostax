@@ -25,7 +25,26 @@ This library groups these files into `PhotoStack` objects and provides access to
 - **Unified `query()` API** for search + pagination in one call
 - **Lazy metadata loading** — scan first, load EXIF/XMP on demand
 
-> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is not yet exposed in the Node.js binding — each `PhotostaxRepository` wraps one directory. Multi-repo projection is on the roadmap.
+> **Multi-repo support:** The Rust core supports managing multiple repositories through a single `StackManager` (via `add_repo()`). This capability is now also available in the Node.js binding via the `StackManager` class.
+
+### Multi-repo with StackManager
+
+```typescript
+import { StackManager } from '@photostax/core';
+
+const mgr = new StackManager();
+mgr.addRepo('/photos/2024', { recursive: true });
+mgr.addRepo('/photos/2023', { recursive: true });
+
+mgr.scan();
+console.log(`Managing ${mgr.repoCount} repos`);
+
+// Query across all repos
+const page = mgr.query({ text: 'birthday' }, 0, 20);
+for (const stack of page.items) {
+  console.log(`${stack.name} (${stack.id})`);
+}
+```
 
 ## Installation
 
