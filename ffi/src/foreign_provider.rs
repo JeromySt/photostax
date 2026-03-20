@@ -59,8 +59,8 @@ impl RepositoryProvider for FfiRepositoryProvider {
     }
 
     fn list_entries(&self, prefix: &str, recursive: bool) -> io::Result<Vec<FileEntry>> {
-        let c_prefix = CString::new(prefix)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let c_prefix =
+            CString::new(prefix).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         let result = unsafe {
             (self.callbacks.list_entries)(self.callbacks.ctx, c_prefix.as_ptr(), recursive)
@@ -114,8 +114,7 @@ impl RepositoryProvider for FfiRepositoryProvider {
         let c_path =
             CString::new(path).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-        let result =
-            unsafe { (self.callbacks.open_read)(self.callbacks.ctx, c_path.as_ptr()) };
+        let result = unsafe { (self.callbacks.open_read)(self.callbacks.ctx, c_path.as_ptr()) };
 
         if result.error != 0 || result.handle == 0 {
             return Err(io::Error::other(format!("open_read failed for '{path}'")));
@@ -135,8 +134,7 @@ impl RepositoryProvider for FfiRepositoryProvider {
         let c_path =
             CString::new(path).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-        let result =
-            unsafe { (self.callbacks.open_write)(self.callbacks.ctx, c_path.as_ptr()) };
+        let result = unsafe { (self.callbacks.open_write)(self.callbacks.ctx, c_path.as_ptr()) };
 
         if result.error != 0 || result.handle == 0 {
             return Err(io::Error::other(format!("open_write failed for '{path}'")));
@@ -177,8 +175,7 @@ unsafe impl Send for FfiReader {}
 
 impl Read for FfiReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let result =
-            unsafe { (self.read_fn)(self.ctx, self.handle, buf.as_mut_ptr(), buf.len()) };
+        let result = unsafe { (self.read_fn)(self.ctx, self.handle, buf.as_mut_ptr(), buf.len()) };
         if result.error != 0 {
             return Err(io::Error::other("read callback failed"));
         }
@@ -230,8 +227,7 @@ unsafe impl Send for FfiWriter {}
 
 impl Write for FfiWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let result =
-            unsafe { (self.write_fn)(self.ctx, self.handle, buf.as_ptr(), buf.len()) };
+        let result = unsafe { (self.write_fn)(self.ctx, self.handle, buf.as_ptr(), buf.len()) };
         if result.error != 0 {
             return Err(io::Error::other("write callback failed"));
         }
@@ -461,10 +457,7 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn mock_close_read(
-        ctx: *mut std::os::raw::c_void,
-        handle: u64,
-    ) {
+    unsafe extern "C" fn mock_close_read(ctx: *mut std::os::raw::c_void, handle: u64) {
         let state = unsafe { &*(ctx as *const Mutex<MockState>) };
         let mut s = state.lock().unwrap();
         s.streams.remove(&handle);
@@ -510,10 +503,7 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn mock_close_write(
-        ctx: *mut std::os::raw::c_void,
-        handle: u64,
-    ) {
+    unsafe extern "C" fn mock_close_write(ctx: *mut std::os::raw::c_void, handle: u64) {
         let state = unsafe { &*(ctx as *const Mutex<MockState>) };
         let mut s = state.lock().unwrap();
         if let Some((path, data)) = s.write_streams.remove(&handle) {
@@ -544,7 +534,9 @@ mod tests {
     fn teardown(provider: FfiRepositoryProvider, ctx: *mut std::os::raw::c_void, loc: *mut c_char) {
         drop(provider);
         cleanup_mock(ctx);
-        unsafe { drop(CString::from_raw(loc)); }
+        unsafe {
+            drop(CString::from_raw(loc));
+        }
     }
 
     #[test]

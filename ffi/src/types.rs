@@ -302,8 +302,7 @@ pub struct FfiProviderCallbacks {
     ) -> FfiSeekResult,
 
     /// Close a read stream.
-    pub close_read:
-        unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
+    pub close_read: unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
 
     /// Open a file for writing.
     ///
@@ -326,8 +325,7 @@ pub struct FfiProviderCallbacks {
     ) -> FfiWriteResult,
 
     /// Close a write stream.
-    pub close_write:
-        unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
+    pub close_write: unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
 }
 
 #[cfg(test)]

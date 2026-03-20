@@ -129,8 +129,12 @@ pub fn scan_entries(
         });
 
         match variant {
-            Variant::Original => stack.original = Some(ImageFile::new(entry.path.clone(), entry.size)),
-            Variant::Enhanced => stack.enhanced = Some(ImageFile::new(entry.path.clone(), entry.size)),
+            Variant::Original => {
+                stack.original = Some(ImageFile::new(entry.path.clone(), entry.size))
+            }
+            Variant::Enhanced => {
+                stack.enhanced = Some(ImageFile::new(entry.path.clone(), entry.size))
+            }
             Variant::Back => stack.back = Some(ImageFile::new(entry.path.clone(), entry.size)),
         }
     }

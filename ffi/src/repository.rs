@@ -783,22 +783,20 @@ pub unsafe extern "C" fn photostax_manager_add_foreign_repo(
             return FfiResult::error("null manager pointer");
         }
 
-        let provider = match unsafe {
-            crate::foreign_provider::FfiRepositoryProvider::new(callbacks)
-        } {
-            Ok(p) => p,
-            Err(e) => return FfiResult::error(&format!("invalid provider: {e}")),
-        };
+        let provider =
+            match unsafe { crate::foreign_provider::FfiRepositoryProvider::new(callbacks) } {
+                Ok(p) => p,
+                Err(e) => return FfiResult::error(&format!("invalid provider: {e}")),
+            };
 
         let config = ScannerConfig {
             recursive,
             ..ScannerConfig::default()
         };
-        let repo =
-            photostax_core::backends::foreign::ForeignRepository::with_config(
-                Box::new(provider),
-                config,
-            );
+        let repo = photostax_core::backends::foreign::ForeignRepository::with_config(
+            Box::new(provider),
+            config,
+        );
 
         let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
