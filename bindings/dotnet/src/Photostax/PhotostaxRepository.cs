@@ -52,7 +52,7 @@ public sealed class PhotostaxRepository : IDisposable
         var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
         try
         {
-            return ConvertStackArray(array);
+            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
         }
         finally
         {
@@ -101,7 +101,7 @@ public sealed class PhotostaxRepository : IDisposable
             IntPtr.Zero);
         try
         {
-            return ConvertStackArray(array);
+            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
         }
         finally
         {
@@ -114,7 +114,7 @@ public sealed class PhotostaxRepository : IDisposable
     /// </summary>
     /// <remarks>
     /// This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
-    /// Prefer <see cref="Scan"/> + <see cref="LoadMetadata"/> for lazy-loading in large repositories.
+    /// Prefer <see cref="Scan"/> and then calling <c>stack.LoadMetadata()</c> for lazy-loading in large repositories.
     /// </remarks>
     /// <returns>A list of photo stacks with complete metadata.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
@@ -126,118 +126,18 @@ public sealed class PhotostaxRepository : IDisposable
         var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
         try
         {
-            var stacks = ConvertStackArray(array);
+            var stacks = PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
             var result = new List<PhotoStack>(stacks.Count);
             foreach (var stack in stacks)
             {
                 var metadata = LoadMetadataCore(stack.Id);
-                result.Add(new PhotoStack(stack.Id, stack.Name, stack.Folder, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
+                result.Add(new PhotoStack(_handle.DangerousGetHandle(), stack.Id, stack.Name, stack.Folder, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
             }
             return result;
         }
         finally
         {
             NativeMethods.photostax_stack_array_free(array);
-        }
-    }
-
-    /// <summary>
-    /// Loads full metadata (EXIF, XMP, sidecar) for a specific stack.
-    /// </summary>
-    /// <remarks>
-    /// Use with <see cref="Scan"/> for lazy-loading: scan first to get lightweight
-    /// stacks, then load metadata on demand for individual stacks.
-    /// </remarks>
-    /// <param name="stackId">The stack identifier.</param>
-    /// <returns>The loaded metadata.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="stackId"/> is null.</exception>
-    /// <exception cref="PhotostaxException">Thrown when the stack is not found or metadata cannot be loaded.</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public Metadata LoadMetadata(string stackId)
-    {
-        ArgumentNullException.ThrowIfNull(stackId);
-        ThrowIfDisposed();
-
-        return LoadMetadataCore(stackId)
-            ?? throw new PhotostaxException($"Failed to load metadata for stack '{stackId}'");
-    }
-
-    /// <summary>
-    /// Gets a single photo stack by its identifier.
-    /// </summary>
-    /// <param name="id">The stack identifier.</param>
-    /// <returns>The photo stack.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="id"/> is null.</exception>
-    /// <exception cref="PhotostaxException">Thrown when the stack is not found.</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public PhotoStack GetStack(string id)
-    {
-        ArgumentNullException.ThrowIfNull(id);
-        ThrowIfDisposed();
-
-        var ptr = NativeMethods.photostax_repo_get_stack(_handle.DangerousGetHandle(), id);
-        if (ptr == IntPtr.Zero)
-        {
-            throw new PhotostaxException($"Stack '{id}' not found");
-        }
-
-        using var stackHandle = StackSafeHandle.FromPointer(ptr);
-        return ConvertStack(Marshal.PtrToStructure<FfiPhotoStack>(ptr));
-    }
-
-    /// <summary>
-    /// Reads the bytes of an image file.
-    /// </summary>
-    /// <param name="path">The path to the image file.</param>
-    /// <returns>The image bytes.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="path"/> is null.</exception>
-    /// <exception cref="PhotostaxException">Thrown when the image cannot be read.</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public byte[] ReadImage(string path)
-    {
-        ArgumentNullException.ThrowIfNull(path);
-        ThrowIfDisposed();
-
-        var result = NativeMethods.photostax_read_image(
-            _handle.DangerousGetHandle(),
-            path,
-            out var dataPtr,
-            out var len);
-
-        if (!result.Success)
-        {
-            var errorMessage = GetErrorMessage(result);
-            throw new PhotostaxException(errorMessage ?? $"Failed to read image at '{path}'");
-        }
-
-        using var bytesHandle = BytesSafeHandle.FromPointer(dataPtr, len);
-        return bytesHandle.ToArray();
-    }
-
-    /// <summary>
-    /// Writes metadata to a photo stack.
-    /// </summary>
-    /// <param name="stackId">The stack identifier.</param>
-    /// <param name="metadata">The metadata to write.</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="stackId"/> or <paramref name="metadata"/> is null.</exception>
-    /// <exception cref="PhotostaxException">Thrown when the metadata cannot be written.</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public void WriteMetadata(string stackId, Metadata metadata)
-    {
-        ArgumentNullException.ThrowIfNull(stackId);
-        ArgumentNullException.ThrowIfNull(metadata);
-        ThrowIfDisposed();
-
-        var json = metadata.ToJson();
-        var result = NativeMethods.photostax_write_metadata(
-            _handle.DangerousGetHandle(),
-            stackId,
-            json);
-
-        if (!result.Success)
-        {
-            var errorMessage = GetErrorMessage(result);
-            throw new PhotostaxException(errorMessage ?? $"Failed to write metadata for stack '{stackId}'");
         }
     }
 
@@ -257,7 +157,7 @@ public sealed class PhotostaxRepository : IDisposable
         var array = NativeMethods.photostax_search(_handle.DangerousGetHandle(), queryJson);
         try
         {
-            return ConvertStackArray(array);
+            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
         }
         finally
         {
@@ -284,7 +184,7 @@ public sealed class PhotostaxRepository : IDisposable
             loadMetadata);
         try
         {
-            return ConvertPaginatedResult(result);
+            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
         }
         finally
         {
@@ -314,7 +214,7 @@ public sealed class PhotostaxRepository : IDisposable
             (nuint)limit);
         try
         {
-            return ConvertPaginatedResult(result);
+            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
         }
         finally
         {
@@ -347,52 +247,12 @@ public sealed class PhotostaxRepository : IDisposable
             (nuint)limit);
         try
         {
-            return ConvertPaginatedResult(result);
+            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
         }
         finally
         {
             NativeMethods.photostax_paginated_result_free(result);
         }
-    }
-
-    /// <summary>
-    /// Rotates images in a photo stack by the given number of degrees.
-    /// </summary>
-    /// <remarks>
-    /// Image files are decoded, rotated at the pixel level, and re-encoded on disk.
-    /// JPEG files are re-encoded (lossy).
-    /// Returns the refreshed stack with updated metadata.
-    /// </remarks>
-    /// <param name="stackId">The stack identifier.</param>
-    /// <param name="degrees">Rotation angle: 90, -90, 180, or -180.</param>
-    /// <param name="target">Which images to rotate (default: All).</param>
-    /// <returns>The updated photo stack with refreshed metadata.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="stackId"/> is null.</exception>
-    /// <exception cref="ArgumentException">Thrown when <paramref name="degrees"/> is not a valid rotation angle.</exception>
-    /// <exception cref="PhotostaxException">Thrown when the stack is not found or rotation fails.</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public PhotoStack RotateStack(string stackId, int degrees, RotationTarget target = RotationTarget.All)
-    {
-        ArgumentNullException.ThrowIfNull(stackId);
-        ThrowIfDisposed();
-
-        if (degrees != 90 && degrees != -90 && degrees != 180 && degrees != -180 && degrees != 270)
-        {
-            throw new ArgumentException(
-                $"Invalid rotation: {degrees}°. Accepted values: 90, -90, 180, -180.",
-                nameof(degrees));
-        }
-
-        var ptr = NativeMethods.photostax_rotate_stack(
-            _handle.DangerousGetHandle(), stackId, degrees, (int)target);
-
-        if (ptr == IntPtr.Zero)
-        {
-            throw new PhotostaxException($"Failed to rotate stack '{stackId}' by {degrees}°");
-        }
-
-        using var stackHandle = StackSafeHandle.FromPointer(ptr);
-        return ConvertStack(Marshal.PtrToStructure<FfiPhotoStack>(ptr));
     }
 
     /// <summary>
@@ -417,7 +277,7 @@ public sealed class PhotostaxRepository : IDisposable
         if (ptr == IntPtr.Zero)
             throw new PhotostaxException("Failed to create snapshot.");
 
-        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr));
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr), _handle.DangerousGetHandle());
     }
 
     /// <summary>
@@ -457,7 +317,7 @@ public sealed class PhotostaxRepository : IDisposable
         if (ptr == IntPtr.Zero)
             throw new PhotostaxException("Failed to create snapshot.");
 
-        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr));
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr), _handle.DangerousGetHandle());
     }
 
     /// <summary>
@@ -530,60 +390,5 @@ public sealed class PhotostaxRepository : IDisposable
         var message = Marshal.PtrToStringUTF8(result.ErrorMessage);
         NativeMethods.photostax_string_free(result.ErrorMessage);
         return message;
-    }
-
-    internal static IReadOnlyList<PhotoStack> ConvertStackArray(FfiPhotoStackArray array)
-    {
-        if (array.Data == IntPtr.Zero || array.Len == 0)
-            return [];
-
-        var stacks = new List<PhotoStack>((int)array.Len);
-        var structSize = Marshal.SizeOf<FfiPhotoStack>();
-
-        for (nuint i = 0; i < array.Len; i++)
-        {
-            var stackPtr = IntPtr.Add(array.Data, (int)i * structSize);
-            var ffiStack = Marshal.PtrToStructure<FfiPhotoStack>(stackPtr);
-            stacks.Add(ConvertStack(ffiStack));
-        }
-
-        return stacks;
-    }
-
-    internal static PhotoStack ConvertStack(FfiPhotoStack ffi)
-    {
-        var id = Marshal.PtrToStringUTF8(ffi.Id) ?? throw new PhotostaxException("Stack ID is null");
-        var name = ffi.Name != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Name) ?? id : id;
-        var folder = ffi.Folder != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Folder) : null;
-        var original = ffi.Original != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Original) : null;
-        var enhanced = ffi.Enhanced != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Enhanced) : null;
-        var back = ffi.Back != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Back) : null;
-        var metadataJson = Marshal.PtrToStringUTF8(ffi.MetadataJson) ?? "{}";
-        var metadata = Metadata.FromJson(metadataJson);
-
-        return new PhotoStack(id, name, folder, original, enhanced, back, metadata);
-    }
-
-    internal static PaginatedResult<PhotoStack> ConvertPaginatedResult(FfiPaginatedResult result)
-    {
-        var items = new List<PhotoStack>();
-
-        if (result.Data != IntPtr.Zero && result.Len > 0)
-        {
-            var structSize = Marshal.SizeOf<FfiPhotoStack>();
-            for (nuint i = 0; i < result.Len; i++)
-            {
-                var stackPtr = IntPtr.Add(result.Data, (int)i * structSize);
-                var ffiStack = Marshal.PtrToStructure<FfiPhotoStack>(stackPtr);
-                items.Add(ConvertStack(ffiStack));
-            }
-        }
-
-        return new PaginatedResult<PhotoStack>(
-            items,
-            (int)result.TotalCount,
-            (int)result.Offset,
-            (int)result.Limit,
-            result.HasMore);
     }
 }

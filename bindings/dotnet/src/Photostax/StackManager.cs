@@ -366,7 +366,7 @@ public sealed class StackManager : IDisposable
         var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
         try
         {
-            return PhotostaxRepository.ConvertStackArray(array);
+            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
         }
         finally
         {
@@ -389,80 +389,7 @@ public sealed class StackManager : IDisposable
         }
 
         using var stackHandle = StackSafeHandle.FromPointer(ptr);
-        return PhotostaxRepository.ConvertStack(Marshal.PtrToStructure<FfiPhotoStack>(ptr));
-    }
-
-    /// <summary>
-    /// Loads full metadata (EXIF, XMP, sidecar) for a specific stack.
-    /// </summary>
-    public Metadata LoadMetadata(string stackId)
-    {
-        ArgumentNullException.ThrowIfNull(stackId);
-        ThrowIfDisposed();
-
-        var ptr = NativeMethods.photostax_stack_load_metadata(
-            _handle.DangerousGetHandle(), stackId);
-        if (ptr == IntPtr.Zero)
-        {
-            throw new PhotostaxException($"Failed to load metadata for stack '{stackId}'");
-        }
-
-        try
-        {
-            var json = Marshal.PtrToStringUTF8(ptr) ?? "{}";
-            return Metadata.FromJson(json);
-        }
-        finally
-        {
-            NativeMethods.photostax_string_free(ptr);
-        }
-    }
-
-    /// <summary>
-    /// Reads the bytes of an image file, trying each registered repository.
-    /// </summary>
-    public byte[] ReadImage(string path)
-    {
-        ArgumentNullException.ThrowIfNull(path);
-        ThrowIfDisposed();
-
-        var result = NativeMethods.photostax_read_image(
-            _handle.DangerousGetHandle(),
-            path,
-            out var dataPtr,
-            out var len);
-
-        if (!result.Success)
-        {
-            var errorMessage = GetErrorMessage(result);
-            throw new PhotostaxException(errorMessage ?? $"Failed to read image at '{path}'");
-        }
-
-        using var bytesHandle = BytesSafeHandle.FromPointer(dataPtr, len);
-        return bytesHandle.ToArray();
-    }
-
-    /// <summary>
-    /// Writes metadata to a photo stack, routing to the correct repository.
-    /// </summary>
-    public void WriteMetadata(string stackId, Metadata metadata)
-    {
-        ArgumentNullException.ThrowIfNull(stackId);
-        ArgumentNullException.ThrowIfNull(metadata);
-        ThrowIfDisposed();
-
-        var json = metadata.ToJson();
-        var result = NativeMethods.photostax_write_metadata(
-            _handle.DangerousGetHandle(),
-            stackId,
-            json);
-
-        if (!result.Success)
-        {
-            var errorMessage = GetErrorMessage(result);
-            throw new PhotostaxException(
-                errorMessage ?? $"Failed to write metadata for stack '{stackId}'");
-        }
+        return PhotoStack.ConvertStack(_handle.DangerousGetHandle(), Marshal.PtrToStructure<FfiPhotoStack>(ptr));
     }
 
     /// <summary>
@@ -484,7 +411,7 @@ public sealed class StackManager : IDisposable
             (nuint)limit);
         try
         {
-            return PhotostaxRepository.ConvertPaginatedResult(result);
+            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
         }
         finally
         {
@@ -493,30 +420,65 @@ public sealed class StackManager : IDisposable
     }
 
     /// <summary>
-    /// Rotates images in a photo stack by the given number of degrees.
+    /// Scans all repositories and loads full metadata for every stack.
     /// </summary>
-    public PhotoStack RotateStack(string stackId, int degrees, RotationTarget target = RotationTarget.All)
+    public IReadOnlyList<PhotoStack> ScanWithMetadata()
     {
-        ArgumentNullException.ThrowIfNull(stackId);
         ThrowIfDisposed();
 
-        if (degrees != 90 && degrees != -90 && degrees != 180 && degrees != -180 && degrees != 270)
+        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
+        try
         {
-            throw new ArgumentException(
-                $"Invalid rotation: {degrees}°. Accepted values: 90, -90, 180, -180.",
-                nameof(degrees));
+            var stacks = PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
+            foreach (var stack in stacks)
+            {
+                try { stack.LoadMetadata(); } catch { /* skip stacks that fail */ }
+            }
+            return stacks;
         }
+        finally
+        {
+            NativeMethods.photostax_stack_array_free(array);
+        }
+    }
 
-        var ptr = NativeMethods.photostax_rotate_stack(
-            _handle.DangerousGetHandle(), stackId, degrees, (int)target);
+    /// <summary>
+    /// Creates a point-in-time snapshot for consistent pagination.
+    /// </summary>
+    /// <param name="loadMetadata">When true, loads full metadata for all stacks.</param>
+    /// <returns>A frozen snapshot of the current cache state.</returns>
+    public ScanSnapshot CreateSnapshot(bool loadMetadata = false)
+    {
+        ThrowIfDisposed();
+
+        var ptr = NativeMethods.photostax_create_snapshot(
+            _handle.DangerousGetHandle(), loadMetadata);
 
         if (ptr == IntPtr.Zero)
-        {
-            throw new PhotostaxException($"Failed to rotate stack '{stackId}' by {degrees}°");
-        }
+            throw new PhotostaxException("Failed to create snapshot");
 
-        using var stackHandle = StackSafeHandle.FromPointer(ptr);
-        return PhotostaxRepository.ConvertStack(Marshal.PtrToStructure<FfiPhotoStack>(ptr));
+        return new ScanSnapshot(SnapshotSafeHandle.FromPointer(ptr), _handle.DangerousGetHandle());
+    }
+
+    /// <summary>
+    /// Checks whether a snapshot is still current relative to the live cache.
+    /// </summary>
+    /// <param name="snapshot">The snapshot to check.</param>
+    /// <returns>The status of the snapshot (current, stale, etc.).</returns>
+    public SnapshotStatus CheckSnapshotStatus(ScanSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ThrowIfDisposed();
+
+        var status = NativeMethods.photostax_snapshot_check_status(
+            _handle.DangerousGetHandle(), snapshot.Handle);
+
+        return new SnapshotStatus(
+            status.IsStale,
+            (int)status.SnapshotCount,
+            (int)status.CurrentCount,
+            (int)status.Added,
+            (int)status.Removed);
     }
 
     /// <summary>
