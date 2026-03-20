@@ -167,32 +167,7 @@ impl Repository for ForeignRepository {
 
         let stack_count = stacks.len();
         for (i, stack) in stacks.iter_mut().enumerate() {
-            // Apply folder metadata parsing (same as LocalRepository)
-            if let Some(ref folder) = stack.folder {
-                let last_component = folder.rsplit('/').next().unwrap_or(folder);
-                let folder_meta = scanner::parse_folder_name(last_component);
-                if let Some(year) = folder_meta.year {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("Year".to_string())
-                        .or_insert_with(|| year.to_string());
-                }
-                if let Some(ref mos) = folder_meta.month_or_season {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("MonthOrSeason".to_string())
-                        .or_insert_with(|| mos.clone());
-                }
-                if let Some(ref subject) = folder_meta.subject {
-                    stack
-                        .metadata
-                        .exif_tags
-                        .entry("Subject".to_string())
-                        .or_insert_with(|| subject.clone());
-                }
-            }
+            stack.location = stack.folder.clone();
 
             if let Some(ref mut cb) = progress {
                 cb(&ScanProgress {
@@ -208,7 +183,7 @@ impl Repository for ForeignRepository {
             let ambiguous_indices: Vec<usize> = stacks
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.enhanced.is_some() && s.back.is_none())
+                .filter(|(_, s)| s.enhanced.is_present() && !s.back.is_present())
                 .map(|(i, _)| i)
                 .collect();
 
@@ -236,26 +211,10 @@ impl Repository for ForeignRepository {
         Ok(stacks)
     }
 
-    fn load_metadata(&self, stack: &mut PhotoStack) -> Result<(), RepositoryError> {
-        // For foreign repos, metadata loading reads from the provider streams.
-        // Use the same EXIF/XMP/sidecar pipeline as local, but via open_read().
-        let target = stack.enhanced.as_ref().or(stack.original.as_ref());
-        if let Some(file) = target {
-            if let Ok(reader) = self.open_read(&file.path) {
-                let mut buf_reader = io::BufReader::new(reader);
-                if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf_reader) {
-                    for field in exif.fields() {
-                        let tag_name = format!("{}", field.tag);
-                        let tag_value = field.display_value().to_string();
-                        stack
-                            .metadata
-                            .exif_tags
-                            .entry(tag_name)
-                            .or_insert(tag_value);
-                    }
-                }
-            }
-        }
+    fn load_metadata(&self, _stack: &mut PhotoStack) -> Result<(), RepositoryError> {
+        // For foreign repos, the default NullMetadataHandle returns empty metadata.
+        // Full metadata loading would require a ForeignMetadataHandle that reads
+        // EXIF/XMP via the provider's open_read(). For now, this is a no-op.
         Ok(())
     }
 
@@ -319,20 +278,8 @@ impl Repository for ForeignRepository {
     ) -> Result<PhotoStack, RepositoryError> {
         let stack = self.get_stack(id)?;
 
-        let paths: Vec<&str> = match target {
-            RotationTarget::All => [&stack.original, &stack.enhanced, &stack.back]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-            RotationTarget::Front => [&stack.original, &stack.enhanced]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-            RotationTarget::Back => [&stack.back]
-                .iter()
-                .filter_map(|opt| opt.as_ref().map(|f| f.path.as_str()))
-                .collect(),
-        };
+        // Reconstruct virtual paths for rotation via provider I/O
+        let paths = self.find_image_paths(&stack, target);
 
         if paths.is_empty() {
             return Err(RepositoryError::Other(format!(
@@ -341,7 +288,7 @@ impl Repository for ForeignRepository {
         }
 
         for path in paths {
-            self.rotate_foreign_image(path, rotation)?;
+            self.rotate_foreign_image(&path, rotation)?;
         }
 
         self.get_stack(id)
@@ -356,6 +303,66 @@ impl Repository for ForeignRepository {
 }
 
 impl ForeignRepository {
+    /// Find virtual file paths for the specified rotation target.
+    ///
+    /// Since we can't downcast `dyn ImageHandle` to get the path, we
+    /// reconstruct paths from the stack name, folder, and config suffixes
+    /// by probing the provider's file listing.
+    fn find_image_paths(&self, stack: &PhotoStack, target: RotationTarget) -> Vec<String> {
+        let entries = self
+            .provider
+            .list_entries("", self.config.recursive)
+            .unwrap_or_default();
+
+        let check_present = |suffix: &str| -> Option<String> {
+            let stem = if suffix.is_empty() {
+                stack.name.clone()
+            } else {
+                format!("{}{}", stack.name, suffix)
+            };
+            entries.iter().find_map(|e| {
+                let e_stem = Path::new(&e.name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if e_stem.eq_ignore_ascii_case(&stem) {
+                    Some(e.path.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        let mut paths = Vec::new();
+        match target {
+            RotationTarget::All => {
+                if let Some(p) = check_present("") {
+                    paths.push(p);
+                }
+                if let Some(p) = check_present(&self.config.enhanced_suffix) {
+                    paths.push(p);
+                }
+                if let Some(p) = check_present(&self.config.back_suffix) {
+                    paths.push(p);
+                }
+            }
+            RotationTarget::Front => {
+                if let Some(p) = check_present("") {
+                    paths.push(p);
+                }
+                if let Some(p) = check_present(&self.config.enhanced_suffix) {
+                    paths.push(p);
+                }
+            }
+            RotationTarget::Back => {
+                if let Some(p) = check_present(&self.config.back_suffix) {
+                    paths.push(p);
+                }
+            }
+        }
+        paths
+    }
+
     /// Rotate an image file using provider I/O streams.
     fn rotate_foreign_image(&self, path: &str, rotation: Rotation) -> Result<(), RepositoryError> {
         // Read the image via the provider
@@ -550,15 +557,15 @@ mod tests {
         assert_eq!(stacks.len(), 2);
 
         let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        assert!(s1.original.is_some());
-        assert!(s1.enhanced.is_some());
-        assert!(s1.back.is_some());
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
+        assert!(s1.back.is_present());
         assert_eq!(s1.repo_id.as_deref(), Some("cloud://photos"));
 
         let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert!(s2.original.is_some());
-        assert!(s2.enhanced.is_none());
-        assert!(s2.back.is_none());
+        assert!(s2.original.is_present());
+        assert!(!s2.enhanced.is_present());
+        assert!(!s2.back.is_present());
     }
 
     #[test]
@@ -715,15 +722,8 @@ mod tests {
         let stack = &stacks[0];
         assert_eq!(stack.name, "IMG_001");
         assert_eq!(stack.folder.as_deref(), Some("1984_Mexico"));
-        // Folder metadata should be parsed
-        assert_eq!(
-            stack.metadata.exif_tags.get("Year").map(|s| s.as_str()),
-            Some("1984")
-        );
-        assert_eq!(
-            stack.metadata.exif_tags.get("Subject").map(|s| s.as_str()),
-            Some("Mexico")
-        );
+        // Folder is stored for downstream metadata loading
+        assert_eq!(stack.location.as_deref(), Some("1984_Mexico"));
     }
 
     #[test]
@@ -749,7 +749,7 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         assert_eq!(stacks[0].name, "IMG_001");
-        assert!(stacks[0].enhanced.is_some());
+        assert!(stacks[0].enhanced.is_present());
     }
 
     #[test]
@@ -757,19 +757,9 @@ mod tests {
         let provider = MockProvider::new("cloud://test");
         let repo = ForeignRepository::new(Box::new(provider));
 
-        let mut stack = PhotoStack {
-            id: "test".to_string(),
-            name: "test".to_string(),
-            folder: None,
-            repo_id: None,
-            original: None,
-            enhanced: None,
-            back: None,
-            metadata: Metadata::default(),
-        };
+        let mut stack = PhotoStack::new("test");
         // load_metadata on a stack with no images should succeed (no-op)
         repo.load_metadata(&mut stack).unwrap();
-        assert!(stack.metadata.exif_tags.is_empty());
     }
 
     #[test]
@@ -781,7 +771,7 @@ mod tests {
         let stacks = repo.scan().unwrap();
         assert_eq!(stacks.len(), 1);
 
-        let mut stack = stacks[0].clone();
+        let mut stack = stacks.into_iter().next().unwrap();
         repo.load_metadata(&mut stack).unwrap();
         // Non-EXIF data won't produce tags, but the call should not error
     }

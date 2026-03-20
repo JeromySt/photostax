@@ -78,11 +78,14 @@
 #![warn(missing_docs)]
 
 pub mod backends;
+pub mod classifier;
 pub mod classify;
 pub mod events;
 pub mod file_access;
 pub mod hashing;
+pub mod image_handle;
 pub mod metadata;
+pub mod metadata_handle;
 pub mod photo_stack;
 pub mod repository;
 pub mod scanner;

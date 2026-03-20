@@ -199,11 +199,28 @@ impl ScanSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashing::ImageFile;
+    use std::sync::Arc;
+    use crate::image_handle::ImageRef;
+
+    struct MockImg;
+    impl crate::image_handle::ImageHandle for MockImg {
+        fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, crate::repository::RepositoryError> {
+            Ok(Box::new(std::io::Cursor::new(vec![])))
+        }
+        fn stream(&self) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, crate::repository::RepositoryError> {
+            Ok(crate::hashing::HashingReader::new(Box::new(std::io::Cursor::new(vec![]))))
+        }
+        fn hash(&self) -> Result<String, crate::repository::RepositoryError> { Ok("0000000000000000".into()) }
+        fn dimensions(&self) -> Result<(u32, u32), crate::repository::RepositoryError> { Ok((1, 1)) }
+        fn size(&self) -> u64 { 0 }
+        fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), crate::repository::RepositoryError> { Ok(()) }
+        fn is_valid(&self) -> bool { true }
+        fn invalidate(&self) {}
+    }
 
     fn make_stack(id: &str) -> PhotoStack {
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
+        stack.original = ImageRef::new(Arc::new(MockImg));
         stack
     }
 
@@ -275,8 +292,8 @@ mod tests {
     #[test]
     fn test_filter_returns_subset() {
         let mut stacks = make_stacks(4);
-        stacks[0].back = Some(ImageFile::new("IMG_000_b.jpg", 0));
-        stacks[2].back = Some(ImageFile::new("IMG_002_b.jpg", 0));
+        stacks[0].back = ImageRef::new(Arc::new(MockImg));
+        stacks[2].back = ImageRef::new(Arc::new(MockImg));
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));
@@ -290,11 +307,11 @@ mod tests {
     fn test_filter_then_page() {
         let mut stacks = make_stacks(10);
         for s in &mut stacks {
-            s.back = Some(ImageFile::new(format!("{}_b.jpg", s.id), 0));
+            s.back = ImageRef::new(Arc::new(MockImg));
         }
         // Remove back from two stacks
-        stacks[3].back = None;
-        stacks[7].back = None;
+        stacks[3].back = ImageRef::absent();
+        stacks[7].back = ImageRef::absent();
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));

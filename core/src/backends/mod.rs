@@ -12,3 +12,4 @@
 
 pub mod foreign;
 pub mod local;
+pub mod local_handles;

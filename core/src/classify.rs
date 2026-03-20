@@ -12,8 +12,10 @@
 //! **Enhanced front** images have a wide variety of pixel intensities typical
 //! of an actual photograph.
 
+use std::io::Read;
 use std::path::Path;
 
+use crate::image_handle::ImageRef;
 use crate::photo_stack::PhotoStack;
 use crate::repository::RepositoryError;
 
@@ -42,6 +44,20 @@ pub fn is_likely_back(path: &Path) -> Result<bool, RepositoryError> {
         ))
     })?;
 
+    classify_image(img)
+}
+
+/// Analyse in-memory image data and return `true` if it is likely a back-of-photo scan.
+fn is_likely_back_from_bytes(data: &[u8]) -> Result<bool, RepositoryError> {
+    let img = image::load_from_memory(data).map_err(|e| {
+        RepositoryError::Other(format!("Failed to decode image for classification: {e}"))
+    })?;
+
+    classify_image(img)
+}
+
+/// Core classification logic on a decoded image.
+fn classify_image(img: image::DynamicImage) -> Result<bool, RepositoryError> {
     let gray = img.into_luma8();
     let (width, height) = gray.dimensions();
 
@@ -49,13 +65,11 @@ pub fn is_likely_back(path: &Path) -> Result<bool, RepositoryError> {
         return Ok(false);
     }
 
-    // Images below a minimum resolution are not real scans — skip classification.
     const MIN_DIMENSION: u32 = 32;
     if width < MIN_DIMENSION || height < MIN_DIMENSION {
         return Ok(false);
     }
 
-    // Sample ~10 000 pixels evenly across the image for efficiency.
     let total = (width as usize) * (height as usize);
     let stride = std::cmp::max(1, total / 10_000);
     let pixels: Vec<f64> = gray
@@ -79,29 +93,37 @@ pub fn is_likely_back(path: &Path) -> Result<bool, RepositoryError> {
 
 /// Classify an ambiguous `_a` image in a [`PhotoStack`].
 ///
-/// If the stack has an `enhanced` path but no `back` path, the `_a` image is
-/// analysed. When it looks like a back-of-photo scan, the path is moved from
-/// `enhanced` to `back`.
+/// If the stack has an `enhanced` variant but no `back` variant, the `_a` image
+/// is analysed. When it looks like a back-of-photo scan, the handle is moved
+/// from `enhanced` to `back`.
 ///
 /// Returns `true` if the stack was reclassified.
 ///
-/// Stacks that already have a `back` path, or that have no `enhanced` path,
+/// Stacks that already have a `back` variant, or that have no `enhanced` variant,
 /// are left unchanged. If the image cannot be decoded the stack is left
 /// unchanged (classification is best-effort).
 pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryError> {
-    // Only ambiguous when enhanced exists but back does not.
-    if stack.enhanced.is_none() || stack.back.is_some() {
+    if !stack.enhanced.is_present() || stack.back.is_present() {
         return Ok(false);
     }
 
-    let path = Path::new(&stack.enhanced.as_ref().unwrap().path);
-    match is_likely_back(path) {
+    // Read image data through the handle
+    let mut reader = match stack.enhanced.read() {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut buf = Vec::new();
+    reader
+        .read_to_end(&mut buf)
+        .map_err(|e| RepositoryError::Other(format!("Failed to read enhanced image: {e}")))?;
+
+    match is_likely_back_from_bytes(&buf) {
         Ok(true) => {
-            stack.back = stack.enhanced.take();
+            let enhanced = std::mem::replace(&mut stack.enhanced, ImageRef::absent());
+            stack.back = enhanced;
             Ok(true)
         }
         Ok(false) => Ok(false),
-        // Image couldn't be decoded — leave classification as-is.
         Err(_) => Ok(false),
     }
 }
@@ -109,12 +131,15 @@ pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashing::ImageFile;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn img(path: PathBuf) -> ImageFile {
-        ImageFile::new(path.to_string_lossy(), 0)
+    use crate::backends::local_handles::LocalImageHandle;
+
+    fn local_ref(path: &Path) -> ImageRef {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        ImageRef::new(Arc::new(LocalImageHandle::new(path, size)))
     }
 
     /// Create a small solid-white JPEG (back-of-photo like).
@@ -153,56 +178,53 @@ mod tests {
     fn test_classify_ambiguous_reclassifies_back() {
         let tmp = TempDir::new().unwrap();
         let back_path = create_white_jpeg(tmp.path(), "IMG_001_a.jpg");
+        let orig_path = create_colourful_jpeg(tmp.path(), "IMG_001.jpg");
 
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(img(tmp.path().join("IMG_001.jpg")));
-        stack.enhanced = Some(img(back_path.clone()));
+        stack.original = local_ref(&orig_path);
+        stack.enhanced = local_ref(&back_path);
 
         assert!(classify_ambiguous(&mut stack).unwrap());
-        assert!(stack.enhanced.is_none());
-        assert_eq!(
-            stack.back.as_ref().unwrap().path,
-            back_path.to_string_lossy().as_ref()
-        );
+        assert!(!stack.enhanced.is_present());
+        assert!(stack.back.is_present());
     }
 
     #[test]
     fn test_classify_ambiguous_keeps_enhanced() {
         let tmp = TempDir::new().unwrap();
         let front_path = create_colourful_jpeg(tmp.path(), "IMG_002_a.jpg");
+        let orig_path = create_colourful_jpeg(tmp.path(), "IMG_002.jpg");
 
         let mut stack = PhotoStack::new("IMG_002");
-        stack.original = Some(img(tmp.path().join("IMG_002.jpg")));
-        stack.enhanced = Some(img(front_path.clone()));
+        stack.original = local_ref(&orig_path);
+        stack.enhanced = local_ref(&front_path);
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(
-            stack.enhanced.as_ref().unwrap().path,
-            front_path.to_string_lossy().as_ref()
-        );
-        assert!(stack.back.is_none());
+        assert!(stack.enhanced.is_present());
+        assert!(!stack.back.is_present());
     }
 
     #[test]
     fn test_classify_ambiguous_noop_when_back_exists() {
         let tmp = TempDir::new().unwrap();
         let enhanced = create_white_jpeg(tmp.path(), "IMG_003_a.jpg");
+        let back = create_colourful_jpeg(tmp.path(), "IMG_003_b.jpg");
 
         let mut stack = PhotoStack::new("IMG_003");
-        stack.enhanced = Some(img(enhanced.clone()));
-        stack.back = Some(img(tmp.path().join("IMG_003_b.jpg")));
+        stack.enhanced = local_ref(&enhanced);
+        stack.back = local_ref(&back);
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert_eq!(
-            stack.enhanced.as_ref().unwrap().path,
-            enhanced.to_string_lossy().as_ref()
-        );
+        assert!(stack.enhanced.is_present());
     }
 
     #[test]
     fn test_classify_ambiguous_noop_when_no_enhanced() {
+        let tmp = TempDir::new().unwrap();
+        let orig = create_colourful_jpeg(tmp.path(), "IMG_004.jpg");
+
         let mut stack = PhotoStack::new("IMG_004");
-        stack.original = Some(img(PathBuf::from("/photos/IMG_004.jpg")));
+        stack.original = local_ref(&orig);
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
     }

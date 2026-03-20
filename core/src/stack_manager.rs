@@ -8,9 +8,11 @@
 //! - Mutation routing to the correct repo via `stack.repo_id`
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::events::{CacheEvent, FileVariant, StackEvent};
-use crate::hashing::ImageFile;
+use crate::backends::local_handles::LocalImageHandle;
+use crate::image_handle::ImageRef;
 use crate::photo_stack::{
     Metadata, PhotoStack, Rotation, RotationTarget, ScanProgress, ScannerProfile,
 };
@@ -397,11 +399,12 @@ impl StackManager {
                     .entry(stack_id.clone())
                     .or_insert_with(|| PhotoStack::new(stack_id));
 
-                let img = ImageFile::new(path.clone(), *size);
+                let handle = Arc::new(LocalImageHandle::new(path, *size));
+                let image_ref = ImageRef::new(handle);
                 match variant {
-                    FileVariant::Original => stack.original = Some(img),
-                    FileVariant::Enhanced => stack.enhanced = Some(img),
-                    FileVariant::Back => stack.back = Some(img),
+                    FileVariant::Original => stack.original = image_ref,
+                    FileVariant::Enhanced => stack.enhanced = image_ref,
+                    FileVariant::Back => stack.back = image_ref,
                 }
 
                 if is_new {
@@ -413,9 +416,9 @@ impl StackManager {
             StackEvent::FileRemoved { stack_id, variant } => {
                 if let Some(stack) = self.cache.get_mut(stack_id) {
                     match variant {
-                        FileVariant::Original => stack.original = None,
-                        FileVariant::Enhanced => stack.enhanced = None,
-                        FileVariant::Back => stack.back = None,
+                        FileVariant::Original => stack.original = ImageRef::absent(),
+                        FileVariant::Enhanced => stack.enhanced = ImageRef::absent(),
+                        FileVariant::Back => stack.back = ImageRef::absent(),
                     }
 
                     if !stack.has_any_image() {
@@ -512,9 +515,9 @@ mod tests {
         let id = stacks[0].id.clone();
         let found = mgr.get_stack(&id).unwrap();
         assert_eq!(found.name, "IMG_001");
-        assert!(found.original.is_some());
-        assert!(found.enhanced.is_some());
-        assert!(found.back.is_some());
+        assert!(found.original.is_present());
+        assert!(found.enhanced.is_present());
+        assert!(found.back.is_present());
     }
 
     // ── b) Multi repo ───────────────────────────────────────────────────
@@ -828,8 +831,8 @@ mod tests {
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
         let stack = mgr.get_stack("abc123").unwrap();
-        assert!(stack.original.is_some());
-        assert!(stack.enhanced.is_some());
+        assert!(stack.original.is_present());
+        assert!(stack.enhanced.is_present());
     }
 
     #[test]
@@ -853,8 +856,8 @@ mod tests {
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
         let stack = mgr.get_stack("abc123").unwrap();
-        assert!(stack.original.is_none());
-        assert!(stack.enhanced.is_some());
+        assert!(!stack.original.is_present());
+        assert!(stack.enhanced.is_present());
     }
 
     #[test]
@@ -1140,8 +1143,10 @@ mod tests {
         mgr.scan().unwrap();
 
         let stack = mgr.stacks()[0];
-        let path = stack.original.as_ref().unwrap().path.clone();
-        let reader = mgr.read_image(&path);
+        assert!(stack.original.is_present());
+        // Use the known path directly since ImageRef doesn't expose paths
+        let path = tmp.path().join("IMG_001.jpg");
+        let reader = mgr.read_image(path.to_str().unwrap());
         assert!(reader.is_ok());
     }
 
@@ -1218,9 +1223,9 @@ mod tests {
             Some(CacheEvent::StackAdded("test_stack".to_string()))
         );
         let stack = mgr.get_stack("test_stack").unwrap();
-        assert!(stack.back.is_some());
-        assert!(stack.original.is_none());
-        assert!(stack.enhanced.is_none());
+        assert!(stack.back.is_present());
+        assert!(!stack.original.is_present());
+        assert!(!stack.enhanced.is_present());
     }
 
     #[test]
@@ -1252,9 +1257,9 @@ mod tests {
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
         let stack = mgr.get_stack("s1").unwrap();
-        assert!(stack.enhanced.is_none());
-        assert!(stack.original.is_some());
-        assert!(stack.back.is_some());
+        assert!(!stack.enhanced.is_present());
+        assert!(stack.original.is_present());
+        assert!(stack.back.is_present());
 
         // Remove back
         let result = mgr.apply_event(&StackEvent::FileRemoved {
@@ -1263,7 +1268,7 @@ mod tests {
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
         let stack = mgr.get_stack("s1").unwrap();
-        assert!(stack.back.is_none());
+        assert!(!stack.back.is_present());
     }
 
     #[test]

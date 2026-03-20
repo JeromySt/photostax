@@ -393,20 +393,24 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 
     // Check structural filters
     if let Some(has_back) = query.has_back {
-        if stack.back.is_some() != has_back {
+        if stack.back.is_present() != has_back {
             return false;
         }
     }
 
     if let Some(has_enhanced) = query.has_enhanced {
-        if stack.enhanced.is_some() != has_enhanced {
+        if stack.enhanced.is_present() != has_enhanced {
             return false;
         }
     }
 
+    // Get cached metadata (search only works on loaded metadata)
+    let empty_metadata = crate::photo_stack::Metadata::default();
+    let meta = stack.metadata.cached().unwrap_or(&empty_metadata);
+
     // Check EXIF tag filters
     for (key, contains) in &query.exif_filters {
-        match stack.metadata.exif_tags.get(key) {
+        match meta.exif_tags.get(key) {
             Some(value) if value.to_lowercase().contains(&contains.to_lowercase()) => {}
             _ => return false,
         }
@@ -414,7 +418,7 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 
     // Check custom tag filters
     for (key, contains) in &query.custom_filters {
-        match stack.metadata.custom_tags.get(key) {
+        match meta.custom_tags.get(key) {
             Some(value) => {
                 let value_str = match value {
                     serde_json::Value::String(s) => s.clone(),
@@ -439,12 +443,11 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
             .unwrap_or("")
             .to_lowercase()
             .contains(&text_lower);
-        let found_in_exif = stack
-            .metadata
+        let found_in_exif = meta
             .exif_tags
             .values()
             .any(|v| v.to_lowercase().contains(&text_lower));
-        let found_in_custom = stack.metadata.custom_tags.values().any(|v| {
+        let found_in_custom = meta.custom_tags.values().any(|v| {
             let s = match v {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -472,7 +475,37 @@ mod tests {
         exif: Vec<(&str, &str)>,
         custom: Vec<(&str, &str)>,
     ) -> PhotoStack {
-        use crate::hashing::ImageFile;
+        use std::sync::Arc;
+        use crate::image_handle::ImageRef;
+        use crate::metadata_handle::{MetadataHandle, MetadataRef};
+        use crate::repository::RepositoryError;
+
+        // Inline metadata handle that returns the provided metadata
+        struct InlineMetadataHandle {
+            data: Metadata,
+        }
+        impl MetadataHandle for InlineMetadataHandle {
+            fn load(&self) -> Result<Metadata, RepositoryError> { Ok(self.data.clone()) }
+            fn write(&self, _: &Metadata) -> Result<(), RepositoryError> { Ok(()) }
+            fn is_valid(&self) -> bool { true }
+        }
+
+        // Mock image handle
+        struct MockImg;
+        impl crate::image_handle::ImageHandle for MockImg {
+            fn read(&self) -> Result<Box<dyn crate::file_access::ReadSeek>, RepositoryError> {
+                Ok(Box::new(std::io::Cursor::new(vec![])))
+            }
+            fn stream(&self) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, RepositoryError> {
+                Ok(crate::hashing::HashingReader::new(Box::new(std::io::Cursor::new(vec![]))))
+            }
+            fn hash(&self) -> Result<String, RepositoryError> { Ok("0000000000000000".into()) }
+            fn dimensions(&self) -> Result<(u32, u32), RepositoryError> { Ok((1, 1)) }
+            fn size(&self) -> u64 { 0 }
+            fn rotate(&self, _: crate::photo_stack::Rotation) -> Result<(), RepositoryError> { Ok(()) }
+            fn is_valid(&self) -> bool { true }
+            fn invalidate(&self) {}
+        }
 
         let mut metadata = Metadata::default();
         for (k, v) in exif {
@@ -484,14 +517,18 @@ mod tests {
                 .insert(k.to_string(), serde_json::json!(v));
         }
         let mut stack = PhotoStack::new(id);
-        stack.original = Some(ImageFile::new(format!("{id}.jpg"), 0));
-        stack.enhanced = Some(ImageFile::new(format!("{id}_a.jpg"), 0));
+        stack.original = ImageRef::new(Arc::new(MockImg));
+        stack.enhanced = ImageRef::new(Arc::new(MockImg));
         stack.back = if has_back {
-            Some(ImageFile::new(format!("{id}_b.jpg"), 0))
+            ImageRef::new(Arc::new(MockImg))
         } else {
-            None
+            ImageRef::absent()
         };
-        stack.metadata = metadata;
+        // Pre-load metadata into the MetadataRef
+        let handle = Arc::new(InlineMetadataHandle { data: metadata });
+        let mut mref = MetadataRef::new(handle);
+        let _ = mref.read(); // trigger load to cache it
+        stack.metadata = mref;
         stack
     }
 
@@ -580,7 +617,7 @@ mod tests {
     fn test_filter_by_has_enhanced_true() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
             let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = None;
+            s.enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
@@ -594,7 +631,7 @@ mod tests {
     fn test_filter_by_has_enhanced_false() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
             let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = None;
+            s.enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
@@ -702,18 +739,15 @@ mod tests {
 
     #[test]
     fn test_custom_tag_with_non_string_values() {
-        let mut stack = PhotoStack::new("IMG_001");
-        stack.original = Some(crate::hashing::ImageFile::new("IMG_001.jpg", 0));
-        stack
-            .metadata
-            .custom_tags
-            .insert("count".to_string(), serde_json::json!(42));
-        stack
-            .metadata
-            .custom_tags
-            .insert("tags".to_string(), serde_json::json!(["a", "b", "c"]));
-
-        let stacks = vec![stack];
+        let stacks = vec![make_stack(
+            "IMG_001",
+            false,
+            vec![],
+            vec![
+                ("count", "42"),
+                ("tags", "[\"a\",\"b\",\"c\"]"),
+            ],
+        )];
 
         // Number value search
         let q = SearchQuery::new().with_custom_filter("count", "42");

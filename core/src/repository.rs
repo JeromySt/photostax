@@ -121,6 +121,14 @@ pub enum RepositoryError {
     /// failures, network timeouts, or serialization errors.
     #[error("{0}")]
     Other(String),
+
+    /// The photo stack has been deleted and its handles are no longer valid.
+    ///
+    /// Returned when an operation is attempted on an [`ImageRef`](crate::image_handle::ImageRef)
+    /// or [`MetadataRef`](crate::metadata_handle::MetadataRef) whose backing
+    /// handle has been invalidated (e.g., after the file was deleted from disk).
+    #[error("photo stack has been deleted")]
+    StackDeleted,
 }
 
 /// Abstraction over a storage backend containing Epson FastFoto photo stacks.
@@ -154,7 +162,8 @@ pub enum RepositoryError {
 /// // Load metadata only when needed
 /// let mut stack = stacks.into_iter().next().unwrap();
 /// repo.load_metadata(&mut stack)?;
-/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, stack.metadata.exif_tags.len());
+/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id,
+///     stack.metadata.cached().map_or(0, |m| m.exif_tags.len()));
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
