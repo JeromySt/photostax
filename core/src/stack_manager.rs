@@ -278,6 +278,16 @@ impl StackManager {
         self.repos.len()
     }
 
+    /// Update the scanner profile for all registered repositories.
+    ///
+    /// The new profile takes effect on the next scan (via [`query`](Self::query)
+    /// or [`rescan`](Self::rescan)).
+    pub fn set_profile(&mut self, profile: ScannerProfile) {
+        for reg in self.repos.values_mut() {
+            reg.profile = profile;
+        }
+    }
+
     /// Subscribe to cache-level events (stack added/updated/removed).
     ///
     /// Returns a receiver for [`CacheEvent`]s. Drop it to unsubscribe.

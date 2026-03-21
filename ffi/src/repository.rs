@@ -245,7 +245,7 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
         }
 
         let repo_ref = unsafe { &*repo };
-        let _scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
+        let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mut cb_wrapper;
         let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
@@ -259,6 +259,7 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
             };
 
         let mut mgr = repo_ref.inner.borrow_mut();
+        mgr.set_profile(scanner_profile);
         let all = match mgr.query(None, progress) {
             Ok(snap) => snap,
             Err(_) => return FfiPhotoStackArray::empty(),
