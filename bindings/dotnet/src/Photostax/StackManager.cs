@@ -366,11 +366,11 @@ public sealed class StackManager : IDisposable
         var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
         try
         {
-            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
+            return PhotoStack.ConvertHandleArray(array);
         }
         finally
         {
-            NativeMethods.photostax_stack_array_free(array);
+            NativeMethods.photostax_stack_handle_array_free(array);
         }
     }
 
@@ -388,8 +388,7 @@ public sealed class StackManager : IDisposable
             throw new PhotostaxException($"Stack '{id}' not found");
         }
 
-        using var stackHandle = StackSafeHandle.FromPointer(ptr);
-        return PhotoStack.ConvertStack(_handle.DangerousGetHandle(), Marshal.PtrToStructure<FfiPhotoStack>(ptr));
+        return new PhotoStack(ptr);
     }
 
     /// <summary>
@@ -411,11 +410,11 @@ public sealed class StackManager : IDisposable
             (nuint)limit);
         try
         {
-            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
-            NativeMethods.photostax_paginated_result_free(result);
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 
@@ -426,20 +425,13 @@ public sealed class StackManager : IDisposable
     {
         ThrowIfDisposed();
 
-        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
-        try
+        var stacks = Scan();
+        foreach (var stack in stacks)
         {
-            var stacks = PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
-            foreach (var stack in stacks)
-            {
-                try { stack.LoadMetadata(); } catch { /* skip stacks that fail */ }
-            }
-            return stacks;
+            try { stack.Metadata.Read(); }
+            catch { /* skip stacks that fail metadata loading */ }
         }
-        finally
-        {
-            NativeMethods.photostax_stack_array_free(array);
-        }
+        return stacks;
     }
 
     /// <summary>

@@ -73,11 +73,11 @@ public sealed class ScanSnapshot : IDisposable
             (nuint)limit);
         try
         {
-            return PhotoStack.ConvertPaginatedResult(_managerHandle, result);
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
-            NativeMethods.photostax_paginated_result_free(result);
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 

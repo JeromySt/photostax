@@ -78,14 +78,14 @@ public class PaginatedResultTests
     }
 
     [Fact]
-    public void WorksWithPhotoStackType()
+    public void WorksWithComplexType()
     {
-        var stack = new PhotoStack(IntPtr.Zero, "test-001", "test-001", null, true, false, false, new Metadata());
-        var items = new[] { stack };
+        // PhotoStack now requires a native handle, so we test with a simpler type
+        var items = new[] { "stack-001", "stack-002" };
 
-        var result = new PaginatedResult<PhotoStack>(items, totalCount: 1, offset: 0, limit: 10, hasMore: false);
+        var result = new PaginatedResult<string>(items, totalCount: 2, offset: 0, limit: 10, hasMore: false);
 
-        Assert.Single(result.Items);
-        Assert.Equal("test-001", result.Items[0].Id);
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal("stack-001", result.Items[0]);
     }
 }

@@ -21,77 +21,35 @@ internal struct FfiResult
 }
 
 /// <summary>
-/// A photo stack returned across FFI.
+/// Array of opaque PhotostaxStack handle pointers from FFI.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-internal struct FfiPhotoStack
+internal struct FfiStackHandleArray
 {
     /// <summary>
-    /// Stack identifier (never null).
+    /// Pointer to array of PhotostaxStack* handle pointers (null if len == 0).
     /// </summary>
-    public IntPtr Id;
+    public IntPtr Handles;
 
     /// <summary>
-    /// Human-readable display name (never null).
-    /// </summary>
-    public IntPtr Name;
-
-    /// <summary>
-    /// Subfolder within the repository (null if root level).
-    /// </summary>
-    public IntPtr Folder;
-
-    /// <summary>
-    /// Path to original image (null if absent).
-    /// </summary>
-    public IntPtr Original;
-
-    /// <summary>
-    /// Path to enhanced image (null if absent).
-    /// </summary>
-    public IntPtr Enhanced;
-
-    /// <summary>
-    /// Path to back image (null if absent).
-    /// </summary>
-    public IntPtr Back;
-
-    /// <summary>
-    /// JSON-serialized metadata (never null, may be "{}").
-    /// </summary>
-    public IntPtr MetadataJson;
-}
-
-/// <summary>
-/// Array of photo stacks from FFI.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct FfiPhotoStackArray
-{
-    /// <summary>
-    /// Pointer to array of stacks (null if len == 0).
-    /// </summary>
-    public IntPtr Data;
-
-    /// <summary>
-    /// Number of stacks in the array.
+    /// Number of handles in the array.
     /// </summary>
     public nuint Len;
 }
 
 /// <summary>
-/// Paginated result of photo stacks from FFI.
+/// Paginated result of opaque PhotostaxStack handles from FFI.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-internal struct FfiPaginatedResult
+internal struct FfiPaginatedHandleResult
 {
     /// <summary>
-    /// Pointer to array of stacks in this page (null if len == 0).
+    /// Pointer to array of PhotostaxStack* handle pointers (null if len == 0).
     /// </summary>
-    public IntPtr Data;
+    public IntPtr Handles;
 
     /// <summary>
-    /// Number of stacks in this page.
+    /// Number of handles in this page.
     /// </summary>
     public nuint Len;
 
@@ -115,6 +73,29 @@ internal struct FfiPaginatedResult
     /// </summary>
     [MarshalAs(UnmanagedType.I1)]
     public bool HasMore;
+}
+
+/// <summary>
+/// Image dimensions result from FFI.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FfiDimensions
+{
+    /// <summary>
+    /// Image width in pixels.
+    /// </summary>
+    public uint Width;
+
+    /// <summary>
+    /// Image height in pixels.
+    /// </summary>
+    public uint Height;
+
+    /// <summary>
+    /// True if dimensions were successfully retrieved.
+    /// </summary>
+    [MarshalAs(UnmanagedType.I1)]
+    public bool Success;
 }
 
 /// <summary>

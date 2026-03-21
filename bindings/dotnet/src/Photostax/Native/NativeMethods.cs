@@ -127,11 +127,13 @@ internal static partial class NativeMethods
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void photostax_repo_free(IntPtr repo);
 
+    // ── Scanning & collection functions ──────────────────────────
+
     /// <summary>
-    /// Scan the repository and return all photo stacks.
+    /// Scan the repository and return all photo stacks as opaque handles.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPhotoStackArray photostax_repo_scan(IntPtr repo);
+    internal static extern FfiStackHandleArray photostax_repo_scan(IntPtr repo);
 
     /// <summary>
     /// Scan progress callback delegate matching the native function pointer signature.
@@ -141,17 +143,17 @@ internal static partial class NativeMethods
 
     /// <summary>
     /// Scan with a scanner profile and optional progress callback.
-    /// Profile: 0=Auto, 1=EnhancedAndBack, 2=EnhancedOnly, 3=OriginalOnly.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPhotoStackArray photostax_repo_scan_with_progress(
+    internal static extern FfiStackHandleArray photostax_repo_scan_with_progress(
         IntPtr repo,
         int profile,
         ScanProgressCallback? callback,
         IntPtr userData);
 
     /// <summary>
-    /// Get a single stack by ID.
+    /// Get a single stack by ID. Returns null if not found.
+    /// Caller owns the returned handle and must call photostax_stack_free.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr photostax_repo_get_stack(
@@ -159,58 +161,18 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string id);
 
     /// <summary>
-    /// Load full metadata (EXIF, XMP, sidecar) for a specific stack and return
-    /// the result as a JSON string. Returns IntPtr.Zero on error.
+    /// Search/filter stacks, returning opaque handles.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr photostax_stack_load_metadata(
-        IntPtr repo,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId);
-
-    /// <summary>
-    /// Read image bytes.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiResult photostax_read_image(
-        IntPtr repo,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
-        out IntPtr outData,
-        out nuint outLen);
-
-    /// <summary>
-    /// Read a specific image variant by stack ID.
-    /// variant: 0 = original, 1 = enhanced, 2 = back.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiResult photostax_read_image_variant(
-        IntPtr repo,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
-        int variant,
-        out IntPtr outData,
-        out nuint outLen);
-
-    /// <summary>
-    /// Write metadata to a stack.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiResult photostax_write_metadata(
-        IntPtr repo,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string metadataJson);
-
-    /// <summary>
-    /// Search/filter stacks.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPhotoStackArray photostax_search(
+    internal static extern FfiStackHandleArray photostax_search(
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string queryJson);
 
     /// <summary>
-    /// Scan the repository and return a paginated result.
+    /// Scan the repository and return a paginated handle result.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPaginatedResult photostax_repo_scan_paginated(
+    internal static extern FfiPaginatedHandleResult photostax_repo_scan_paginated(
         IntPtr repo,
         nuint offset,
         nuint limit,
@@ -220,28 +182,137 @@ internal static partial class NativeMethods
     /// Search/filter stacks with pagination.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPaginatedResult photostax_search_paginated(
+    internal static extern FfiPaginatedHandleResult photostax_search_paginated(
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string queryJson,
         nuint offset,
         nuint limit);
 
     /// <summary>
-    /// Free a paginated result.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void photostax_paginated_result_free(FfiPaginatedResult result);
-
-    /// <summary>
     /// Unified query: search + paginate the cache in a single call.
     /// query_json may be null (match all), limit 0 = return all.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPaginatedResult photostax_query(
+    internal static extern FfiPaginatedHandleResult photostax_query(
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? queryJson,
         nuint offset,
         nuint limit);
+
+    // ── Stack accessor functions ──────────────────────────────────
+
+    /// <summary>
+    /// Get the stack ID. Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_id(IntPtr stack);
+
+    /// <summary>
+    /// Get the stack display name. Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_name(IntPtr stack);
+
+    /// <summary>
+    /// Get the stack subfolder (null if root). Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_folder(IntPtr stack);
+
+    // ── Image variant functions ───────────────────────────────────
+
+    /// <summary>
+    /// Check whether an image variant is present in the stack.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool photostax_stack_image_is_present(IntPtr stack, int variant);
+
+    /// <summary>
+    /// Check whether an image variant handle is still valid.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool photostax_stack_image_is_valid(IntPtr stack, int variant);
+
+    /// <summary>
+    /// Get the file size of an image variant. Returns -1 if absent.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long photostax_stack_image_size(IntPtr stack, int variant);
+
+    /// <summary>
+    /// Read the full image data for a variant.
+    /// Caller must free data with photostax_bytes_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_stack_image_read(
+        IntPtr stack,
+        int variant,
+        out IntPtr outData,
+        out nuint outLen);
+
+    /// <summary>
+    /// Compute/retrieve the cached SHA-256 hash for an image variant.
+    /// Returns null on error. Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_image_hash(IntPtr stack, int variant);
+
+    /// <summary>
+    /// Get image dimensions for a variant.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiDimensions photostax_stack_image_dimensions(IntPtr stack, int variant);
+
+    /// <summary>
+    /// Rotate an image variant on disk by the given degrees.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_stack_image_rotate(IntPtr stack, int variant, int degrees);
+
+    /// <summary>
+    /// Invalidate cached hash/dimensions for an image variant.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void photostax_stack_image_invalidate(IntPtr stack, int variant);
+
+    // ── Metadata functions ────────────────────────────────────────
+
+    /// <summary>
+    /// Check whether metadata has been loaded from disk.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool photostax_stack_metadata_is_loaded(IntPtr stack);
+
+    /// <summary>
+    /// Lazily load and return metadata as JSON. Returns null on error.
+    /// Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_metadata_read(IntPtr stack);
+
+    /// <summary>
+    /// Return cached metadata JSON without loading, or null if not loaded yet.
+    /// Caller must free with photostax_string_free.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_stack_metadata_cached(IntPtr stack);
+
+    /// <summary>
+    /// Write metadata to the sidecar file.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_stack_metadata_write(
+        IntPtr stack,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string json);
+
+    /// <summary>
+    /// Invalidate cached metadata, forcing re-load on next read.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void photostax_stack_metadata_invalidate(IntPtr stack);
 
     /// <summary>
     /// Get metadata for a stack as a JSON string.
@@ -280,10 +351,16 @@ internal static partial class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string valueJson);
 
     /// <summary>
-    /// Free a photo stack array.
+    /// Free a stack handle array (container and all handles).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void photostax_stack_array_free(FfiPhotoStackArray array);
+    internal static extern void photostax_stack_handle_array_free(FfiStackHandleArray array);
+
+    /// <summary>
+    /// Free a paginated handle result (container and all handles).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void photostax_paginated_handle_result_free(FfiPaginatedHandleResult result);
 
     /// <summary>
     /// Free a single photo stack.
@@ -302,18 +379,6 @@ internal static partial class NativeMethods
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void photostax_bytes_free(IntPtr data, nuint len);
-
-    /// <summary>
-    /// Rotate images in a photo stack by the given degrees.
-    /// Target: 0 = all, 1 = front only, 2 = back only.
-    /// Returns a pointer to the updated FfiPhotoStack, or IntPtr.Zero on error.
-    /// </summary>
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr photostax_rotate_stack(
-        IntPtr repo,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
-        int degrees,
-        int target);
 
     // ── Snapshot functions ──────────────────────────────────────
 
@@ -346,7 +411,7 @@ internal static partial class NativeMethods
     /// Get a page of stacks from the snapshot.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiPaginatedResult photostax_snapshot_get_page(
+    internal static extern FfiPaginatedHandleResult photostax_snapshot_get_page(
         IntPtr snapshot,
         nuint offset,
         nuint limit);

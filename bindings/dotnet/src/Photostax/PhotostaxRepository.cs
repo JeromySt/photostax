@@ -52,11 +52,11 @@ public sealed class PhotostaxRepository : IDisposable
         var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
         try
         {
-            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
+            return PhotoStack.ConvertHandleArray(array);
         }
         finally
         {
-            NativeMethods.photostax_stack_array_free(array);
+            NativeMethods.photostax_stack_handle_array_free(array);
         }
     }
 
@@ -101,11 +101,11 @@ public sealed class PhotostaxRepository : IDisposable
             IntPtr.Zero);
         try
         {
-            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
+            return PhotoStack.ConvertHandleArray(array);
         }
         finally
         {
-            NativeMethods.photostax_stack_array_free(array);
+            NativeMethods.photostax_stack_handle_array_free(array);
         }
     }
 
@@ -114,7 +114,7 @@ public sealed class PhotostaxRepository : IDisposable
     /// </summary>
     /// <remarks>
     /// This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
-    /// Prefer <see cref="Scan"/> and then calling <c>stack.LoadMetadata()</c> for lazy-loading in large repositories.
+    /// Prefer <see cref="Scan"/> and then calling <c>stack.Metadata.Read()</c> for lazy-loading in large repositories.
     /// </remarks>
     /// <returns>A list of photo stacks with complete metadata.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
@@ -122,23 +122,13 @@ public sealed class PhotostaxRepository : IDisposable
     {
         ThrowIfDisposed();
 
-        // Scan to get lightweight stacks, then load metadata for each one
-        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
-        try
+        var stacks = Scan();
+        foreach (var stack in stacks)
         {
-            var stacks = PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
-            var result = new List<PhotoStack>(stacks.Count);
-            foreach (var stack in stacks)
-            {
-                var metadata = LoadMetadataCore(stack.Id);
-                result.Add(new PhotoStack(_handle.DangerousGetHandle(), stack.Id, stack.Name, stack.Folder, stack.HasOriginal, stack.HasEnhanced, stack.HasBack, metadata ?? stack.Metadata));
-            }
-            return result;
+            try { stack.Metadata.Read(); }
+            catch { /* skip stacks that fail metadata loading */ }
         }
-        finally
-        {
-            NativeMethods.photostax_stack_array_free(array);
-        }
+        return stacks;
     }
 
     /// <summary>
@@ -157,11 +147,11 @@ public sealed class PhotostaxRepository : IDisposable
         var array = NativeMethods.photostax_search(_handle.DangerousGetHandle(), queryJson);
         try
         {
-            return PhotoStack.ConvertStackArray(_handle.DangerousGetHandle(), array);
+            return PhotoStack.ConvertHandleArray(array);
         }
         finally
         {
-            NativeMethods.photostax_stack_array_free(array);
+            NativeMethods.photostax_stack_handle_array_free(array);
         }
     }
 
@@ -184,11 +174,11 @@ public sealed class PhotostaxRepository : IDisposable
             loadMetadata);
         try
         {
-            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
-            NativeMethods.photostax_paginated_result_free(result);
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 
@@ -214,11 +204,11 @@ public sealed class PhotostaxRepository : IDisposable
             (nuint)limit);
         try
         {
-            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
-            NativeMethods.photostax_paginated_result_free(result);
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 
@@ -247,11 +237,11 @@ public sealed class PhotostaxRepository : IDisposable
             (nuint)limit);
         try
         {
-            return PhotoStack.ConvertPaginatedResult(_handle.DangerousGetHandle(), result);
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
-            NativeMethods.photostax_paginated_result_free(result);
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 
@@ -362,24 +352,6 @@ public sealed class PhotostaxRepository : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-    }
-
-    private Metadata? LoadMetadataCore(string stackId)
-    {
-        var ptr = NativeMethods.photostax_stack_load_metadata(
-            _handle.DangerousGetHandle(), stackId);
-        if (ptr == IntPtr.Zero)
-            return null;
-
-        try
-        {
-            var json = Marshal.PtrToStringUTF8(ptr) ?? "{}";
-            return Metadata.FromJson(json);
-        }
-        finally
-        {
-            NativeMethods.photostax_string_free(ptr);
-        }
     }
 
     private static string? GetErrorMessage(FfiResult result)

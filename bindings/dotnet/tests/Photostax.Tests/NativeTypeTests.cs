@@ -19,29 +19,42 @@ public class NativeTypeTests
         Assert.Equal(IntPtr.Zero, result.ErrorMessage);
     }
 
-    // --- FfiPhotoStackArray ---
+    // --- FfiStackHandleArray ---
 
     [Fact]
-    public void FfiPhotoStackArray_Default_IsEmpty()
+    public void FfiStackHandleArray_Default_IsEmpty()
     {
-        var array = new FfiPhotoStackArray();
+        var array = new FfiStackHandleArray();
 
-        Assert.Equal(IntPtr.Zero, array.Data);
+        Assert.Equal(IntPtr.Zero, array.Handles);
         Assert.Equal((nuint)0, array.Len);
     }
 
-    // --- FfiPhotoStack ---
+    // --- FfiPaginatedHandleResult ---
 
     [Fact]
-    public void FfiPhotoStack_Default_AllPointersAreZero()
+    public void FfiPaginatedHandleResult_Default_IsEmpty()
     {
-        var stack = new FfiPhotoStack();
+        var result = new FfiPaginatedHandleResult();
 
-        Assert.Equal(IntPtr.Zero, stack.Id);
-        Assert.Equal(IntPtr.Zero, stack.Original);
-        Assert.Equal(IntPtr.Zero, stack.Enhanced);
-        Assert.Equal(IntPtr.Zero, stack.Back);
-        Assert.Equal(IntPtr.Zero, stack.MetadataJson);
+        Assert.Equal(IntPtr.Zero, result.Handles);
+        Assert.Equal((nuint)0, result.Len);
+        Assert.Equal((nuint)0, result.TotalCount);
+        Assert.Equal((nuint)0, result.Offset);
+        Assert.Equal((nuint)0, result.Limit);
+        Assert.False(result.HasMore);
+    }
+
+    // --- FfiDimensions ---
+
+    [Fact]
+    public void FfiDimensions_Default_SuccessIsFalse()
+    {
+        var dims = new FfiDimensions();
+
+        Assert.Equal(0u, dims.Width);
+        Assert.Equal(0u, dims.Height);
+        Assert.False(dims.Success);
     }
 
     // --- RepoSafeHandle ---
@@ -157,20 +170,5 @@ public class NativeTypeTests
         using var handle = new StringSafeHandle();
         Assert.True(handle.IsInvalid);
         Assert.Null(handle.GetString());
-    }
-
-    // --- FfiPaginatedResult ---
-
-    [Fact]
-    public void FfiPaginatedResult_Default_IsEmpty()
-    {
-        var result = new FfiPaginatedResult();
-
-        Assert.Equal(IntPtr.Zero, result.Data);
-        Assert.Equal((nuint)0, result.Len);
-        Assert.Equal((nuint)0, result.TotalCount);
-        Assert.Equal((nuint)0, result.Offset);
-        Assert.Equal((nuint)0, result.Limit);
-        Assert.False(result.HasMore);
     }
 }
