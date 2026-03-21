@@ -36,8 +36,6 @@ import { StackManager } from '@photostax/core';
 const mgr = new StackManager();
 mgr.addRepo('/photos/2024', { recursive: true });
 mgr.addRepo('/photos/2023', { recursive: true });
-
-mgr.scan();
 console.log(`Managing ${mgr.repoCount} repos`);
 
 // Query across all repos — returns a ScanSnapshot
@@ -79,10 +77,10 @@ const oneDriveProvider: RepositoryProvider = {
 
 const mgr = new StackManager();
 mgr.addForeignRepo(oneDriveProvider, { recursive: true, profile: 'auto' });
-mgr.scan();
+// query() auto-scans on first call
 ```
 
-The host provides I/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
+The host providesI/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
 
 ## Installation
 
@@ -98,10 +96,7 @@ import { PhotostaxRepository } from '@photostax/core';
 // Open a directory containing FastFoto scans
 const repo = new PhotostaxRepository('/path/to/photos');
 
-// Scan for all photo stacks
-repo.scan();
-
-// Query all stacks — returns a ScanSnapshot
+// Query all stacks — query() auto-scans on first call
 const snap = repo.query();
 
 for (const stack of snap.stacks) {
@@ -141,8 +136,7 @@ The main class for accessing photo stacks.
 
 | Method | Description |
 |--------|-------------|
-| `scan()` | Discover all photo stacks in the repository |
-| `query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination |
+| `query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. Auto-scans on first call. |
 | `getStack(id)` | Get a specific stack by its opaque hash ID |
 
 ### StackManager
@@ -155,7 +149,6 @@ Multi-repository manager for unified access across directories and custom backen
 | `addRepo(path, options?)` | Register a local directory |
 | `addForeignRepo(provider, options?)` | Register a custom repository provider |
 | `repoCount` | Number of registered repositories |
-| `scan()` | Scan all registered repos |
 | `getStack(id)` | Retrieve a single stack by opaque ID |
 | `query(filter?)` | Search across all repos, returns `ScanSnapshot` |
 | `createSnapshot()` | Create a point-in-time snapshot |

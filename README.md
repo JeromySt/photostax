@@ -42,24 +42,23 @@ Epson FastFoto scanners produce multiple files per scanned photo:
 use photostax_core::backends::local::LocalRepository;
 use photostax_core::stack_manager::StackManager;
 use photostax_core::photo_stack::ScannerProfile;
-use photostax_core::search::{SearchQuery, PaginationParams};
+use photostax_core::search::SearchQuery;
 
 let repo = LocalRepository::new("/path/to/photos");
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
-mgr.scan().unwrap();
-
-// Query all stacks
-let all = mgr.query(&SearchQuery::new(), None);
-for stack in &all.items {
+// Query all stacks — query() auto-scans on first call
+let snap = mgr.query(None, None).unwrap();
+for stack in snap.stacks() {
     println!("Photo: {} ({})", stack.name, stack.id);
-    if let Some(ref original) = stack.original {
-        println!("  Original: {}", original.path);
+    if stack.original.is_present() {
+        println!("  Original: {}", stack.original.path());
     }
 }
 
 // Search with pagination
 let query = SearchQuery::new().with_has_back(true);
-let page = mgr.query(&query, Some(&PaginationParams { offset: 0, limit: 20 }));
+let snap = mgr.query(Some(&query), None).unwrap();
+let page = snap.get_page(0, 20);
 println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
 
 // Iterate to next page
@@ -74,14 +73,12 @@ if let Some(next) = page.next_page() {
 using Photostax;
 
 using var repo = new PhotostaxRepository("/path/to/photos");
-repo.Scan();
-
-// Query all stacks
-var all = repo.Query();
-foreach (var stack in all.Items)
+// Query all stacks — Query() auto-scans on first call
+var snap = repo.Query();
+foreach (var stack in snap.Stacks)
 {
     Console.WriteLine($"Photo: {stack.Name} ({stack.Id})");
-    Console.WriteLine($"  Original: {stack.OriginalPath}");
+    Console.WriteLine($"  Original: {stack.Original.Path}");
 }
 
 // Search with pagination
@@ -101,13 +98,11 @@ if (page.HasMore)
 import { PhotostaxRepository } from '@photostax/core';
 
 const repo = new PhotostaxRepository('/path/to/photos');
-repo.scan();
-
-// Query all stacks
-const all = repo.query();
-for (const stack of all.items) {
+// Query all stacks — query() auto-scans on first call
+const snap = repo.query();
+for (const stack of snap.stacks) {
   console.log(`Photo: ${stack.name} (${stack.id})`);
-  console.log(`  Original: ${stack.original?.path}`);
+  console.log(`  Original: ${stack.original.path}`);
 }
 
 // Search with pagination

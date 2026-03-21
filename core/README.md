@@ -45,10 +45,8 @@ use photostax_core::search::SearchQuery;
 // Create a manager with a local repository
 let repo = LocalRepository::new("/path/to/photos");
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
-mgr.scan().unwrap();
-
-// Query all stacks → returns a ScanSnapshot
-let snap = mgr.query(&SearchQuery::new());
+// Query all stacks → returns a ScanSnapshot (auto-scans on first call)
+let snap = mgr.query(None, None)?;
 
 for stack in snap.stacks() {
     println!("Photo: {} ({})", stack.name, stack.id);
@@ -87,9 +85,8 @@ for stack in snap.stacks() {
 ### Key Operations
 
 ```rust
-// Scanning
+// Create a manager — query() auto-scans on first call
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto)?;
-mgr.scan()?;
 
 // Per-stack image I/O via ImageRef
 let stack = snap.stacks().first().unwrap();
