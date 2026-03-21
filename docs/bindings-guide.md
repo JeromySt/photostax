@@ -315,9 +315,9 @@ def test_repository_creation():
     with PhotostaxRepository("/path/to/photos") as repo:
         assert repo._handle is not None
 
-def test_scan_returns_list():
+def test_query_returns_list():
     with PhotostaxRepository("/path/to/photos") as repo:
-        stacks = repo.scan()
+        stacks = repo.query()  # query() auto-scans on first call
         assert isinstance(stacks, list)
 ```
 
@@ -328,7 +328,7 @@ Test against real photo directories:
 ```python
 def test_full_workflow():
     with PhotostaxRepository("./test_photos") as repo:
-        stacks = repo.scan()
+        stacks = repo.query()  # query() auto-scans on first call
         assert len(stacks) > 0
         
         stack = stacks[0]
@@ -346,7 +346,7 @@ import tracemalloc
 tracemalloc.start()
 for _ in range(1000):
     with PhotostaxRepository("/path") as repo:
-        _ = repo.scan()
+        _ = repo.query()  # query() auto-scans on first call
 current, peak = tracemalloc.get_traced_memory()
 tracemalloc.stop()
 assert current < 1_000_000  # Less than 1MB retained

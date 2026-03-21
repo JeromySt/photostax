@@ -242,7 +242,7 @@ const provider: RepositoryProvider = {
 
 const mgr = new StackManager();
 mgr.addForeignRepo(provider, { recursive: true });
-mgr.scan();
+// query() auto-scans on first call
 ```
 
 **.NET:**
@@ -262,7 +262,7 @@ public class MyCloudProvider : IRepositoryProvider
 
 using var mgr = new StackManager();
 mgr.AddRepo(new MyCloudProvider(), recursive: true);
-mgr.Scan();
+// Query() auto-scans on first call
 ```
 
 ### No Breaking Changes

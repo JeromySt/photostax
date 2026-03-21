@@ -26,11 +26,9 @@ This package provides idiomatic C# access to Epson FastFoto photo repositories. 
 using var mgr = new StackManager();
 mgr.AddRepo("/photos/2024", recursive: true);
 mgr.AddRepo("/photos/2023", recursive: true);
-
-mgr.Scan();
 Console.WriteLine($"Managing {mgr.RepoCount} repos");
 
-// Query across all repos — returns a ScanSnapshot
+// Query across all repos — returns a ScanSnapshot (auto-scans on first call)
 var snap = mgr.Query(new SearchQuery().WithText("birthday"));
 var page = snap.GetPage(0, 20);
 foreach (var stack in page.Items)
@@ -72,10 +70,10 @@ public class OneDriveProvider : IRepositoryProvider
 
 using var mgr = new StackManager();
 mgr.AddRepo(new OneDriveProvider(), recursive: true);
-mgr.Scan();
+// Query() auto-scans on first call
 ```
 
-The host provides I/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
+The host providesI/O primitives while Rust handles all scanning, file grouping, naming convention parsing, and metadata operations.
 
 ## Installation
 
@@ -137,8 +135,7 @@ The main entry point for working with photo repositories.
 
 | Method | Description |
 |--------|-------------|
-| `Query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. |
-| `Scan()` | Discover all photo stacks in the repository |
+| `Query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. Auto-scans on first call. |
 
 ### StackManager
 
@@ -150,7 +147,6 @@ Multi-repository manager for unified access across directories and custom backen
 | `AddRepo(path, ...)` | Register a local directory |
 | `AddRepo(IRepositoryProvider, ...)` | Register a custom repository provider |
 | `RepoCount` | Number of registered repositories |
-| `Scan()` | Scan all registered repos |
 | `GetStack(id)` | Retrieve a single stack by opaque ID |
 | `Query(filter?)` | Search across all repos, returns `ScanSnapshot` |
 | `CreateSnapshot()` | Create a point-in-time snapshot |
