@@ -294,17 +294,29 @@ mod tests {
     fn find_stack_id_by_name(repo: *const crate::types::PhotostaxRepo, name: &str) -> String {
         let array = unsafe { crate::repository::photostax_repo_scan(repo) };
         assert!(array.len > 0);
-        let slice = unsafe { std::slice::from_raw_parts(array.data, array.len) };
-        let found = slice.iter().find(|s| {
-            let n = unsafe { CStr::from_ptr(s.name) }.to_str().unwrap();
-            n == name
-        });
-        let id = unsafe { CStr::from_ptr(found.expect("stack not found by name").id) }
-            .to_str()
-            .unwrap()
-            .to_string();
-        unsafe { crate::repository::photostax_stack_array_free(array) };
-        id
+        let slice =
+            unsafe { std::slice::from_raw_parts(array.handles, array.len) };
+        let mut found_id = None;
+        for &handle in slice {
+            let name_ptr = unsafe { crate::repository::photostax_stack_name(handle) };
+            let n = unsafe { CStr::from_ptr(name_ptr) }.to_str().unwrap().to_string();
+            if n == name {
+                let id_ptr = unsafe { crate::repository::photostax_stack_id(handle) };
+                found_id = Some(
+                    unsafe { CStr::from_ptr(id_ptr) }
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                );
+                unsafe { crate::repository::photostax_string_free(id_ptr) };
+            }
+            unsafe { crate::repository::photostax_string_free(name_ptr) };
+            if found_id.is_some() {
+                break;
+            }
+        }
+        unsafe { crate::repository::photostax_stack_handle_array_free(array) };
+        found_id.expect("stack not found by name")
     }
 
     #[test]

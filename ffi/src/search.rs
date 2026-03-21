@@ -9,63 +9,8 @@ use std::panic::{self, AssertUnwindSafe};
 use photostax_core::search::SearchQuery;
 use serde::Deserialize;
 
-use crate::types::{FfiPaginatedResult, FfiPhotoStack, FfiPhotoStackArray, PhotostaxRepo};
-
-/// Helper to convert a PhotoStack to an FfiPhotoStack.
-fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPhotoStack {
-    use std::ffi::CString;
-    use std::ptr;
-
-    let id = CString::new(stack.id.clone())
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    let name = CString::new(stack.name.clone())
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    let image_ref_to_c = |img: &photostax_core::image_handle::ImageRef| -> *mut c_char {
-        if img.is_present() {
-            CString::new("present")
-                .map(|cs| cs.into_raw())
-                .unwrap_or(ptr::null_mut())
-        } else {
-            ptr::null_mut()
-        }
-    };
-
-    let metadata_json = match stack.metadata.cached() {
-        Some(m) => serde_json::json!({
-            "exif_tags": m.exif_tags,
-            "xmp_tags": m.xmp_tags,
-            "custom_tags": m.custom_tags,
-        }),
-        None => serde_json::json!({
-            "exif_tags": {},
-            "xmp_tags": {},
-            "custom_tags": {},
-        }),
-    };
-    let metadata_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-    let metadata_json_ptr = std::ffi::CString::new(metadata_str)
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    FfiPhotoStack {
-        id,
-        name,
-        folder: stack
-            .folder
-            .as_deref()
-            .and_then(|f| CString::new(f).ok())
-            .map(|s| s.into_raw())
-            .unwrap_or(ptr::null_mut()),
-        original: image_ref_to_c(&stack.original),
-        enhanced: image_ref_to_c(&stack.enhanced),
-        back: image_ref_to_c(&stack.back),
-        metadata_json: metadata_json_ptr,
-    }
-}
+use crate::repository::{stacks_to_handle_array, stacks_to_paginated_handles};
+use crate::types::{FfiPaginatedHandleResult, FfiStackHandleArray, PhotostaxRepo};
 
 /// Search/filter stacks. `query_json` is a JSON-serialized SearchQuery.
 ///
@@ -88,24 +33,24 @@ fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPho
 /// - `repo` must be a valid pointer from [`photostax_repo_open`]
 /// - `query_json` must be a valid null-terminated JSON string
 /// - Returns empty array on null pointers or errors
-/// - Caller owns the returned array and must call [`photostax_stack_array_free`]
+/// - Caller owns the returned array and must call [`photostax_stack_handle_array_free`]
 ///
 /// [`photostax_repo_open`]: crate::repository::photostax_repo_open
-/// [`photostax_stack_array_free`]: crate::repository::photostax_stack_array_free
+/// [`photostax_stack_handle_array_free`]: crate::repository::photostax_stack_handle_array_free
 #[no_mangle]
 pub unsafe extern "C" fn photostax_search(
     repo: *const PhotostaxRepo,
     query_json: *const c_char,
-) -> FfiPhotoStackArray {
+) -> FfiStackHandleArray {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
-            return FfiPhotoStackArray::empty();
+            return FfiStackHandleArray::empty();
         }
 
         let repo_ref = unsafe { &*repo };
         let query_str = match unsafe { CStr::from_ptr(query_json) }.to_str() {
             Ok(s) => s,
-            Err(_) => return FfiPhotoStackArray::empty(),
+            Err(_) => return FfiStackHandleArray::empty(),
         };
 
         // Parse the query JSON
@@ -127,7 +72,7 @@ pub unsafe extern "C" fn photostax_search(
 
         let input: QueryInput = match serde_json::from_str(query_str) {
             Ok(q) => q,
-            Err(_) => return FfiPhotoStackArray::empty(),
+            Err(_) => return FfiStackHandleArray::empty(),
         };
 
         // Build the SearchQuery
@@ -154,7 +99,7 @@ pub unsafe extern "C" fn photostax_search(
         // Get all stacks with metadata (search needs metadata to filter)
         let mut mgr = repo_ref.inner.borrow_mut();
         if mgr.rescan(None).is_err() {
-            return FfiPhotoStackArray::empty();
+            return FfiStackHandleArray::empty();
         }
         let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
         for id in &ids {
@@ -166,27 +111,14 @@ pub unsafe extern "C" fn photostax_search(
         // Apply the filter using query()
         let filtered = match mgr.query(Some(&query), None, None) {
             Ok(snap) => snap,
-            Err(_) => return FfiPhotoStackArray::empty(),
+            Err(_) => return FfiStackHandleArray::empty(),
         };
         drop(mgr);
 
-        if filtered.all_stacks().is_empty() {
-            return FfiPhotoStackArray::empty();
-        }
-
-        let ffi_stacks: Vec<FfiPhotoStack> = filtered
-            .all_stacks()
-            .iter()
-            .map(photo_stack_to_ffi)
-            .collect();
-        let len = ffi_stacks.len();
-        let boxed_slice = ffi_stacks.into_boxed_slice();
-        let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
-
-        FfiPhotoStackArray { data, len }
+        stacks_to_handle_array(filtered.all_stacks())
     }));
 
-    result.unwrap_or_else(|_| FfiPhotoStackArray::empty())
+    result.unwrap_or_else(|_| FfiStackHandleArray::empty())
 }
 
 /// Search/filter stacks with pagination. `query_json` is a JSON-serialized SearchQuery.
@@ -200,26 +132,26 @@ pub unsafe extern "C" fn photostax_search(
 /// - `repo` must be a valid pointer from [`photostax_repo_open`]
 /// - `query_json` must be a valid null-terminated JSON string
 /// - Returns empty result on null pointers or errors
-/// - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+/// - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
 ///
 /// [`photostax_repo_open`]: crate::repository::photostax_repo_open
-/// [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+/// [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
 #[no_mangle]
 pub unsafe extern "C" fn photostax_search_paginated(
     repo: *const PhotostaxRepo,
     query_json: *const c_char,
     offset: usize,
     limit: usize,
-) -> FfiPaginatedResult {
+) -> FfiPaginatedHandleResult {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() || query_json.is_null() {
-            return FfiPaginatedResult::empty(offset, limit);
+            return FfiPaginatedHandleResult::empty(offset, limit);
         }
 
         let repo_ref = unsafe { &*repo };
         let query_str = match unsafe { CStr::from_ptr(query_json) }.to_str() {
             Ok(s) => s,
-            Err(_) => return FfiPaginatedResult::empty(offset, limit),
+            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
         };
 
         #[derive(Deserialize, Default)]
@@ -240,7 +172,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
 
         let input: QueryInput = match serde_json::from_str(query_str) {
             Ok(q) => q,
-            Err(_) => return FfiPaginatedResult::empty(offset, limit),
+            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
         };
 
         let mut query = SearchQuery::new();
@@ -265,7 +197,7 @@ pub unsafe extern "C" fn photostax_search_paginated(
 
         let mut mgr = repo_ref.inner.borrow_mut();
         if mgr.rescan(None).is_err() {
-            return FfiPaginatedResult::empty(offset, limit);
+            return FfiPaginatedHandleResult::empty(offset, limit);
         }
         let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
         for id in &ids {
@@ -276,48 +208,30 @@ pub unsafe extern "C" fn photostax_search_paginated(
 
         let snapshot = match mgr.query(Some(&query), None, None) {
             Ok(snap) => snap,
-            Err(_) => return FfiPaginatedResult::empty(offset, limit),
+            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
         };
         drop(mgr);
 
         let paginated = snapshot.snapshot().get_page(offset, limit);
-
-        if paginated.items.is_empty() {
-            return FfiPaginatedResult {
-                data: std::ptr::null_mut(),
-                len: 0,
-                total_count: paginated.total_count,
-                offset: paginated.offset,
-                limit: paginated.limit,
-                has_more: paginated.has_more,
-            };
-        }
-
-        let ffi_stacks: Vec<FfiPhotoStack> =
-            paginated.items.iter().map(photo_stack_to_ffi).collect();
-        let len = ffi_stacks.len();
-        let boxed_slice = ffi_stacks.into_boxed_slice();
-        let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
-
-        FfiPaginatedResult {
-            data,
-            len,
-            total_count: paginated.total_count,
-            offset: paginated.offset,
-            limit: paginated.limit,
-            has_more: paginated.has_more,
-        }
+        stacks_to_paginated_handles(
+            &paginated.items,
+            paginated.total_count,
+            paginated.offset,
+            paginated.limit,
+            paginated.has_more,
+        )
     }));
 
-    result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
+    result.unwrap_or_else(|_| FfiPaginatedHandleResult::empty(offset, limit))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::repository::{
-        photostax_paginated_result_free, photostax_repo_free, photostax_repo_open,
-        photostax_stack_array_free,
+        photostax_paginated_handle_result_free, photostax_repo_free, photostax_repo_open,
+        photostax_stack_handle_array_free, photostax_stack_id,
+        photostax_string_free,
     };
     use std::ffi::{CStr, CString};
     use std::ptr;
@@ -342,7 +256,7 @@ mod tests {
     fn test_search_null_repo() {
         let query = CString::new("{}").unwrap();
         let result = unsafe { photostax_search(ptr::null(), query.as_ptr()) };
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
     }
 
@@ -353,7 +267,7 @@ mod tests {
         assert!(!repo.is_null());
 
         let result = unsafe { photostax_search(repo, ptr::null()) };
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
 
         unsafe { photostax_repo_free(repo) };
@@ -367,7 +281,7 @@ mod tests {
 
         let query = CString::new("not valid json").unwrap();
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
 
         unsafe { photostax_repo_free(repo) };
@@ -381,15 +295,18 @@ mod tests {
 
         // Empty query returns all stacks from testdata
         assert!(result.len > 0, "Expected stacks from testdata");
-        assert!(!result.data.is_null());
+        assert!(!result.handles.is_null());
 
         // Verify first result has valid data
-        let first = unsafe { &*result.data };
-        assert!(!first.id.is_null());
-        let id_str = unsafe { CStr::from_ptr(first.id) }.to_str().unwrap();
+        let first_handle = unsafe { *result.handles };
+        assert!(!first_handle.is_null());
+        let id_ptr = unsafe { photostax_stack_id(first_handle) };
+        assert!(!id_ptr.is_null());
+        let id_str = unsafe { CStr::from_ptr(id_ptr) }.to_str().unwrap();
         assert!(!id_str.is_empty());
+        unsafe { photostax_string_free(id_ptr) };
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -401,7 +318,7 @@ mod tests {
 
         assert!(result.len > 0, "Should find FamilyPhotos stacks");
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -412,9 +329,9 @@ mod tests {
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
 
         assert_eq!(result.len, 0);
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -426,11 +343,11 @@ mod tests {
 
         // Some stacks in testdata have _b files
         if result.len > 0 {
-            let first = unsafe { &*result.data };
-            assert!(!first.id.is_null());
+            let first_handle = unsafe { *result.handles };
+            assert!(!first_handle.is_null());
         }
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -441,11 +358,11 @@ mod tests {
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
 
         if result.len > 0 {
-            let first = unsafe { &*result.data };
-            assert!(!first.id.is_null());
+            let first_handle = unsafe { *result.handles };
+            assert!(!first_handle.is_null());
         }
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -457,11 +374,11 @@ mod tests {
 
         // Testdata has EPSON EXIF tags
         if result.len > 0 {
-            let first = unsafe { &*result.data };
-            assert!(!first.metadata_json.is_null());
+            let first_handle = unsafe { *result.handles };
+            assert!(!first_handle.is_null());
         }
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -471,7 +388,7 @@ mod tests {
         let query = CString::new(r#"{"custom_filters":[["album","Family"]]}"#).unwrap();
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
         // Likely no match but should not crash
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -487,30 +404,8 @@ mod tests {
         )
         .unwrap();
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
-    }
-
-    #[test]
-    fn test_search_photo_stack_to_ffi_covers_all_fields() {
-        let stack = photostax_core::photo_stack::PhotoStack::new("search_test");
-
-        let ffi = photo_stack_to_ffi(&stack);
-        assert!(!ffi.id.is_null());
-        // Stack created with new() has absent ImageRefs
-        assert!(ffi.original.is_null());
-        assert!(ffi.enhanced.is_null());
-        assert!(ffi.back.is_null());
-        assert!(!ffi.metadata_json.is_null());
-
-        // Clean up
-        unsafe {
-            drop(CString::from_raw(ffi.id));
-            if !ffi.name.is_null() {
-                drop(CString::from_raw(ffi.name));
-            }
-            drop(CString::from_raw(ffi.metadata_json));
-        }
     }
 
     #[test]
@@ -519,7 +414,7 @@ mod tests {
         let invalid: &[u8] = &[0xff, 0x00];
         let result = unsafe { photostax_search(repo, invalid.as_ptr() as *const c_char) };
         assert_eq!(result.len, 0);
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         unsafe { crate::repository::photostax_repo_free(repo) };
     }
 
@@ -541,7 +436,7 @@ mod tests {
     fn test_search_paginated_null_repo() {
         let query = CString::new("{}").unwrap();
         let result = unsafe { photostax_search_paginated(ptr::null(), query.as_ptr(), 0, 10) };
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
         assert_eq!(result.total_count, 0);
         assert_eq!(result.offset, 0);
@@ -556,7 +451,7 @@ mod tests {
         assert!(!repo.is_null());
 
         let result = unsafe { photostax_search_paginated(repo, ptr::null(), 0, 10) };
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
 
         unsafe { photostax_repo_free(repo) };
@@ -578,7 +473,7 @@ mod tests {
             assert!(page1.has_more);
         }
 
-        unsafe { photostax_paginated_result_free(page1) };
+        unsafe { photostax_paginated_handle_result_free(page1) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -591,7 +486,7 @@ mod tests {
         // total_count should reflect filtered set
         assert!(result.total_count >= result.len);
 
-        unsafe { photostax_paginated_result_free(result) };
+        unsafe { photostax_paginated_handle_result_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -602,11 +497,11 @@ mod tests {
 
         let result = unsafe { photostax_search_paginated(repo, query.as_ptr(), 10000, 10) };
         assert_eq!(result.len, 0);
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
         // total_count is still the full count
         assert!(!result.has_more);
 
-        unsafe { photostax_paginated_result_free(result) };
+        unsafe { photostax_paginated_handle_result_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -618,11 +513,14 @@ mod tests {
         let all_result = unsafe { photostax_search(repo, all_query.as_ptr()) };
         assert!(all_result.len > 0, "Expected stacks from testdata");
 
-        let first_id = unsafe { CStr::from_ptr((*all_result.data).id) }
+        let first_handle = unsafe { *all_result.handles };
+        let id_ptr = unsafe { photostax_stack_id(first_handle) };
+        let first_id = unsafe { CStr::from_ptr(id_ptr) }
             .to_str()
             .unwrap()
             .to_string();
-        unsafe { photostax_stack_array_free(all_result) };
+        unsafe { photostax_string_free(id_ptr) };
+        unsafe { photostax_stack_handle_array_free(all_result) };
 
         // Search with stack_ids containing only the first ID
         let query_json = format!(r#"{{"stack_ids":["{}"]}}"#, first_id);
@@ -630,12 +528,15 @@ mod tests {
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
 
         assert_eq!(result.len, 1);
-        let result_id = unsafe { CStr::from_ptr((*result.data).id) }
+        let result_handle = unsafe { *result.handles };
+        let result_id_ptr = unsafe { photostax_stack_id(result_handle) };
+        let result_id = unsafe { CStr::from_ptr(result_id_ptr) }
             .to_str()
             .unwrap();
         assert_eq!(result_id, first_id);
+        unsafe { photostax_string_free(result_id_ptr) };
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -646,9 +547,9 @@ mod tests {
         let result = unsafe { photostax_search(repo, query.as_ptr()) };
 
         assert_eq!(result.len, 0);
-        assert!(result.data.is_null());
+        assert!(result.handles.is_null());
 
-        unsafe { photostax_stack_array_free(result) };
+        unsafe { photostax_stack_handle_array_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 
@@ -660,11 +561,14 @@ mod tests {
         let all_result = unsafe { photostax_search(repo, all_query.as_ptr()) };
         assert!(all_result.len > 0);
 
-        let first_id = unsafe { CStr::from_ptr((*all_result.data).id) }
+        let first_handle = unsafe { *all_result.handles };
+        let id_ptr = unsafe { photostax_stack_id(first_handle) };
+        let first_id = unsafe { CStr::from_ptr(id_ptr) }
             .to_str()
             .unwrap()
             .to_string();
-        unsafe { photostax_stack_array_free(all_result) };
+        unsafe { photostax_string_free(id_ptr) };
+        unsafe { photostax_stack_handle_array_free(all_result) };
 
         // Paginated search with stack_ids
         let query_json = format!(r#"{{"stack_ids":["{}"]}}"#, first_id);
@@ -675,7 +579,7 @@ mod tests {
         assert_eq!(result.len, 1);
         assert!(!result.has_more);
 
-        unsafe { photostax_paginated_result_free(result) };
+        unsafe { photostax_paginated_handle_result_free(result) };
         unsafe { photostax_repo_free(repo) };
     }
 }

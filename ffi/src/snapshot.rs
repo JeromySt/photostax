@@ -12,8 +12,8 @@ use photostax_core::photo_stack::ScannerProfile;
 use photostax_core::search::SearchQuery;
 use photostax_core::snapshot::ScanSnapshot;
 
-use crate::repository::ScanProgressFn;
-use crate::types::{FfiPaginatedResult, FfiPhotoStack, PhotostaxRepo};
+use crate::repository::{stacks_to_paginated_handles, ScanProgressFn};
+use crate::types::{FfiPaginatedHandleResult, PhotostaxRepo};
 
 /// Opaque handle to a scan snapshot.
 pub struct PhotostaxSnapshot {
@@ -34,62 +34,6 @@ pub struct FfiSnapshotStatus {
     pub added: usize,
     /// Snapshot stacks no longer present on disk.
     pub removed: usize,
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-
-fn photo_stack_to_ffi(stack: &photostax_core::photo_stack::PhotoStack) -> FfiPhotoStack {
-    use std::ffi::CString;
-
-    let id = CString::new(stack.id.clone())
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    let name = CString::new(stack.name.clone())
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    let image_ref_to_c = |img: &photostax_core::image_handle::ImageRef| -> *mut c_char {
-        if img.is_present() {
-            CString::new("present")
-                .map(|cs| cs.into_raw())
-                .unwrap_or(ptr::null_mut())
-        } else {
-            ptr::null_mut()
-        }
-    };
-
-    let metadata_json = match stack.metadata.cached() {
-        Some(m) => serde_json::json!({
-            "exif_tags": m.exif_tags,
-            "xmp_tags": m.xmp_tags,
-            "custom_tags": m.custom_tags,
-        }),
-        None => serde_json::json!({
-            "exif_tags": {},
-            "xmp_tags": {},
-            "custom_tags": {},
-        }),
-    };
-    let metadata_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-    let metadata_json_ptr = std::ffi::CString::new(metadata_str)
-        .map(|s| s.into_raw())
-        .unwrap_or(ptr::null_mut());
-
-    FfiPhotoStack {
-        id,
-        name,
-        folder: stack
-            .folder
-            .as_deref()
-            .and_then(|f| CString::new(f).ok())
-            .map(|s| s.into_raw())
-            .unwrap_or(ptr::null_mut()),
-        original: image_ref_to_c(&stack.original),
-        enhanced: image_ref_to_c(&stack.enhanced),
-        back: image_ref_to_c(&stack.back),
-        metadata_json: metadata_json_ptr,
-    }
 }
 
 // ── Public FFI Functions ────────────────────────────────────────
@@ -228,51 +172,33 @@ pub unsafe extern "C" fn photostax_snapshot_total_count(
 ///
 /// - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
 /// - Returns empty result on null pointer
-/// - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+/// - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
 ///
-/// [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+/// [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
 #[no_mangle]
 pub unsafe extern "C" fn photostax_snapshot_get_page(
     snapshot: *const PhotostaxSnapshot,
     offset: usize,
     limit: usize,
-) -> FfiPaginatedResult {
+) -> FfiPaginatedHandleResult {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() {
-            return FfiPaginatedResult::empty(offset, limit);
+            return FfiPaginatedHandleResult::empty(offset, limit);
         }
 
         let snap = unsafe { &*snapshot };
         let paginated = snap.inner.get_page(offset, limit);
 
-        if paginated.items.is_empty() {
-            return FfiPaginatedResult {
-                data: ptr::null_mut(),
-                len: 0,
-                total_count: paginated.total_count,
-                offset: paginated.offset,
-                limit: paginated.limit,
-                has_more: paginated.has_more,
-            };
-        }
-
-        let ffi_stacks: Vec<FfiPhotoStack> =
-            paginated.items.iter().map(photo_stack_to_ffi).collect();
-        let len = ffi_stacks.len();
-        let boxed_slice = ffi_stacks.into_boxed_slice();
-        let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
-
-        FfiPaginatedResult {
-            data,
-            len,
-            total_count: paginated.total_count,
-            offset: paginated.offset,
-            limit: paginated.limit,
-            has_more: paginated.has_more,
-        }
+        stacks_to_paginated_handles(
+            &paginated.items,
+            paginated.total_count,
+            paginated.offset,
+            paginated.limit,
+            paginated.has_more,
+        )
     }));
 
-    result.unwrap_or_else(|_| FfiPaginatedResult::empty(offset, limit))
+    result.unwrap_or_else(|_| FfiPaginatedHandleResult::empty(offset, limit))
 }
 
 /// Check whether a snapshot is still current.
@@ -422,7 +348,8 @@ pub unsafe extern "C" fn photostax_snapshot_free(snapshot: *mut PhotostaxSnapsho
 mod tests {
     use super::*;
     use crate::repository::{
-        photostax_paginated_result_free, photostax_repo_free, photostax_repo_open,
+        photostax_paginated_handle_result_free, photostax_repo_free, photostax_repo_open,
+        photostax_stack_name, photostax_string_free,
     };
     use std::ffi::{CStr, CString};
 
@@ -494,8 +421,8 @@ mod tests {
         let page2 = unsafe { photostax_snapshot_get_page(snap, 2, 2) };
         assert_eq!(page2.total_count, total); // consistent!
 
-        unsafe { photostax_paginated_result_free(page1) };
-        unsafe { photostax_paginated_result_free(page2) };
+        unsafe { photostax_paginated_handle_result_free(page1) };
+        unsafe { photostax_paginated_handle_result_free(page2) };
         unsafe { photostax_snapshot_free(snap) };
         unsafe { photostax_repo_free(repo) };
     }
@@ -503,7 +430,7 @@ mod tests {
     #[test]
     fn test_snapshot_get_page_null() {
         let page = unsafe { photostax_snapshot_get_page(ptr::null(), 0, 10) };
-        assert!(page.data.is_null());
+        assert!(page.handles.is_null());
         assert_eq!(page.len, 0);
     }
 
@@ -555,7 +482,7 @@ mod tests {
         // Pages still work
         let page = unsafe { photostax_snapshot_get_page(snap, 0, 10) };
         assert_eq!(page.total_count, 1); // snapshot is frozen
-        unsafe { photostax_paginated_result_free(page) };
+        unsafe { photostax_paginated_handle_result_free(page) };
 
         unsafe { photostax_snapshot_free(snap) };
         unsafe { photostax_repo_free(repo) };
@@ -580,15 +507,17 @@ mod tests {
         // Verify page items match filter
         let page = unsafe { photostax_snapshot_get_page(filtered, 0, 100) };
         for i in 0..page.len {
-            let item = unsafe { &*page.data.add(i) };
-            let name = unsafe { CStr::from_ptr(item.name) }.to_str().unwrap();
+            let handle = unsafe { *page.handles.add(i) };
+            let name_ptr = unsafe { photostax_stack_name(handle) };
+            let name = unsafe { CStr::from_ptr(name_ptr) }.to_str().unwrap();
             assert!(
                 name.contains("FamilyPhotos"),
                 "expected FamilyPhotos in {name}"
             );
+            unsafe { photostax_string_free(name_ptr) };
         }
 
-        unsafe { photostax_paginated_result_free(page) };
+        unsafe { photostax_paginated_handle_result_free(page) };
         unsafe { photostax_snapshot_free(filtered) };
         unsafe { photostax_snapshot_free(snap) };
         unsafe { photostax_repo_free(repo) };
