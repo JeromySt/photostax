@@ -238,9 +238,7 @@ pub unsafe extern "C" fn photostax_repo_free(repo: *mut PhotostaxRepo) {
 /// - Returns empty array if `repo` is null or scan fails
 /// - Caller owns the returned array and must call [`photostax_stack_handle_array_free`]
 #[no_mangle]
-pub unsafe extern "C" fn photostax_repo_scan(
-    repo: *const PhotostaxRepo,
-) -> FfiStackHandleArray {
+pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiStackHandleArray {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if repo.is_null() {
             return FfiStackHandleArray::empty();
@@ -835,9 +833,7 @@ pub unsafe extern "C" fn photostax_stack_image_invalidate(
 
 /// Check whether metadata has been loaded (cached) for this stack.
 #[no_mangle]
-pub unsafe extern "C" fn photostax_stack_metadata_is_loaded(
-    stack: *const PhotostaxStack,
-) -> bool {
+pub unsafe extern "C" fn photostax_stack_metadata_is_loaded(stack: *const PhotostaxStack) -> bool {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         if stack.is_null() {
             return false;
@@ -875,8 +871,7 @@ pub unsafe extern "C" fn photostax_stack_metadata_read(
             "custom_tags": metadata.custom_tags,
         });
 
-        let json_str =
-            serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+        let json_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
         CString::new(json_str)
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut())
@@ -906,8 +901,8 @@ pub unsafe extern "C" fn photostax_stack_metadata_cached(
                     "xmp_tags": metadata.xmp_tags,
                     "custom_tags": metadata.custom_tags,
                 });
-                let json_str = serde_json::to_string(&metadata_json)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let json_str =
+                    serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
                 CString::new(json_str)
                     .map(|s| s.into_raw())
                     .unwrap_or(ptr::null_mut())
@@ -1179,9 +1174,7 @@ pub unsafe extern "C" fn photostax_stack_handle_array_free(array: FfiStackHandle
 /// - `result` must have been returned by a paginated FFI function
 /// - After calling, all handles within `result` are invalid
 #[no_mangle]
-pub unsafe extern "C" fn photostax_paginated_handle_result_free(
-    result: FfiPaginatedHandleResult,
-) {
+pub unsafe extern "C" fn photostax_paginated_handle_result_free(result: FfiPaginatedHandleResult) {
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         if !result.handles.is_null() && result.len > 0 {
             let slice = std::slice::from_raw_parts_mut(result.handles, result.len);
@@ -1280,8 +1273,7 @@ mod tests {
 
     /// Create a real JPEG in the given directory with known dimensions.
     fn create_test_image_jpeg(path: &std::path::Path, width: u32, height: u32) {
-        let img =
-            image::RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 0]));
+        let img = image::RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 0]));
         img.save(path).unwrap();
     }
 
@@ -1378,8 +1370,11 @@ mod tests {
         let array = unsafe { photostax_repo_scan(repo) };
         assert!(array.len > 0);
 
-        let first =
-            unsafe { *std::slice::from_raw_parts(array.handles, array.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(array.handles, array.len)
+                .first()
+                .unwrap()
+        };
         let id_ptr = unsafe { photostax_stack_id(first) };
         assert!(!id_ptr.is_null());
         let id_str = unsafe { CStr::from_ptr(id_ptr) }.to_str().unwrap();
@@ -1502,8 +1497,11 @@ mod tests {
         let array = unsafe { photostax_repo_scan(repo) };
         assert!(array.len > 0);
 
-        let first =
-            unsafe { *std::slice::from_raw_parts(array.handles, array.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(array.handles, array.len)
+                .first()
+                .unwrap()
+        };
 
         let id_ptr = unsafe { photostax_stack_id(first) };
         assert!(!id_ptr.is_null());
@@ -1538,8 +1536,11 @@ mod tests {
         let repo = open_testdata_repo();
         let array = unsafe { photostax_repo_scan(repo) };
         assert!(array.len > 0);
-        let first =
-            unsafe { *std::slice::from_raw_parts(array.handles, array.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(array.handles, array.len)
+                .first()
+                .unwrap()
+        };
 
         assert!(!unsafe { photostax_stack_image_is_present(first, 99) });
 
@@ -1576,8 +1577,7 @@ mod tests {
     fn test_image_read_null_stack() {
         let mut data: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
-        let result =
-            unsafe { photostax_stack_image_read(ptr::null(), 0, &mut data, &mut len) };
+        let result = unsafe { photostax_stack_image_read(ptr::null(), 0, &mut data, &mut len) };
         assert!(!result.success);
         unsafe { photostax_string_free(result.error_message) };
     }
@@ -1586,8 +1586,11 @@ mod tests {
     fn test_image_read_null_out_pointers() {
         let repo = open_testdata_repo();
         let array = unsafe { photostax_repo_scan(repo) };
-        let first =
-            unsafe { *std::slice::from_raw_parts(array.handles, array.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(array.handles, array.len)
+                .first()
+                .unwrap()
+        };
 
         let result =
             unsafe { photostax_stack_image_read(first, 0, ptr::null_mut(), ptr::null_mut()) };
@@ -1749,8 +1752,11 @@ mod tests {
     fn test_image_invalidate_invalid_variant() {
         let repo = open_testdata_repo();
         let array = unsafe { photostax_repo_scan(repo) };
-        let first =
-            unsafe { *std::slice::from_raw_parts(array.handles, array.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(array.handles, array.len)
+                .first()
+                .unwrap()
+        };
 
         unsafe { photostax_stack_image_invalidate(first, 99) };
 
@@ -2015,8 +2021,11 @@ mod tests {
         assert!(page.total_count > 0, "Expected stacks from testdata");
         assert!(page.len > 0);
 
-        let first =
-            unsafe { *std::slice::from_raw_parts(page.handles, page.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(page.handles, page.len)
+                .first()
+                .unwrap()
+        };
 
         assert!(unsafe { photostax_stack_metadata_is_loaded(first) });
         let cached_ptr = unsafe { photostax_stack_metadata_cached(first) };
@@ -2040,8 +2049,11 @@ mod tests {
         assert!(page.total_count > 0, "Expected stacks from testdata");
         assert!(page.len > 0);
 
-        let first =
-            unsafe { *std::slice::from_raw_parts(page.handles, page.len).first().unwrap() };
+        let first = unsafe {
+            *std::slice::from_raw_parts(page.handles, page.len)
+                .first()
+                .unwrap()
+        };
 
         let cached_ptr = unsafe { photostax_stack_metadata_cached(first) };
         if !cached_ptr.is_null() {

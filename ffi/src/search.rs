@@ -230,8 +230,7 @@ mod tests {
     use super::*;
     use crate::repository::{
         photostax_paginated_handle_result_free, photostax_repo_free, photostax_repo_open,
-        photostax_stack_handle_array_free, photostax_stack_id,
-        photostax_string_free,
+        photostax_stack_handle_array_free, photostax_stack_id, photostax_string_free,
     };
     use std::ffi::{CStr, CString};
     use std::ptr;
@@ -530,9 +529,7 @@ mod tests {
         assert_eq!(result.len, 1);
         let result_handle = unsafe { *result.handles };
         let result_id_ptr = unsafe { photostax_stack_id(result_handle) };
-        let result_id = unsafe { CStr::from_ptr(result_id_ptr) }
-            .to_str()
-            .unwrap();
+        let result_id = unsafe { CStr::from_ptr(result_id_ptr) }.to_str().unwrap();
         assert_eq!(result_id, first_id);
         unsafe { photostax_string_free(result_id_ptr) };
 

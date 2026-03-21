@@ -7,6 +7,8 @@
 use std::cell::RefCell;
 use std::os::raw::c_char;
 
+use photostax_core::photo_stack::PhotoStack;
+
 /// Opaque handle to a [`StackManager`].
 ///
 /// This type is opaque to C code and should only be manipulated through
@@ -24,69 +26,47 @@ pub struct PhotostaxRepo {
     pub(crate) inner: RefCell<photostax_core::stack_manager::StackManager>,
 }
 
-/// A photo stack returned across FFI.
+/// Opaque handle to a [`PhotoStack`].
 ///
-/// All string pointers are owned by this struct and must be freed by calling
-/// [`photostax_stack_free`]. Null pointers indicate absent values.
+/// Uses [`RefCell`] because some `ImageRef`/`MetadataRef` methods need
+/// `&mut self` (hash caching, metadata lazy-load), while the FFI
+/// functions receive `*const PhotostaxStack`.
 ///
-/// # Memory Ownership
-///
-/// - Caller receives ownership of the entire struct
-/// - Call [`photostax_stack_free`] to release all memory
-/// - Do not free individual string fields separately
-///
-/// [`photostax_stack_free`]: crate::repository::photostax_stack_free
-#[repr(C)]
-pub struct FfiPhotoStack {
-    /// Stack identifier (never null). This is an opaque hash.
-    pub id: *mut c_char,
-    /// Human-readable stack name, typically the file stem (never null).
-    pub name: *mut c_char,
-    /// Subfolder name within the repository (null if root level).
-    pub folder: *mut c_char,
-    /// Path to original image (null if absent).
-    pub original: *mut c_char,
-    /// Path to enhanced image (null if absent).
-    pub enhanced: *mut c_char,
-    /// Path to back image (null if absent).
-    pub back: *mut c_char,
-    /// JSON-serialized metadata (never null, may be "{}").
-    pub metadata_json: *mut c_char,
+/// [`PhotoStack`]: photostax_core::photo_stack::PhotoStack
+pub struct PhotostaxStack {
+    pub(crate) inner: RefCell<PhotoStack>,
 }
 
-/// Array of photo stacks.
+/// Array of opaque PhotoStack handles returned from scan/query/search.
 ///
 /// # Memory Ownership
 ///
-/// - Caller receives ownership of the entire array
-/// - Call [`photostax_stack_array_free`] to release all memory
-/// - Do not free individual stacks separately after freeing the array
+/// - Caller receives ownership of the entire array and all handles
+/// - Call [`photostax_stack_handle_array_free`] to release all memory
+/// - Do not free individual handles separately after freeing the array
 ///
-/// [`photostax_stack_array_free`]: crate::repository::photostax_stack_array_free
+/// [`photostax_stack_handle_array_free`]: crate::repository::photostax_stack_handle_array_free
 #[repr(C)]
-pub struct FfiPhotoStackArray {
-    /// Pointer to array of stacks (null if len == 0).
-    pub data: *mut FfiPhotoStack,
-    /// Number of stacks in the array.
+pub struct FfiStackHandleArray {
+    /// Pointer to array of stack handle pointers (null if len == 0).
+    pub handles: *mut *mut PhotostaxStack,
+    /// Number of handles.
     pub len: usize,
 }
 
-/// Paginated result of photo stacks returned across FFI.
-///
-/// Contains a page of stacks along with pagination metadata needed
-/// for rendering pagination controls in a web UI.
+/// Paginated result of opaque PhotoStack handles.
 ///
 /// # Memory Ownership
 ///
-/// - Caller receives ownership of the entire result
-/// - Call [`photostax_paginated_result_free`] to release all memory
+/// - Caller receives ownership of the entire result and all handles
+/// - Call [`photostax_paginated_handle_result_free`] to release all memory
 ///
-/// [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+/// [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
 #[repr(C)]
-pub struct FfiPaginatedResult {
-    /// Pointer to array of stacks in this page (null if len == 0).
-    pub data: *mut FfiPhotoStack,
-    /// Number of stacks in this page.
+pub struct FfiPaginatedHandleResult {
+    /// Pointer to array of stack handle pointers (null if len == 0).
+    pub handles: *mut *mut PhotostaxStack,
+    /// Number of handles in this page.
     pub len: usize,
     /// Total number of stacks across all pages (before pagination).
     pub total_count: usize,
@@ -96,6 +76,14 @@ pub struct FfiPaginatedResult {
     pub limit: usize,
     /// Whether there are more items beyond this page.
     pub has_more: bool,
+}
+
+/// Image dimensions returned from FFI.
+#[repr(C)]
+pub struct FfiDimensions {
+    pub width: u32,
+    pub height: u32,
+    pub success: bool,
 }
 
 /// Result type for FFI calls.
@@ -116,21 +104,21 @@ pub struct FfiResult {
     pub error_message: *mut c_char,
 }
 
-impl FfiPhotoStackArray {
+impl FfiStackHandleArray {
     /// Create an empty array.
     pub(crate) fn empty() -> Self {
         Self {
-            data: std::ptr::null_mut(),
+            handles: std::ptr::null_mut(),
             len: 0,
         }
     }
 }
 
-impl FfiPaginatedResult {
+impl FfiPaginatedHandleResult {
     /// Create an empty paginated result.
     pub(crate) fn empty(offset: usize, limit: usize) -> Self {
         Self {
-            data: std::ptr::null_mut(),
+            handles: std::ptr::null_mut(),
             len: 0,
             total_count: 0,
             offset,
@@ -334,16 +322,16 @@ mod tests {
     use std::ffi::{CStr, CString};
 
     #[test]
-    fn test_ffi_photo_stack_array_empty() {
-        let array = FfiPhotoStackArray::empty();
-        assert!(array.data.is_null());
+    fn test_ffi_stack_handle_array_empty() {
+        let array = FfiStackHandleArray::empty();
+        assert!(array.handles.is_null());
         assert_eq!(array.len, 0);
     }
 
     #[test]
-    fn test_ffi_paginated_result_empty() {
-        let result = FfiPaginatedResult::empty(10, 20);
-        assert!(result.data.is_null());
+    fn test_ffi_paginated_handle_result_empty() {
+        let result = FfiPaginatedHandleResult::empty(10, 20);
+        assert!(result.handles.is_null());
         assert_eq!(result.len, 0);
         assert_eq!(result.total_count, 0);
         assert_eq!(result.offset, 10);
@@ -384,39 +372,34 @@ mod tests {
 
     #[test]
     fn test_photostax_repo_struct_size() {
-        // PhotostaxRepo wraps a LocalRepository
         assert!(std::mem::size_of::<PhotostaxRepo>() > 0);
     }
 
     #[test]
-    fn test_ffi_photo_stack_repr_c() {
-        // Verify the struct has the expected fields and layout
-        let stack = FfiPhotoStack {
-            id: std::ptr::null_mut(),
-            name: std::ptr::null_mut(),
-            folder: std::ptr::null_mut(),
-            original: std::ptr::null_mut(),
-            enhanced: std::ptr::null_mut(),
-            back: std::ptr::null_mut(),
-            metadata_json: std::ptr::null_mut(),
-        };
-        assert!(stack.id.is_null());
-        assert!(stack.name.is_null());
-        assert!(stack.folder.is_null());
-        assert!(stack.original.is_null());
-        assert!(stack.enhanced.is_null());
-        assert!(stack.back.is_null());
-        assert!(stack.metadata_json.is_null());
+    fn test_photostax_stack_struct_size() {
+        assert!(std::mem::size_of::<PhotostaxStack>() > 0);
     }
 
     #[test]
-    fn test_ffi_photo_stack_array_repr_c() {
-        let array = FfiPhotoStackArray {
-            data: std::ptr::null_mut(),
+    fn test_ffi_stack_handle_array_repr_c() {
+        let array = FfiStackHandleArray {
+            handles: std::ptr::null_mut(),
             len: 42,
         };
-        assert!(array.data.is_null());
+        assert!(array.handles.is_null());
         assert_eq!(array.len, 42);
+    }
+
+    #[test]
+    fn test_ffi_dimensions_repr_c() {
+        let dims = FfiDimensions {
+            width: 1920,
+            height: 1080,
+            success: true,
+        };
+        assert_eq!(dims.width, 1920);
+        assert_eq!(dims.height, 1080);
+        assert!(dims.success);
     }
 
     #[test]

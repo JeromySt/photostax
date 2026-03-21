@@ -26,6 +26,17 @@ typedef struct PhotostaxRepo PhotostaxRepo;
 typedef struct PhotostaxSnapshot PhotostaxSnapshot;
 
 /**
+ * Opaque handle to a [`PhotoStack`].
+ *
+ * Uses [`RefCell`] because some `ImageRef`/`MetadataRef` methods need
+ * `&mut self` (hash caching, metadata lazy-load), while the FFI
+ * functions receive `*const PhotostaxStack`.
+ *
+ * [`PhotoStack`]: photostax_core::photo_stack::PhotoStack
+ */
+typedef struct PhotostaxStack PhotostaxStack;
+
+/**
  * Result type for FFI calls.
  *
  * On success, `success` is true and `error_message` is null.
@@ -49,71 +60,26 @@ typedef struct FfiResult {
 } FfiResult;
 
 /**
- * A photo stack returned across FFI.
- *
- * All string pointers are owned by this struct and must be freed by calling
- * [`photostax_stack_free`]. Null pointers indicate absent values.
+ * Array of opaque PhotoStack handles returned from scan/query/search.
  *
  * # Memory Ownership
  *
- * - Caller receives ownership of the entire struct
- * - Call [`photostax_stack_free`] to release all memory
- * - Do not free individual string fields separately
+ * - Caller receives ownership of the entire array and all handles
+ * - Call [`photostax_stack_handle_array_free`] to release all memory
+ * - Do not free individual handles separately after freeing the array
  *
- * [`photostax_stack_free`]: crate::repository::photostax_stack_free
+ * [`photostax_stack_handle_array_free`]: crate::repository::photostax_stack_handle_array_free
  */
-typedef struct FfiPhotoStack {
+typedef struct FfiStackHandleArray {
   /**
-   * Stack identifier (never null). This is an opaque hash.
+   * Pointer to array of stack handle pointers (null if len == 0).
    */
-  char *id;
+  struct PhotostaxStack **handles;
   /**
-   * Human-readable stack name, typically the file stem (never null).
-   */
-  char *name;
-  /**
-   * Subfolder name within the repository (null if root level).
-   */
-  char *folder;
-  /**
-   * Path to original image (null if absent).
-   */
-  char *original;
-  /**
-   * Path to enhanced image (null if absent).
-   */
-  char *enhanced;
-  /**
-   * Path to back image (null if absent).
-   */
-  char *back;
-  /**
-   * JSON-serialized metadata (never null, may be "{}").
-   */
-  char *metadata_json;
-} FfiPhotoStack;
-
-/**
- * Array of photo stacks.
- *
- * # Memory Ownership
- *
- * - Caller receives ownership of the entire array
- * - Call [`photostax_stack_array_free`] to release all memory
- * - Do not free individual stacks separately after freeing the array
- *
- * [`photostax_stack_array_free`]: crate::repository::photostax_stack_array_free
- */
-typedef struct FfiPhotoStackArray {
-  /**
-   * Pointer to array of stacks (null if len == 0).
-   */
-  struct FfiPhotoStack *data;
-  /**
-   * Number of stacks in the array.
+   * Number of handles.
    */
   uintptr_t len;
-} FfiPhotoStackArray;
+} FfiStackHandleArray;
 
 /**
  * C-compatible progress callback function pointer.
@@ -127,25 +93,22 @@ typedef struct FfiPhotoStackArray {
 typedef void (*ScanProgressFn)(int32_t phase, uintptr_t current, uintptr_t total, void *user_data);
 
 /**
- * Paginated result of photo stacks returned across FFI.
- *
- * Contains a page of stacks along with pagination metadata needed
- * for rendering pagination controls in a web UI.
+ * Paginated result of opaque PhotoStack handles.
  *
  * # Memory Ownership
  *
- * - Caller receives ownership of the entire result
- * - Call [`photostax_paginated_result_free`] to release all memory
+ * - Caller receives ownership of the entire result and all handles
+ * - Call [`photostax_paginated_handle_result_free`] to release all memory
  *
- * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ * [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
  */
-typedef struct FfiPaginatedResult {
+typedef struct FfiPaginatedHandleResult {
   /**
-   * Pointer to array of stacks in this page (null if len == 0).
+   * Pointer to array of stack handle pointers (null if len == 0).
    */
-  struct FfiPhotoStack *data;
+  struct PhotostaxStack **handles;
   /**
-   * Number of stacks in this page.
+   * Number of handles in this page.
    */
   uintptr_t len;
   /**
@@ -164,7 +127,16 @@ typedef struct FfiPaginatedResult {
    * Whether there are more items beyond this page.
    */
   bool has_more;
-} FfiPaginatedResult;
+} FfiPaginatedHandleResult;
+
+/**
+ * Image dimensions returned from FFI.
+ */
+typedef struct FfiDimensions {
+  uint32_t width;
+  uint32_t height;
+  bool success;
+} FfiDimensions;
 
 /**
  * A file entry returned by the foreign list_entries callback.
@@ -520,15 +492,15 @@ struct PhotostaxRepo *photostax_repo_open_recursive(const char *path, bool recur
 void photostax_repo_free(struct PhotostaxRepo *repo);
 
 /**
- * Scan the repository and return all photo stacks.
+ * Scan the repository and return all photo stacks as opaque handles.
  *
  * # Safety
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - Returns empty array if `repo` is null or scan fails
- * - Caller owns the returned array and must call [`photostax_stack_array_free`]
+ * - Caller owns the returned array and must call [`photostax_stack_handle_array_free`]
  */
-struct FfiPhotoStackArray photostax_repo_scan(const struct PhotostaxRepo *repo);
+struct FfiStackHandleArray photostax_repo_scan(const struct PhotostaxRepo *repo);
 
 /**
  * Scan with a [`ScannerProfile`] and optional progress callback.
@@ -544,14 +516,15 @@ struct FfiPhotoStackArray photostax_repo_scan(const struct PhotostaxRepo *repo);
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - `callback` and `user_data` must be valid for the duration of the call
- * - Caller owns the returned array and must call [`photostax_stack_array_free`]
+ * - Caller owns the returned array and must call [`photostax_stack_handle_array_free`]
  */
-struct FfiPhotoStackArray photostax_repo_scan_with_progress(const struct PhotostaxRepo *repo,
-                                                            int32_t profile,
-                                                            ScanProgressFn callback,
-                                                            void *user_data);
+struct FfiStackHandleArray photostax_repo_scan_with_progress(const struct PhotostaxRepo *repo,
+                                                             int32_t profile,
+                                                             ScanProgressFn callback,
+                                                             void *user_data);
 
 /**
+ * Look up a single stack by ID and return an opaque handle.
  *
  * # Safety
  *
@@ -560,102 +533,25 @@ struct FfiPhotoStackArray photostax_repo_scan_with_progress(const struct Photost
  * - Returns null if not found or on error
  * - Caller owns the returned pointer and must call [`photostax_stack_free`]
  */
-struct FfiPhotoStack *photostax_repo_get_stack(const struct PhotostaxRepo *repo, const char *id);
+struct PhotostaxStack *photostax_repo_get_stack(const struct PhotostaxRepo *repo, const char *id);
 
 /**
- * Read image bytes from a stack's image variant.
- *
- * The `stack_id` identifies the stack and `variant` selects which image:
- * - `0` = original
- * - `1` = enhanced
- * - `2` = back
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - `out_data` must be a valid pointer to receive the data pointer
- * - `out_len` must be a valid pointer to receive the data length
- * - On success, caller owns `*out_data` and must call [`photostax_bytes_free`]
- */
-struct FfiResult photostax_read_image(const struct PhotostaxRepo *repo,
-                                      const char *stack_id,
-                                      uint8_t **out_data,
-                                      uintptr_t *out_len);
-
-/**
- * Read a specific image variant (original, enhanced, or back) from a stack.
- *
- * # Parameters
- *
- * - `variant`: 0 = original, 1 = enhanced, 2 = back
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - `out_data` must be a valid pointer to receive the data pointer
- * - `out_len` must be a valid pointer to receive the data length
- * - On success, caller owns `*out_data` and must call [`photostax_bytes_free`]
- */
-struct FfiResult photostax_read_image_variant(const struct PhotostaxRepo *repo,
-                                              const char *stack_id,
-                                              int32_t variant,
-                                              uint8_t **out_data,
-                                              uintptr_t *out_len);
-
-/**
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - `metadata_json` must be a valid null-terminated JSON string
- */
-struct FfiResult photostax_write_metadata(const struct PhotostaxRepo *repo,
-                                          const char *stack_id,
-                                          const char *metadata_json);
-
-/**
- * Rotate images in a photo stack by the given number of degrees.
- *
- * Accepted `degrees` values: `90`, `-90`, `180`, `-180`, `270`.
- * The `target` parameter controls which images are rotated:
- * - `0` = all images (original + enhanced + back)
- * - `1` = front only (original + enhanced)
- * - `2` = back only
- *
- * Returns the updated stack with refreshed metadata on success.
- *
- * # Safety
- *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - On success, caller owns the returned pointer and must call [`photostax_stack_free`]
- * - Returns null on error; inspect the result for the error message
- */
-struct FfiPhotoStack *photostax_rotate_stack(const struct PhotostaxRepo *repo,
-                                             const char *stack_id,
-                                             int32_t degrees,
-                                             int32_t target);
-
-/**
- * Scan the repository and return a paginated result.
+ * Scan the repository and return a paginated result of opaque handles.
  *
  * When `load_metadata` is true, EXIF/XMP/sidecar metadata is loaded for each
- * stack in the returned page. When false, stacks contain only paths and
+ * stack before returning. When false, stacks contain only paths and
  * folder-derived metadata (faster for large repositories).
  *
  * # Safety
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - Returns empty result if `repo` is null or scan fails
- * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ * - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
  */
-struct FfiPaginatedResult photostax_repo_scan_paginated(const struct PhotostaxRepo *repo,
-                                                        uintptr_t offset,
-                                                        uintptr_t limit,
-                                                        bool load_metadata);
+struct FfiPaginatedHandleResult photostax_repo_scan_paginated(const struct PhotostaxRepo *repo,
+                                                              uintptr_t offset,
+                                                              uintptr_t limit,
+                                                              bool load_metadata);
 
 /**
  * Unified query: search + paginate the cache in a single call.
@@ -674,12 +570,144 @@ struct FfiPaginatedResult photostax_repo_scan_paginated(const struct PhotostaxRe
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - `query_json`, if non-null, must be a valid null-terminated UTF-8 string
- * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ * - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
  */
-struct FfiPaginatedResult photostax_query(const struct PhotostaxRepo *repo,
-                                          const char *query_json,
-                                          uintptr_t offset,
-                                          uintptr_t limit);
+struct FfiPaginatedHandleResult photostax_query(const struct PhotostaxRepo *repo,
+                                                const char *query_json,
+                                                uintptr_t offset,
+                                                uintptr_t limit);
+
+/**
+ * Return the stack's opaque ID as a C string.
+ *
+ * # Safety
+ *
+ * - `stack` must be a valid pointer from [`photostax_repo_get_stack`] or a handle array
+ * - Returns null if `stack` is null
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ */
+char *photostax_stack_id(const struct PhotostaxStack *stack);
+
+/**
+ * Return the stack's human-readable name as a C string.
+ *
+ * # Safety
+ *
+ * - `stack` must be a valid pointer
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ */
+char *photostax_stack_name(const struct PhotostaxStack *stack);
+
+/**
+ * Return the stack's folder as a C string (null if no folder).
+ *
+ * # Safety
+ *
+ * - `stack` must be a valid pointer
+ * - Caller owns the returned string and must call [`photostax_string_free`]
+ */
+char *photostax_stack_folder(const struct PhotostaxStack *stack);
+
+/**
+ * Check whether an image variant is present in the stack.
+ *
+ * - `variant`: 0 = original, 1 = enhanced, 2 = back
+ *
+ * Returns false if the stack pointer is null or the variant is invalid.
+ */
+bool photostax_stack_image_is_present(const struct PhotostaxStack *stack, int32_t variant);
+
+/**
+ * Check whether an image variant's file handle is still valid.
+ *
+ * Returns false if the stack pointer is null or the variant is invalid.
+ */
+bool photostax_stack_image_is_valid(const struct PhotostaxStack *stack, int32_t variant);
+
+/**
+ * Return the file size of an image variant in bytes, or -1 on error.
+ */
+int64_t photostax_stack_image_size(const struct PhotostaxStack *stack, int32_t variant);
+
+/**
+ * Read image bytes from a stack's image variant.
+ *
+ * On success, `*out_data` and `*out_len` are populated with the image data.
+ * Caller owns the buffer and must free it with [`photostax_bytes_free`].
+ *
+ * - `variant`: 0 = original, 1 = enhanced, 2 = back
+ */
+struct FfiResult photostax_stack_image_read(const struct PhotostaxStack *stack,
+                                            int32_t variant,
+                                            uint8_t **out_data,
+                                            uintptr_t *out_len);
+
+/**
+ * Compute and return the content hash of an image variant.
+ *
+ * The hash is cached after the first computation. Returns null on error.
+ * Caller owns the returned string and must call [`photostax_string_free`].
+ */
+char *photostax_stack_image_hash(const struct PhotostaxStack *stack, int32_t variant);
+
+/**
+ * Return the dimensions (width, height) of an image variant.
+ *
+ * The dimensions are cached after the first computation.
+ * On error, returns `FfiDimensions { width: 0, height: 0, success: false }`.
+ */
+struct FfiDimensions photostax_stack_image_dimensions(const struct PhotostaxStack *stack,
+                                                      int32_t variant);
+
+/**
+ * Rotate an image variant by the given number of degrees.
+ *
+ * Accepted `degrees` values: `90`, `-90`, `180`, `-180`, `270`.
+ */
+struct FfiResult photostax_stack_image_rotate(const struct PhotostaxStack *stack,
+                                              int32_t variant,
+                                              int32_t degrees);
+
+/**
+ * Invalidate cached hash and dimensions for an image variant.
+ */
+void photostax_stack_image_invalidate(const struct PhotostaxStack *stack, int32_t variant);
+
+/**
+ * Check whether metadata has been loaded (cached) for this stack.
+ */
+bool photostax_stack_metadata_is_loaded(const struct PhotostaxStack *stack);
+
+/**
+ * Load metadata from the backing store and return it as a JSON string.
+ *
+ * This triggers a read from disk if the metadata has not been loaded yet.
+ * Returns null on error. Caller owns the returned string and must call
+ * [`photostax_string_free`].
+ */
+char *photostax_stack_metadata_read(const struct PhotostaxStack *stack);
+
+/**
+ * Return cached metadata as a JSON string without triggering a load.
+ *
+ * Returns null if metadata has not been loaded yet or the stack is null.
+ * Caller owns the returned string and must call [`photostax_string_free`].
+ */
+char *photostax_stack_metadata_cached(const struct PhotostaxStack *stack);
+
+/**
+ * Write metadata to the stack's backing store.
+ *
+ * `json` must be a JSON object with optional keys: `exif_tags`, `xmp_tags`,
+ * `custom_tags`.
+ */
+struct FfiResult photostax_stack_metadata_write(const struct PhotostaxStack *stack,
+                                                const char *json);
+
+/**
+ * Invalidate cached metadata, forcing a re-read on next access.
+ */
+void photostax_stack_metadata_invalidate(const struct PhotostaxStack *stack);
 
 /**
  * Create an empty [`StackManager`] with no repositories.
@@ -719,17 +747,6 @@ struct FfiResult photostax_manager_add_repo(struct PhotostaxRepo *mgr,
                                             int32_t profile);
 
 /**
- * Return the number of repositories registered with a [`StackManager`].
- *
- * # Safety
- *
- * - `mgr` must be a valid pointer from [`photostax_manager_new`] or
- *   [`photostax_repo_open`]
- * - Returns 0 if `mgr` is null
- */
-uintptr_t photostax_manager_repo_count(const struct PhotostaxRepo *mgr);
-
-/**
  * Add a foreign (host-language-provided) repository to a [`StackManager`].
  *
  * The host language provides I/O callbacks via [`FfiProviderCallbacks`].
@@ -753,50 +770,50 @@ struct FfiResult photostax_manager_add_foreign_repo(struct PhotostaxRepo *mgr,
                                                     int32_t profile);
 
 /**
- * Load full metadata (EXIF, XMP, sidecar) for a specific stack and return it
- * as a JSON string.
- *
- * This is the lazy-loading counterpart: call after [`photostax_repo_scan`] to
- * retrieve a single stack's metadata on demand.
+ * Return the number of repositories registered with a [`StackManager`].
  *
  * # Safety
  *
- * - `repo` must be a valid pointer from [`photostax_repo_open`]
- * - `stack_id` must be a valid null-terminated UTF-8 string
- * - Returns null on error or if the stack is not found
- * - Caller owns the returned string and must call [`photostax_string_free`]
+ * - `mgr` must be a valid pointer from [`photostax_manager_new`] or
+ *   [`photostax_repo_open`]
+ * - Returns 0 if `mgr` is null
  */
-char *photostax_stack_load_metadata(const struct PhotostaxRepo *repo, const char *stack_id);
+uintptr_t photostax_manager_repo_count(const struct PhotostaxRepo *mgr);
 
 /**
- * Free a paginated result.
+ * Free a single opaque stack handle.
+ *
+ * # Safety
+ *
+ * - `stack` must have been returned by [`photostax_repo_get_stack`] or from a
+ *   handle array, or be null
+ * - After calling, `stack` is invalid and must not be used
+ */
+void photostax_stack_free(struct PhotostaxStack *stack);
+
+/**
+ * Free an array of opaque stack handles.
+ *
+ * This frees every handle in the array and the array itself.
+ *
+ * # Safety
+ *
+ * - `array` must have been returned by [`photostax_repo_scan`] or similar
+ * - After calling, all handles within `array` are invalid
+ */
+void photostax_stack_handle_array_free(struct FfiStackHandleArray array);
+
+/**
+ * Free a paginated handle result.
+ *
+ * This frees every handle in the result and the array itself.
  *
  * # Safety
  *
  * - `result` must have been returned by a paginated FFI function
- * - After calling, all pointers within `result` are invalid
+ * - After calling, all handles within `result` are invalid
  */
-void photostax_paginated_result_free(struct FfiPaginatedResult result);
-
-/**
- * Free a photo stack array.
- *
- * # Safety
- *
- * - `array` must have been returned by an FFI function (e.g., [`photostax_repo_scan`])
- * - After calling, all pointers within `array` are invalid
- */
-void photostax_stack_array_free(struct FfiPhotoStackArray array);
-
-/**
- * Free a single photo stack.
- *
- * # Safety
- *
- * - `stack` must have been returned by [`photostax_repo_get_stack`]
- * - After calling, `stack` and all its strings are invalid
- */
-void photostax_stack_free(struct FfiPhotoStack *stack);
+void photostax_paginated_handle_result_free(struct FfiPaginatedHandleResult result);
 
 /**
  * Free a string allocated by photostax.
@@ -840,13 +857,13 @@ void photostax_bytes_free(uint8_t *data, uintptr_t len);
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - `query_json` must be a valid null-terminated JSON string
  * - Returns empty array on null pointers or errors
- * - Caller owns the returned array and must call [`photostax_stack_array_free`]
+ * - Caller owns the returned array and must call [`photostax_stack_handle_array_free`]
  *
  * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- * [`photostax_stack_array_free`]: crate::repository::photostax_stack_array_free
+ * [`photostax_stack_handle_array_free`]: crate::repository::photostax_stack_handle_array_free
  */
-struct FfiPhotoStackArray photostax_search(const struct PhotostaxRepo *repo,
-                                           const char *query_json);
+struct FfiStackHandleArray photostax_search(const struct PhotostaxRepo *repo,
+                                            const char *query_json);
 
 /**
  * Search/filter stacks with pagination. `query_json` is a JSON-serialized SearchQuery.
@@ -860,15 +877,15 @@ struct FfiPhotoStackArray photostax_search(const struct PhotostaxRepo *repo,
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - `query_json` must be a valid null-terminated JSON string
  * - Returns empty result on null pointers or errors
- * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ * - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
  *
  * [`photostax_repo_open`]: crate::repository::photostax_repo_open
- * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ * [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
  */
-struct FfiPaginatedResult photostax_search_paginated(const struct PhotostaxRepo *repo,
-                                                     const char *query_json,
-                                                     uintptr_t offset,
-                                                     uintptr_t limit);
+struct FfiPaginatedHandleResult photostax_search_paginated(const struct PhotostaxRepo *repo,
+                                                           const char *query_json,
+                                                           uintptr_t offset,
+                                                           uintptr_t limit);
 
 /**
  * Create a snapshot from a lightweight scan (no file-based metadata).
@@ -930,13 +947,13 @@ uintptr_t photostax_snapshot_total_count(const struct PhotostaxSnapshot *snapsho
  *
  * - `snapshot` must be a valid pointer from [`photostax_create_snapshot`]
  * - Returns empty result on null pointer
- * - Caller owns the returned result and must call [`photostax_paginated_result_free`]
+ * - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
  *
- * [`photostax_paginated_result_free`]: crate::repository::photostax_paginated_result_free
+ * [`photostax_paginated_handle_result_free`]: crate::repository::photostax_paginated_handle_result_free
  */
-struct FfiPaginatedResult photostax_snapshot_get_page(const struct PhotostaxSnapshot *snapshot,
-                                                      uintptr_t offset,
-                                                      uintptr_t limit);
+struct FfiPaginatedHandleResult photostax_snapshot_get_page(const struct PhotostaxSnapshot *snapshot,
+                                                            uintptr_t offset,
+                                                            uintptr_t limit);
 
 /**
  * Check whether a snapshot is still current.
