@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PackageId>Photostax</PackageId>
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
     <Authors>JeromySt</Authors>
     <Description>Unified photo stack library for Epson FastFoto repositories - .NET binding</Description>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>

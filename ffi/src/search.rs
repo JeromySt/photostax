@@ -164,18 +164,21 @@ pub unsafe extern "C" fn photostax_search(
         }
 
         // Apply the filter using query()
-        let filtered = match mgr.query(Some(&query), None) {
+        let filtered = match mgr.query(Some(&query), None, None) {
             Ok(snap) => snap,
             Err(_) => return FfiPhotoStackArray::empty(),
         };
         drop(mgr);
 
-        if filtered.stacks().is_empty() {
+        if filtered.all_stacks().is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> =
-            filtered.stacks().iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> = filtered
+            .all_stacks()
+            .iter()
+            .map(photo_stack_to_ffi)
+            .collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -271,13 +274,13 @@ pub unsafe extern "C" fn photostax_search_paginated(
             }
         }
 
-        let snapshot = match mgr.query(Some(&query), None) {
+        let snapshot = match mgr.query(Some(&query), None, None) {
             Ok(snap) => snap,
             Err(_) => return FfiPaginatedResult::empty(offset, limit),
         };
         drop(mgr);
 
-        let paginated = snapshot.get_page(offset, limit);
+        let paginated = snapshot.snapshot().get_page(offset, limit);
 
         if paginated.items.is_empty() {
             return FfiPaginatedResult {

@@ -474,7 +474,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "photostax-core"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "image",
  "img-parts",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "photostax-napi"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "napi",
  "napi-build",

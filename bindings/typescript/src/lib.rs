@@ -569,10 +569,10 @@ impl PhotostaxRepository {
     pub fn scan(&self) -> napi::Result<Vec<JsPhotoStack>> {
         let mut mgr = self.inner.borrow_mut();
         let snapshot = mgr
-            .query(None, None)
+            .query(None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(snapshot
-            .stacks()
+            .all_stacks()
             .iter()
             .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .collect())
@@ -631,10 +631,10 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.set_profile(scanner_profile);
         let snapshot = mgr
-            .query(None, progress)
+            .query(None, None, progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(snapshot
-            .stacks()
+            .all_stacks()
             .iter()
             .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .collect())
@@ -659,10 +659,10 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr
-            .query(None, None)
+            .query(None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(snapshot
-            .stacks()
+            .all_stacks()
             .iter()
             .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .collect())
@@ -703,12 +703,12 @@ impl PhotostaxRepository {
         }
         let core_query: CoreSearchQuery = query.into();
         let snapshot = mgr
-            .query(Some(&core_query), None)
+            .query(Some(&core_query), None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         drop(mgr);
 
         Ok(snapshot
-            .stacks()
+            .all_stacks()
             .iter()
             .map(|s| JsPhotoStack::from_core(&self.inner, s))
             .collect())
@@ -739,11 +739,11 @@ impl PhotostaxRepository {
         let off = offset.unwrap_or(0) as usize;
         let lim = limit.unwrap_or(0) as usize;
         let snapshot = mgr
-            .query(Some(&core_query), None)
+            .query(Some(&core_query), None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let total = snapshot.total_count();
         let effective_limit = if lim > 0 { lim } else { total.max(1) };
-        let paginated = snapshot.get_page(off, effective_limit);
+        let paginated = snapshot.snapshot().get_page(off, effective_limit);
         drop(mgr);
 
         Ok(JsPaginatedResult {
@@ -782,9 +782,9 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr
-            .query(None, None)
+            .query(None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let paginated = snapshot.get_page(offset as usize, limit as usize);
+        let paginated = snapshot.snapshot().get_page(offset as usize, limit as usize);
         drop(mgr);
 
         Ok(JsPaginatedResult {
@@ -823,9 +823,9 @@ impl PhotostaxRepository {
 
         let core_query: CoreSearchQuery = query.into();
         let snapshot = mgr
-            .query(Some(&core_query), None)
+            .query(Some(&core_query), None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let paginated = snapshot.get_page(offset as usize, limit as usize);
+        let paginated = snapshot.snapshot().get_page(offset as usize, limit as usize);
         drop(mgr);
 
         Ok(JsPaginatedResult {
@@ -1039,10 +1039,10 @@ impl JsScanSnapshot {
 fn mgr_scan(mgr: &Rc<std::cell::RefCell<StackManager>>) -> napi::Result<Vec<JsPhotoStack>> {
     let mut m = mgr.borrow_mut();
     let snapshot = m
-        .query(None, None)
+        .query(None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(snapshot
-        .stacks()
+        .all_stacks()
         .iter()
         .map(|s| JsPhotoStack::from_core(mgr, s))
         .collect())
@@ -1061,10 +1061,10 @@ fn mgr_scan_with_metadata(
         }
     }
     let snapshot = m
-        .query(None, None)
+        .query(None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(snapshot
-        .stacks()
+        .all_stacks()
         .iter()
         .map(|s| JsPhotoStack::from_core(mgr, s))
         .collect())
@@ -1098,11 +1098,11 @@ fn mgr_query(
     let off = offset.unwrap_or(0) as usize;
     let lim = limit.unwrap_or(0) as usize;
     let snapshot = m
-        .query(Some(&core_query), None)
+        .query(Some(&core_query), None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let total = snapshot.total_count();
     let effective_limit = if lim > 0 { lim } else { total.max(1) };
-    let paginated = snapshot.get_page(off, effective_limit);
+    let paginated = snapshot.snapshot().get_page(off, effective_limit);
     drop(m);
 
     Ok(JsPaginatedResult {

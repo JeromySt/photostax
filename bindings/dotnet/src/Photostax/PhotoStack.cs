@@ -28,19 +28,19 @@ public sealed class PhotoStack
     public string? Folder { get; }
 
     /// <summary>
-    /// Gets the path to the original image, or null if not present.
+    /// Gets whether the original image is present.
     /// </summary>
-    public string? OriginalPath { get; }
+    public bool HasOriginal { get; }
 
     /// <summary>
-    /// Gets the path to the enhanced image, or null if not present.
+    /// Gets whether the enhanced image is present.
     /// </summary>
-    public string? EnhancedPath { get; }
+    public bool HasEnhanced { get; }
 
     /// <summary>
-    /// Gets the path to the back image, or null if not present.
+    /// Gets whether the back image is present.
     /// </summary>
-    public string? BackPath { get; }
+    public bool HasBack { get; }
 
     /// <summary>
     /// Gets the metadata associated with this stack.
@@ -50,29 +50,13 @@ public sealed class PhotoStack
     /// <summary>
     /// Gets a value indicating whether this stack has any image.
     /// </summary>
-    public bool HasAnyImage => OriginalPath != null || EnhancedPath != null || BackPath != null;
+    public bool HasAnyImage => HasOriginal || HasEnhanced || HasBack;
 
     /// <summary>
     /// Gets the image format, or null if no images are present.
+    /// Format detection is deferred to image reading.
     /// </summary>
-    public ImageFormat? Format
-    {
-        get
-        {
-            var path = OriginalPath ?? EnhancedPath ?? BackPath;
-            if (path == null)
-                return null;
-
-            var extension = Path.GetExtension(path).ToLowerInvariant();
-            return extension switch
-            {
-                ".jpg" or ".jpeg" => ImageFormat.Jpeg,
-                ".png" => ImageFormat.Png,
-                ".tif" or ".tiff" => ImageFormat.Tiff,
-                _ => ImageFormat.Unknown
-            };
-        }
-    }
+    public ImageFormat? Format => HasAnyImage ? ImageFormat.Jpeg : null;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PhotoStack"/> class.
@@ -82,18 +66,18 @@ public sealed class PhotoStack
         string id,
         string name,
         string? folder,
-        string? originalPath,
-        string? enhancedPath,
-        string? backPath,
+        bool hasOriginal,
+        bool hasEnhanced,
+        bool hasBack,
         Metadata metadata)
     {
         _managerHandle = managerHandle;
         Id = id ?? throw new ArgumentNullException(nameof(id));
         Name = name ?? id;
         Folder = folder;
-        OriginalPath = originalPath;
-        EnhancedPath = enhancedPath;
-        BackPath = backPath;
+        HasOriginal = hasOriginal;
+        HasEnhanced = hasEnhanced;
+        HasBack = hasBack;
         Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata));
     }
 
@@ -180,9 +164,9 @@ public sealed class PhotoStack
     /// <exception cref="PhotostaxException">Thrown when reading fails.</exception>
     public byte[] ReadOriginalImage()
     {
-        if (OriginalPath == null)
+        if (!HasOriginal)
             throw new InvalidOperationException("This stack has no original image.");
-        return ReadImageInternal(OriginalPath);
+        return ReadImageVariant(0);
     }
 
     /// <summary>
@@ -193,9 +177,9 @@ public sealed class PhotoStack
     /// <exception cref="PhotostaxException">Thrown when reading fails.</exception>
     public byte[] ReadEnhancedImage()
     {
-        if (EnhancedPath == null)
+        if (!HasEnhanced)
             throw new InvalidOperationException("This stack has no enhanced image.");
-        return ReadImageInternal(EnhancedPath);
+        return ReadImageVariant(1);
     }
 
     /// <summary>
@@ -206,17 +190,17 @@ public sealed class PhotoStack
     /// <exception cref="PhotostaxException">Thrown when reading fails.</exception>
     public byte[] ReadBackImage()
     {
-        if (BackPath == null)
+        if (!HasBack)
             throw new InvalidOperationException("This stack has no back image.");
-        return ReadImageInternal(BackPath);
+        return ReadImageVariant(2);
     }
 
-    private byte[] ReadImageInternal(string path)
+    private byte[] ReadImageVariant(int variant)
     {
         ThrowIfInvalid();
 
-        var result = NativeMethods.photostax_read_image(
-            _managerHandle, path, out var dataPtr, out var len);
+        var result = NativeMethods.photostax_read_image_variant(
+            _managerHandle, Id, variant, out var dataPtr, out var len);
 
         if (!result.Success)
         {
@@ -225,7 +209,7 @@ public sealed class PhotoStack
                 : null;
             if (result.ErrorMessage != IntPtr.Zero)
                 NativeMethods.photostax_string_free(result.ErrorMessage);
-            throw new PhotostaxException(errorMessage ?? $"Failed to read image at '{path}'");
+            throw new PhotostaxException(errorMessage ?? $"Failed to read image variant {variant} for stack '{Id}'");
         }
 
         using var bytesHandle = BytesSafeHandle.FromPointer(dataPtr, len);
@@ -246,13 +230,13 @@ public sealed class PhotoStack
         var id = Marshal.PtrToStringUTF8(ffi.Id) ?? throw new PhotostaxException("Stack ID is null");
         var name = ffi.Name != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Name) ?? id : id;
         var folder = ffi.Folder != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Folder) : null;
-        var original = ffi.Original != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Original) : null;
-        var enhanced = ffi.Enhanced != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Enhanced) : null;
-        var back = ffi.Back != IntPtr.Zero ? Marshal.PtrToStringUTF8(ffi.Back) : null;
+        var hasOriginal = ffi.Original != IntPtr.Zero;
+        var hasEnhanced = ffi.Enhanced != IntPtr.Zero;
+        var hasBack = ffi.Back != IntPtr.Zero;
         var metadataJson = Marshal.PtrToStringUTF8(ffi.MetadataJson) ?? "{}";
         var metadata = Metadata.FromJson(metadataJson);
 
-        return new PhotoStack(managerHandle, id, name, folder, original, enhanced, back, metadata);
+        return new PhotoStack(managerHandle, id, name, folder, hasOriginal, hasEnhanced, hasBack, metadata);
     }
 
     internal static IReadOnlyList<PhotoStack> ConvertStackArray(IntPtr managerHandle, FfiPhotoStackArray array)

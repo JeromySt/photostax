@@ -80,7 +80,7 @@ public class PaginatedResultTests
     [Fact]
     public void WorksWithPhotoStackType()
     {
-        var stack = new PhotoStack(IntPtr.Zero, "test-001", "test-001", null, "/orig.jpg", null, null, new Metadata());
+        var stack = new PhotoStack(IntPtr.Zero, "test-001", "test-001", null, true, false, false, new Metadata());
         var items = new[] { stack };
 
         var result = new PaginatedResult<PhotoStack>(items, totalCount: 1, offset: 0, limit: 10, hasMore: false);

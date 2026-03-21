@@ -497,14 +497,14 @@ pub fn cmd_scan(
                 let _ = s.metadata.read();
             }
         }
-    } else if let Err(e) = mgr.query(None, Some(&mut progress_cb)) {
+    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb)) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None)
+        .query(None, None, None)
         .expect("cache already populated")
-        .stacks()
+        .all_stacks()
         .to_vec();
     let filtered: Vec<_> = stacks
         .into_iter()
@@ -602,14 +602,14 @@ pub fn cmd_search(
 
     // Apply pagination if limit > 0
     if limit > 0 {
-        let snapshot = match mgr.query(Some(&search), None) {
+        let snapshot = match mgr.query(Some(&search), None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
                 return EXIT_ERROR;
             }
         };
-        let paginated = snapshot.get_page(offset, limit);
+        let paginated = snapshot.snapshot().get_page(offset, limit);
         output_stacks(out, &paginated.items, format, false, directory);
         if format == OutputFormat::Json {
             let _ = writeln!(
@@ -632,14 +632,14 @@ pub fn cmd_search(
             );
         }
     } else {
-        let results = match mgr.query(Some(&search), None) {
+        let results = match mgr.query(Some(&search), None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
                 return EXIT_ERROR;
             }
         };
-        output_stacks(out, results.stacks(), format, false, directory);
+        output_stacks(out, results.all_stacks(), format, false, directory);
     }
     EXIT_SUCCESS
 }
@@ -661,10 +661,10 @@ fn resolve_stack(
     // Fall back: find by name
     let query = SearchQuery::new().with_text(id_or_name);
     let results = mgr
-        .query(Some(&query), None)
+        .query(Some(&query), None, None)
         .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     let found = results
-        .stacks()
+        .all_stacks()
         .iter()
         .find(|s| s.name == id_or_name)
         .cloned();
@@ -886,9 +886,9 @@ pub fn cmd_export(
         }
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None)
+        .query(None, None, None)
         .expect("cache already populated")
-        .stacks()
+        .all_stacks()
         .to_vec();
 
     let json = serde_json::to_string_pretty(&stacks_to_json(&stacks)).unwrap();

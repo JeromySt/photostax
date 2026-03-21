@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-03-21
+
+### Added
+- **QueryResult pagination type** — `query()` now accepts an optional `page_size` parameter and returns a `QueryResult` with cursor-based pagination: `current_page()`, `get_page(n)`, `next_page()`, `prev_page()`, `next_stack()` (auto-paging iterator)
+- **Variant-based image reading (FFI)** — new `photostax_read_image_variant(repo, stack_id, variant)` function for reading images by variant index (0=original, 1=enhanced, 2=back)
+
+### Fixed
+- **.NET image reading** — `ReadOriginalImage()`/`ReadEnhancedImage()`/`ReadBackImage()` now use variant-based FFI instead of broken path-based reading that returned "Stack not found: present"
+- **.NET PhotoStack properties** — replaced `OriginalPath`/`EnhancedPath`/`BackPath` string properties with `HasOriginal`/`HasEnhanced`/`HasBack` boolean properties
+
+### Changed
+- `StackManager::query()` signature now takes `page_size: Option<usize>` instead of `pagination: Option<&PaginationParams>` — pass `None` for all results in one page
+
+## [0.4.2] - 2026-03-21
+
+### Fixed
+- Scanner profile parameter now correctly applied in snapshot rescan (`ffi/src/snapshot.rs`)
+
+## [0.4.1] - 2026-03-21
+
+### Fixed
+- Scanner profile parameter now correctly applied in repository scan (`ffi/src/repository.rs`, `bindings/typescript/src/lib.rs`)
+
 ## [0.4.0] - 2026-03-20
 
 ### ⚠️ BREAKING CHANGES

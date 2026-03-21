@@ -131,7 +131,7 @@ public sealed class PhotostaxRepository : IDisposable
             foreach (var stack in stacks)
             {
                 var metadata = LoadMetadataCore(stack.Id);
-                result.Add(new PhotoStack(_handle.DangerousGetHandle(), stack.Id, stack.Name, stack.Folder, stack.OriginalPath, stack.EnhancedPath, stack.BackPath, metadata ?? stack.Metadata));
+                result.Add(new PhotoStack(_handle.DangerousGetHandle(), stack.Id, stack.Name, stack.Folder, stack.HasOriginal, stack.HasEnhanced, stack.HasBack, metadata ?? stack.Metadata));
             }
             return result;
         }

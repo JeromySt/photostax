@@ -15,6 +15,7 @@ use crate::classifier::{DefaultClassifier, ImageClassifier};
 use crate::events::{CacheEvent, FileVariant, StackEvent};
 use crate::image_handle::ImageRef;
 use crate::photo_stack::{PhotoStack, ScanProgress, ScannerProfile};
+use crate::query_result::QueryResult;
 use crate::repository::{Repository, RepositoryError};
 use crate::search::SearchQuery;
 use crate::snapshot::ScanSnapshot;
@@ -198,7 +199,7 @@ impl StackManager {
         self.all_stacks()
     }
 
-    /// Query the cache with optional filtering, returning a [`ScanSnapshot`].
+    /// Query the cache with optional filtering, returning a [`QueryResult`].
     ///
     /// This is the **primary entry point** for retrieving stacks. If the
     /// cache is empty (no scan has been performed yet), it automatically
@@ -207,9 +208,8 @@ impl StackManager {
     ///
     /// - `query: None` = scan + return all stacks
     /// - `query: Some(&SearchQuery)` = scan (if needed) + filter + return matching
-    ///
-    /// The returned [`ScanSnapshot`] supports pagination via
-    /// [`get_page(offset, limit)`](ScanSnapshot::get_page).
+    /// - `page_size: None` = single page with all results (`usize::MAX`)
+    /// - `page_size: Some(n)` = paginate into pages of `n` stacks
     ///
     /// # Examples
     ///
@@ -218,20 +218,23 @@ impl StackManager {
     /// # use photostax_core::search::SearchQuery;
     /// # let mut mgr = StackManager::new();
     /// // All stacks (auto-scans on first call)
-    /// let snap = mgr.query(None, None).unwrap();
+    /// let result = mgr.query(None, None, None).unwrap();
     ///
-    /// // Filtered + progress feedback
+    /// // Filtered + paginated + progress feedback
     /// let query = SearchQuery::new().with_has_back(true);
-    /// let snap = mgr.query(Some(&query), Some(&mut |p| {
+    /// let mut result = mgr.query(Some(&query), Some(20), Some(&mut |p| {
     ///     println!("Phase {:?}: {}/{}", p.phase, p.current, p.total);
     /// })).unwrap();
-    /// let page1 = snap.get_page(0, 20);
+    /// for stack in result.current_page() {
+    ///     println!("{}", stack.name);
+    /// }
     /// ```
     pub fn query(
         &mut self,
         query: Option<&SearchQuery>,
+        page_size: Option<usize>,
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
-    ) -> Result<ScanSnapshot, StackManagerError> {
+    ) -> Result<QueryResult, StackManagerError> {
         // Auto-scan if cache is empty and we have repos
         if self.cache.is_empty() && !self.repos.is_empty() {
             self.scan_repos(progress)?;
@@ -248,7 +251,10 @@ impl StackManager {
             .cloned()
             .collect();
 
-        Ok(ScanSnapshot::from_stacks(filtered))
+        Ok(QueryResult::new(
+            ScanSnapshot::from_stacks(filtered),
+            page_size.unwrap_or(usize::MAX),
+        ))
     }
 
     /// Force a rescan of all repositories, replacing the cache.
@@ -1043,9 +1049,9 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
         mgr.rescan(None).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
         assert_eq!(snap.total_count(), 3);
-        assert_eq!(snap.stacks().len(), 3);
+        assert_eq!(snap.all_stacks().len(), 3);
     }
 
     #[test]
@@ -1067,19 +1073,19 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
         mgr.rescan(None).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
         assert_eq!(snap.total_count(), 5);
 
-        let page1 = snap.get_page(0, 2);
+        let page1 = snap.snapshot().get_page(0, 2);
         assert_eq!(page1.items.len(), 2);
         assert_eq!(page1.total_count, 5);
         assert!(page1.has_more);
 
-        let page2 = snap.get_page(2, 2);
+        let page2 = snap.snapshot().get_page(2, 2);
         assert_eq!(page2.items.len(), 2);
         assert!(page2.has_more);
 
-        let page3 = snap.get_page(4, 2);
+        let page3 = snap.snapshot().get_page(4, 2);
         assert_eq!(page3.items.len(), 1);
         assert!(!page3.has_more);
     }
@@ -1095,9 +1101,9 @@ mod tests {
         mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(Some(&query), None).unwrap();
+        let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
-        assert_eq!(snap.stacks()[0].name, "IMG_001");
+        assert_eq!(snap.all_stacks()[0].name, "IMG_001");
     }
 
     #[test]
@@ -1122,10 +1128,10 @@ mod tests {
         mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(Some(&query), None).unwrap();
+        let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 3);
 
-        let page = snap.get_page(0, 2);
+        let page = snap.snapshot().get_page(0, 2);
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total_count, 3);
         assert!(page.has_more);
@@ -1134,9 +1140,9 @@ mod tests {
     #[test]
     fn query_empty_cache() {
         let mut mgr = StackManager::new();
-        let snap = mgr.query(Some(&SearchQuery::new()), None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
         assert_eq!(snap.total_count(), 0);
-        assert!(snap.stacks().is_empty());
+        assert!(snap.all_stacks().is_empty());
     }
 
     #[test]
@@ -1149,7 +1155,7 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         // Do NOT call rescan(); query should auto-scan
-        let snap = mgr.query(None, None).unwrap();
+        let snap = mgr.query(None, None, None).unwrap();
         assert!(snap.total_count() > 0);
         assert_eq!(snap.total_count(), 2);
     }
@@ -1165,9 +1171,9 @@ mod tests {
         mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_text("IMG_001");
-        let snap = mgr.query(Some(&query), None).unwrap();
+        let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
-        assert_eq!(snap.stacks()[0].name, "IMG_001");
+        assert_eq!(snap.all_stacks()[0].name, "IMG_001");
     }
 
     #[test]
@@ -1182,6 +1188,7 @@ mod tests {
         let mut call_count = 0usize;
         let snap = mgr
             .query(
+                None,
                 None,
                 Some(&mut |_p: &ScanProgress| {
                     call_count += 1;
