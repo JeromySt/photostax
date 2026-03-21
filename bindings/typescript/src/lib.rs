@@ -601,7 +601,7 @@ impl PhotostaxRepository {
         profile: Option<String>,
         callback: Option<JsFunction>,
     ) -> napi::Result<Vec<JsPhotoStack>> {
-        let _scanner_profile = match profile.as_deref() {
+        let scanner_profile = match profile.as_deref() {
             Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
             Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
             Some("original_only") => CoreScannerProfile::OriginalOnly,
@@ -629,6 +629,7 @@ impl PhotostaxRepository {
             };
 
         let mut mgr = self.inner.borrow_mut();
+        mgr.set_profile(scanner_profile);
         let snapshot = mgr
             .query(None, progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
@@ -885,7 +886,7 @@ impl PhotostaxRepository {
         load_metadata: Option<bool>,
         callback: Option<JsFunction>,
     ) -> napi::Result<JsScanSnapshot> {
-        let _scanner_profile = match profile.as_deref() {
+        let scanner_profile = match profile.as_deref() {
             Some("enhanced_and_back") => CoreScannerProfile::EnhancedAndBack,
             Some("enhanced_only") => CoreScannerProfile::EnhancedOnly,
             Some("original_only") => CoreScannerProfile::OriginalOnly,
@@ -913,6 +914,7 @@ impl PhotostaxRepository {
             };
 
         let mut mgr = self.inner.borrow_mut();
+        mgr.set_profile(scanner_profile);
         mgr.rescan(progress)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         if load_metadata.unwrap_or(false) {
