@@ -11,14 +11,14 @@ public class PhotoStackTests
     public void Constructor_NullId_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new PhotoStack(IntPtr.Zero, null!, "name", null, null, null, null, new Metadata()));
+            new PhotoStack(IntPtr.Zero, null!, "name", null, false, false, false, new Metadata()));
     }
 
     [Fact]
     public void Constructor_NullMetadata_ThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new PhotoStack(IntPtr.Zero, "id", "name", null, null, null, null, null!));
+            new PhotoStack(IntPtr.Zero, "id", "name", null, false, false, false, null!));
     }
 
     [Fact]
@@ -30,27 +30,27 @@ public class PhotoStackTests
     }
 
     [Fact]
-    public void Constructor_SetsOriginalPathCorrectly()
+    public void Constructor_SetsHasOriginalCorrectly()
     {
-        var stack = CreateStack("id", originalPath: "/path/to/original.jpg");
+        var stack = CreateStack("id", hasOriginal: true);
 
-        Assert.Equal("/path/to/original.jpg", stack.OriginalPath);
+        Assert.True(stack.HasOriginal);
     }
 
     [Fact]
-    public void Constructor_SetsEnhancedPathCorrectly()
+    public void Constructor_SetsHasEnhancedCorrectly()
     {
-        var stack = CreateStack("id", enhancedPath: "/path/to/enhanced.jpg");
+        var stack = CreateStack("id", hasEnhanced: true);
 
-        Assert.Equal("/path/to/enhanced.jpg", stack.EnhancedPath);
+        Assert.True(stack.HasEnhanced);
     }
 
     [Fact]
-    public void Constructor_SetsBackPathCorrectly()
+    public void Constructor_SetsHasBackCorrectly()
     {
-        var stack = CreateStack("id", backPath: "/path/to/back.jpg");
+        var stack = CreateStack("id", hasBack: true);
 
-        Assert.Equal("/path/to/back.jpg", stack.BackPath);
+        Assert.True(stack.HasBack);
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public class PhotoStackTests
     [Fact]
     public void HasAnyImage_WithOriginal_ReturnsTrue()
     {
-        var stack = CreateStack("id", originalPath: "/path/original.jpg");
+        var stack = CreateStack("id", hasOriginal: true);
 
         Assert.True(stack.HasAnyImage);
     }
@@ -82,7 +82,7 @@ public class PhotoStackTests
     [Fact]
     public void HasAnyImage_WithEnhanced_ReturnsTrue()
     {
-        var stack = CreateStack("id", enhancedPath: "/path/enhanced.jpg");
+        var stack = CreateStack("id", hasEnhanced: true);
 
         Assert.True(stack.HasAnyImage);
     }
@@ -90,7 +90,7 @@ public class PhotoStackTests
     [Fact]
     public void HasAnyImage_WithBack_ReturnsTrue()
     {
-        var stack = CreateStack("id", backPath: "/path/back.jpg");
+        var stack = CreateStack("id", hasBack: true);
 
         Assert.True(stack.HasAnyImage);
     }
@@ -98,10 +98,7 @@ public class PhotoStackTests
     [Fact]
     public void HasAnyImage_WithAllImages_ReturnsTrue()
     {
-        var stack = CreateStack("id",
-            originalPath: "/path/original.jpg",
-            enhancedPath: "/path/enhanced.jpg",
-            backPath: "/path/back.jpg");
+        var stack = CreateStack("id", hasOriginal: true, hasEnhanced: true, hasBack: true);
 
         Assert.True(stack.HasAnyImage);
     }
@@ -115,93 +112,18 @@ public class PhotoStackTests
     }
 
     [Fact]
-    public void Format_JpgExtension_ReturnsJpeg()
+    public void Format_WithImage_ReturnsJpeg()
     {
-        var stack = CreateStack("id", originalPath: "/path/image.jpg");
-
-        Assert.Equal(ImageFormat.Jpeg, stack.Format);
-    }
-
-    [Fact]
-    public void Format_JpegExtension_ReturnsJpeg()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.jpeg");
-
-        Assert.Equal(ImageFormat.Jpeg, stack.Format);
-    }
-
-    [Fact]
-    public void Format_JpgUpperCase_ReturnsJpeg()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.JPG");
-
-        Assert.Equal(ImageFormat.Jpeg, stack.Format);
-    }
-
-    [Fact]
-    public void Format_PngExtension_ReturnsPng()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.png");
-
-        Assert.Equal(ImageFormat.Png, stack.Format);
-    }
-
-    [Fact]
-    public void Format_TifExtension_ReturnsTiff()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.tif");
-
-        Assert.Equal(ImageFormat.Tiff, stack.Format);
-    }
-
-    [Fact]
-    public void Format_TiffExtension_ReturnsTiff()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.tiff");
-
-        Assert.Equal(ImageFormat.Tiff, stack.Format);
-    }
-
-    [Fact]
-    public void Format_UnknownExtension_ReturnsUnknown()
-    {
-        var stack = CreateStack("id", originalPath: "/path/image.bmp");
-
-        Assert.Equal(ImageFormat.Unknown, stack.Format);
-    }
-
-    [Fact]
-    public void Format_NoOriginal_UsesEnhanced()
-    {
-        var stack = CreateStack("id", enhancedPath: "/path/enhanced.png");
-
-        Assert.Equal(ImageFormat.Png, stack.Format);
-    }
-
-    [Fact]
-    public void Format_NoOriginalOrEnhanced_UsesBack()
-    {
-        var stack = CreateStack("id", backPath: "/path/back.tiff");
-
-        Assert.Equal(ImageFormat.Tiff, stack.Format);
-    }
-
-    [Fact]
-    public void Format_PrioritizesOriginal()
-    {
-        var stack = CreateStack("id",
-            originalPath: "/path/original.jpg",
-            enhancedPath: "/path/enhanced.png",
-            backPath: "/path/back.tiff");
+        var stack = CreateStack("id", hasOriginal: true);
 
         Assert.Equal(ImageFormat.Jpeg, stack.Format);
     }
 
     private static PhotoStack CreateStack(
         string id,
-        string? originalPath = null,
-        string? enhancedPath = null,
-        string? backPath = null,
+        bool hasOriginal = false,
+        bool hasEnhanced = false,
+        bool hasBack = false,
         Metadata? metadata = null)
     {
         return new PhotoStack(
@@ -209,9 +131,9 @@ public class PhotoStackTests
             id,
             id,
             null,
-            originalPath,
-            enhancedPath,
-            backPath,
+            hasOriginal,
+            hasEnhanced,
+            hasBack,
             metadata ?? new Metadata());
     }
 }

@@ -178,6 +178,18 @@ internal static partial class NativeMethods
         out nuint outLen);
 
     /// <summary>
+    /// Read a specific image variant by stack ID.
+    /// variant: 0 = original, 1 = enhanced, 2 = back.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_read_image_variant(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
+        int variant,
+        out IntPtr outData,
+        out nuint outLen);
+
+    /// <summary>
     /// Write metadata to a stack.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

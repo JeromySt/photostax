@@ -584,7 +584,27 @@ struct FfiResult photostax_read_image(const struct PhotostaxRepo *repo,
                                       uintptr_t *out_len);
 
 /**
- * Write metadata to a stack.
+ * Read a specific image variant (original, enhanced, or back) from a stack.
+ *
+ * # Parameters
+ *
+ * - `variant`: 0 = original, 1 = enhanced, 2 = back
+ *
+ * # Safety
+ *
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` must be a valid null-terminated UTF-8 string
+ * - `out_data` must be a valid pointer to receive the data pointer
+ * - `out_len` must be a valid pointer to receive the data length
+ * - On success, caller owns `*out_data` and must call [`photostax_bytes_free`]
+ */
+struct FfiResult photostax_read_image_variant(const struct PhotostaxRepo *repo,
+                                              const char *stack_id,
+                                              int32_t variant,
+                                              uint8_t **out_data,
+                                              uintptr_t *out_len);
+
+/**
  *
  * # Safety
  *

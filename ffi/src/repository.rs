@@ -197,17 +197,18 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiP
 
         let repo_ref = unsafe { &*repo };
         let mut mgr = repo_ref.inner.borrow_mut();
-        let all = match mgr.query(None, None) {
+        let all = match mgr.query(None, None, None) {
             Ok(snap) => snap,
             Err(_) => return FfiPhotoStackArray::empty(),
         };
         drop(mgr);
 
-        if all.stacks().is_empty() {
+        if all.all_stacks().is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = all.stacks().iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> =
+            all.all_stacks().iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -260,17 +261,18 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
 
         let mut mgr = repo_ref.inner.borrow_mut();
         mgr.set_profile(scanner_profile);
-        let all = match mgr.query(None, progress) {
+        let all = match mgr.query(None, None, progress) {
             Ok(snap) => snap,
             Err(_) => return FfiPhotoStackArray::empty(),
         };
         drop(mgr);
 
-        if all.stacks().is_empty() {
+        if all.all_stacks().is_empty() {
             return FfiPhotoStackArray::empty();
         }
 
-        let ffi_stacks: Vec<FfiPhotoStack> = all.stacks().iter().map(photo_stack_to_ffi).collect();
+        let ffi_stacks: Vec<FfiPhotoStack> =
+            all.all_stacks().iter().map(photo_stack_to_ffi).collect();
         let len = ffi_stacks.len();
         let boxed_slice = ffi_stacks.into_boxed_slice();
         let data = Box::into_raw(boxed_slice) as *mut FfiPhotoStack;
@@ -405,7 +407,101 @@ pub unsafe extern "C" fn photostax_read_image(
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
 }
 
-/// Write metadata to a stack.
+/// Read a specific image variant (original, enhanced, or back) from a stack.
+///
+/// # Parameters
+///
+/// - `variant`: 0 = original, 1 = enhanced, 2 = back
+///
+/// # Safety
+///
+/// - `repo` must be a valid pointer from [`photostax_repo_open`]
+/// - `stack_id` must be a valid null-terminated UTF-8 string
+/// - `out_data` must be a valid pointer to receive the data pointer
+/// - `out_len` must be a valid pointer to receive the data length
+/// - On success, caller owns `*out_data` and must call [`photostax_bytes_free`]
+#[no_mangle]
+pub unsafe extern "C" fn photostax_read_image_variant(
+    repo: *const PhotostaxRepo,
+    stack_id: *const c_char,
+    variant: i32,
+    out_data: *mut *mut u8,
+    out_len: *mut usize,
+) -> FfiResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if repo.is_null() {
+            return FfiResult::error("Repository pointer is null");
+        }
+        if stack_id.is_null() {
+            return FfiResult::error("Stack ID pointer is null");
+        }
+        if out_data.is_null() {
+            return FfiResult::error("Output data pointer is null");
+        }
+        if out_len.is_null() {
+            return FfiResult::error("Output length pointer is null");
+        }
+
+        let repo_ref = unsafe { &*repo };
+        let c_str = unsafe { CStr::from_ptr(stack_id) };
+        let id_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(_) => return FfiResult::error("Invalid UTF-8 in stack ID"),
+        };
+
+        let mut mgr = repo_ref.inner.borrow_mut();
+        if mgr.is_empty() && mgr.rescan(None).is_err() {
+            return FfiResult::error("Failed to scan repository");
+        }
+        let stack = match mgr.get_stack(id_str) {
+            Some(s) => s,
+            None => return FfiResult::error(&format!("Stack not found: {id_str}")),
+        };
+
+        let image_ref = match variant {
+            0 => &stack.original,
+            1 => &stack.enhanced,
+            2 => &stack.back,
+            _ => {
+                return FfiResult::error(&format!(
+                    "Invalid variant: {variant}. Use 0=original, 1=enhanced, 2=back"
+                ))
+            }
+        };
+
+        if !image_ref.is_present() {
+            let variant_name = match variant {
+                0 => "original",
+                1 => "enhanced",
+                2 => "back",
+                _ => "unknown",
+            };
+            return FfiResult::error(&format!(
+                "No {variant_name} image present in stack '{id_str}'"
+            ));
+        }
+
+        match image_ref.read() {
+            Ok(mut reader) => {
+                let mut buf = Vec::new();
+                if let Err(e) = std::io::Read::read_to_end(&mut reader, &mut buf) {
+                    return FfiResult::error(&e.to_string());
+                }
+                let len = buf.len();
+                let boxed = buf.into_boxed_slice();
+                let data = Box::into_raw(boxed) as *mut u8;
+                unsafe {
+                    *out_data = data;
+                    *out_len = len;
+                }
+                FfiResult::success()
+            }
+            Err(e) => FfiResult::error(&e.to_string()),
+        }
+    }));
+
+    result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
+}
 ///
 /// # Safety
 ///
@@ -596,13 +692,13 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
                 }
             }
         }
-        let snapshot = match mgr.query(None, None) {
+        let snapshot = match mgr.query(None, None, None) {
             Ok(snap) => snap,
             Err(_) => return FfiPaginatedResult::empty(offset, limit),
         };
         drop(mgr);
 
-        let paginated = snapshot.get_page(offset, limit);
+        let paginated = snapshot.snapshot().get_page(offset, limit);
 
         if paginated.items.is_empty() {
             return FfiPaginatedResult {
@@ -681,16 +777,18 @@ pub unsafe extern "C" fn photostax_query(
             }
         };
 
-        let snapshot = match mgr.query(Some(&query), None) {
+        let snapshot = match mgr.query(Some(&query), None, None) {
             Ok(snap) => snap,
             Err(_) => return FfiPaginatedResult::empty(offset, limit),
         };
 
         // Apply pagination
         let paginated = if limit > 0 {
-            snapshot.get_page(offset, limit)
+            snapshot.snapshot().get_page(offset, limit)
         } else {
-            snapshot.get_page(0, snapshot.total_count().max(1))
+            snapshot
+                .snapshot()
+                .get_page(0, snapshot.total_count().max(1))
         };
 
         if paginated.items.is_empty() {
