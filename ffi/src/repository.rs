@@ -4,7 +4,6 @@
 //! functionality through an opaque handle-based API. All functions handle panics
 //! and null pointer checks.
 
-use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::panic::{self, AssertUnwindSafe};
@@ -33,6 +32,22 @@ use crate::types::{
 pub type ScanProgressFn =
     Option<unsafe extern "C" fn(phase: i32, current: usize, total: usize, user_data: *mut c_void)>;
 
+/// Wrapper that marks a raw pointer as `Send`.
+///
+/// # Safety
+///
+/// The caller guarantees that the wrapped pointer is safe to access from any
+/// thread, which is documented as a requirement in [`FfiProviderCallbacks`]
+/// and the progress-callback contract.
+pub(crate) struct SendPtr(pub(crate) *mut c_void);
+unsafe impl Send for SendPtr {}
+
+impl SendPtr {
+    pub(crate) fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+
 // ── Helper functions ─────────────────────────────────────────────────────────
 
 /// Convert a slice of PhotoStacks into an array of opaque handles.
@@ -40,7 +55,10 @@ pub type ScanProgressFn =
 /// Each stack is cloned and wrapped in a heap-allocated [`PhotostaxStack`].
 /// The caller (FFI consumer) owns the returned array and must free it with
 /// [`photostax_stack_handle_array_free`].
-pub(crate) fn stacks_to_handle_array(stacks: &[PhotoStack]) -> FfiStackHandleArray {
+pub(crate) fn stacks_to_handle_array(
+    stacks: &[PhotoStack],
+    runtime: &tokio::runtime::Handle,
+) -> FfiStackHandleArray {
     if stacks.is_empty() {
         return FfiStackHandleArray::empty();
     }
@@ -48,7 +66,8 @@ pub(crate) fn stacks_to_handle_array(stacks: &[PhotoStack]) -> FfiStackHandleArr
         .iter()
         .map(|s| {
             Box::into_raw(Box::new(PhotostaxStack {
-                inner: RefCell::new(s.clone()),
+                inner: s.clone(),
+                runtime: runtime.clone(),
             }))
         })
         .collect();
@@ -65,6 +84,7 @@ pub(crate) fn stacks_to_paginated_handles(
     offset: usize,
     limit: usize,
     has_more: bool,
+    runtime: &tokio::runtime::Handle,
 ) -> FfiPaginatedHandleResult {
     if stacks.is_empty() {
         return FfiPaginatedHandleResult {
@@ -80,7 +100,8 @@ pub(crate) fn stacks_to_paginated_handles(
         .iter()
         .map(|s| {
             Box::into_raw(Box::new(PhotostaxStack {
-                inner: RefCell::new(s.clone()),
+                inner: s.clone(),
+                runtime: runtime.clone(),
             }))
         })
         .collect();
@@ -144,13 +165,18 @@ pub unsafe extern "C" fn photostax_repo_open(path: *const c_char) -> *mut Photos
             Err(_) => return ptr::null_mut(),
         };
 
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return ptr::null_mut(),
+        };
         let repo = LocalRepository::new(PathBuf::from(path_str));
         let mgr = match StackManager::single(Box::new(repo), ScannerProfile::Auto) {
             Ok(m) => m,
             Err(_) => return ptr::null_mut(),
         };
         let boxed = Box::new(PhotostaxRepo {
-            inner: RefCell::new(mgr),
+            inner: tokio::sync::Mutex::new(mgr),
+            runtime,
         });
         Box::into_raw(boxed)
     }));
@@ -185,6 +211,10 @@ pub unsafe extern "C" fn photostax_repo_open_recursive(
             Err(_) => return ptr::null_mut(),
         };
 
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return ptr::null_mut(),
+        };
         let config = ScannerConfig {
             recursive,
             ..ScannerConfig::default()
@@ -195,7 +225,8 @@ pub unsafe extern "C" fn photostax_repo_open_recursive(
             Err(_) => return ptr::null_mut(),
         };
         let boxed = Box::new(PhotostaxRepo {
-            inner: RefCell::new(mgr),
+            inner: tokio::sync::Mutex::new(mgr),
+            runtime,
         });
         Box::into_raw(boxed)
     }));
@@ -235,14 +266,15 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiS
         }
 
         let repo_ref = unsafe { &*repo };
-        let mut mgr = repo_ref.inner.borrow_mut();
-        let all = match mgr.query(None, None, None) {
-            Ok(snap) => snap,
-            Err(_) => return FfiStackHandleArray::empty(),
-        };
-        drop(mgr);
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            let all = match mgr.query(None, None, None).await {
+                Ok(snap) => snap,
+                Err(_) => return FfiStackHandleArray::empty(),
+            };
 
-        stacks_to_handle_array(all.all_stacks())
+            stacks_to_handle_array(all.all_stacks(), repo_ref.runtime.handle())
+        })
     }));
 
     result.unwrap_or_else(|_| FfiStackHandleArray::empty())
@@ -278,25 +310,27 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
         let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mut cb_wrapper;
-        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+        let ud = SendPtr(user_data);
+        let progress: Option<&mut (dyn FnMut(photostax_core::photo_stack::ScanProgress) + Send)> =
             if let Some(cb_fn) = callback {
-                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, user_data);
+                cb_wrapper = move |p: photostax_core::photo_stack::ScanProgress| unsafe {
+                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
                 };
                 Some(&mut cb_wrapper)
             } else {
                 None
             };
 
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.set_profile(scanner_profile);
-        let all = match mgr.query(None, None, progress) {
-            Ok(snap) => snap,
-            Err(_) => return FfiStackHandleArray::empty(),
-        };
-        drop(mgr);
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.set_profile(scanner_profile);
+            let all = match mgr.query(None, None, progress).await {
+                Ok(snap) => snap,
+                Err(_) => return FfiStackHandleArray::empty(),
+            };
 
-        stacks_to_handle_array(all.all_stacks())
+            stacks_to_handle_array(all.all_stacks(), repo_ref.runtime.handle())
+        })
     }));
 
     result.unwrap_or_else(|_| FfiStackHandleArray::empty())
@@ -327,20 +361,23 @@ pub unsafe extern "C" fn photostax_repo_get_stack(
             Err(_) => return ptr::null_mut(),
         };
 
-        let mut mgr = repo_ref.inner.borrow_mut();
-        let query = SearchQuery::new().with_ids(vec![id_str.to_string()]);
-        match mgr.query(Some(&query), None, None) {
-            Ok(result) => {
-                if let Some(stack) = result.all_stacks().first() {
-                    Box::into_raw(Box::new(PhotostaxStack {
-                        inner: RefCell::new(stack.clone()),
-                    }))
-                } else {
-                    ptr::null_mut()
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            let query = SearchQuery::new().with_ids(vec![id_str.to_string()]);
+            match mgr.query(Some(&query), None, None).await {
+                Ok(result) => {
+                    if let Some(stack) = result.all_stacks().first() {
+                        Box::into_raw(Box::new(PhotostaxStack {
+                            inner: stack.clone(),
+                            runtime: repo_ref.runtime.handle().clone(),
+                        }))
+                    } else {
+                        ptr::null_mut()
+                    }
                 }
+                Err(_) => ptr::null_mut(),
             }
-            Err(_) => ptr::null_mut(),
-        }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -370,31 +407,33 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
         }
 
         let repo_ref = unsafe { &*repo };
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
-        if load_metadata {
-            for stack in initial.all_stacks() {
-                let _ = stack.metadata().read();
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.invalidate_cache();
+            let initial = match mgr.query(None, None, None).await {
+                Ok(r) => r,
+                Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
+            };
+            if load_metadata {
+                for stack in initial.all_stacks() {
+                    let _ = stack.metadata().read().await;
+                }
             }
-        }
-        let snapshot = match mgr.query(None, None, None) {
-            Ok(snap) => snap,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
-        drop(mgr);
+            let snapshot = match mgr.query(None, None, None).await {
+                Ok(snap) => snap,
+                Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
+            };
 
-        let paginated = snapshot.snapshot().get_page(offset, limit);
-        stacks_to_paginated_handles(
-            &paginated.items,
-            paginated.total_count,
-            paginated.offset,
-            paginated.limit,
-            paginated.has_more,
-        )
+            let paginated = snapshot.snapshot().get_page(offset, limit);
+            stacks_to_paginated_handles(
+                &paginated.items,
+                paginated.total_count,
+                paginated.offset,
+                paginated.limit,
+                paginated.has_more,
+                repo_ref.runtime.handle(),
+            )
+        })
     }));
 
     result.unwrap_or_else(|_| FfiPaginatedHandleResult::empty(offset, limit))
@@ -435,7 +474,6 @@ pub unsafe extern "C" fn photostax_query(
         }
 
         let repo_ref = unsafe { &*repo };
-        let mut mgr = repo_ref.inner.borrow_mut();
 
         let query = if query_json.is_null() {
             photostax_core::search::SearchQuery::new()
@@ -453,36 +491,42 @@ pub unsafe extern "C" fn photostax_query(
         };
 
         let mut cb_wrapper;
-        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+        let ud = SendPtr(user_data);
+        let progress: Option<&mut (dyn FnMut(photostax_core::photo_stack::ScanProgress) + Send)> =
             if let Some(cb_fn) = callback {
-                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, user_data);
+                cb_wrapper = move |p: photostax_core::photo_stack::ScanProgress| unsafe {
+                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
                 };
                 Some(&mut cb_wrapper)
             } else {
                 None
             };
 
-        let snapshot = match mgr.query(Some(&query), None, progress) {
-            Ok(snap) => snap,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
 
-        let paginated = if limit > 0 {
-            snapshot.snapshot().get_page(offset, limit)
-        } else {
-            snapshot
-                .snapshot()
-                .get_page(0, snapshot.total_count().max(1))
-        };
+            let snapshot = match mgr.query(Some(&query), None, progress).await {
+                Ok(snap) => snap,
+                Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
+            };
 
-        stacks_to_paginated_handles(
-            &paginated.items,
-            paginated.total_count,
-            paginated.offset,
-            paginated.limit,
-            paginated.has_more,
-        )
+            let paginated = if limit > 0 {
+                snapshot.snapshot().get_page(offset, limit)
+            } else {
+                snapshot
+                    .snapshot()
+                    .get_page(0, snapshot.total_count().max(1))
+            };
+
+            stacks_to_paginated_handles(
+                &paginated.items,
+                paginated.total_count,
+                paginated.offset,
+                paginated.limit,
+                paginated.has_more,
+                repo_ref.runtime.handle(),
+            )
+        })
     }));
 
     result.unwrap_or_else(|_| FfiPaginatedHandleResult::empty(offset, limit))
@@ -504,8 +548,7 @@ pub unsafe extern "C" fn photostax_stack_id(stack: *const PhotostaxStack) -> *mu
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        CString::new(borrowed.id())
+        CString::new(inner.inner.id())
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut())
     }));
@@ -525,8 +568,7 @@ pub unsafe extern "C" fn photostax_stack_name(stack: *const PhotostaxStack) -> *
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        CString::new(borrowed.name())
+        CString::new(inner.inner.name())
             .map(|s| s.into_raw())
             .unwrap_or(ptr::null_mut())
     }));
@@ -546,8 +588,7 @@ pub unsafe extern "C" fn photostax_stack_folder(stack: *const PhotostaxStack) ->
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match borrowed.folder() {
+        match inner.inner.folder() {
             Some(f) => CString::new(f)
                 .map(|s| s.into_raw())
                 .unwrap_or(ptr::null_mut()),
@@ -574,8 +615,7 @@ pub unsafe extern "C" fn photostax_stack_image_is_present(
             return false;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match get_image_ref(&borrowed, variant) {
+        match get_image_ref(&inner.inner, variant) {
             Some(img) => img.is_present(),
             None => false,
         }
@@ -596,8 +636,7 @@ pub unsafe extern "C" fn photostax_stack_image_is_valid(
             return false;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match get_image_ref(&borrowed, variant) {
+        match get_image_ref(&inner.inner, variant) {
             Some(img) => img.is_valid(),
             None => false,
         }
@@ -616,8 +655,7 @@ pub unsafe extern "C" fn photostax_stack_image_size(
             return -1i64;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match get_image_ref(&borrowed, variant) {
+        match get_image_ref(&inner.inner, variant) {
             Some(img) => img.size().map(|s| s as i64).unwrap_or(-1),
             None => -1,
         }
@@ -650,8 +688,7 @@ pub unsafe extern "C" fn photostax_stack_image_read(
         }
 
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        let image_ref = match get_image_ref(&borrowed, variant) {
+        let image_ref = match get_image_ref(&inner.inner, variant) {
             Some(img) => img,
             None => {
                 return FfiResult::error(&format!(
@@ -670,23 +707,25 @@ pub unsafe extern "C" fn photostax_stack_image_read(
             return FfiResult::error(&format!("No {variant_name} image present in stack"));
         }
 
-        match image_ref.read() {
-            Ok(mut reader) => {
-                let mut buf = Vec::new();
-                if let Err(e) = std::io::Read::read_to_end(&mut reader, &mut buf) {
-                    return FfiResult::error(&e.to_string());
+        inner.runtime.block_on(async {
+            match image_ref.read().await {
+                Ok(mut reader) => {
+                    let mut buf = Vec::new();
+                    if let Err(e) = std::io::Read::read_to_end(&mut reader, &mut buf) {
+                        return FfiResult::error(&e.to_string());
+                    }
+                    let len = buf.len();
+                    let boxed = buf.into_boxed_slice();
+                    let data = Box::into_raw(boxed) as *mut u8;
+                    unsafe {
+                        *out_data = data;
+                        *out_len = len;
+                    }
+                    FfiResult::success()
                 }
-                let len = buf.len();
-                let boxed = buf.into_boxed_slice();
-                let data = Box::into_raw(boxed) as *mut u8;
-                unsafe {
-                    *out_data = data;
-                    *out_len = len;
-                }
-                FfiResult::success()
+                Err(e) => FfiResult::error(&e.to_string()),
             }
-            Err(e) => FfiResult::error(&e.to_string()),
-        }
+        })
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
@@ -706,17 +745,18 @@ pub unsafe extern "C" fn photostax_stack_image_hash(
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        let image_ref = match get_image_ref(&borrowed, variant) {
+        let image_ref = match get_image_ref(&inner.inner, variant) {
             Some(img) => img,
             None => return ptr::null_mut(),
         };
-        match image_ref.hash() {
-            Ok(h) => CString::new(h)
-                .map(|s| s.into_raw())
-                .unwrap_or(ptr::null_mut()),
-            Err(_) => ptr::null_mut(),
-        }
+        inner.runtime.block_on(async {
+            match image_ref.hash().await {
+                Ok(h) => CString::new(h)
+                    .map(|s| s.into_raw())
+                    .unwrap_or(ptr::null_mut()),
+                Err(_) => ptr::null_mut(),
+            }
+        })
     }));
     result.unwrap_or(ptr::null_mut())
 }
@@ -739,8 +779,7 @@ pub unsafe extern "C" fn photostax_stack_image_dimensions(
             };
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        let image_ref = match get_image_ref(&borrowed, variant) {
+        let image_ref = match get_image_ref(&inner.inner, variant) {
             Some(img) => img,
             None => {
                 return FfiDimensions {
@@ -750,18 +789,20 @@ pub unsafe extern "C" fn photostax_stack_image_dimensions(
                 }
             }
         };
-        match image_ref.dimensions() {
-            Ok((w, h)) => FfiDimensions {
-                width: w,
-                height: h,
-                success: true,
-            },
-            Err(_) => FfiDimensions {
-                width: 0,
-                height: 0,
-                success: false,
-            },
-        }
+        inner.runtime.block_on(async {
+            match image_ref.dimensions().await {
+                Ok((w, h)) => FfiDimensions {
+                    width: w,
+                    height: h,
+                    success: true,
+                },
+                Err(_) => FfiDimensions {
+                    width: 0,
+                    height: 0,
+                    success: false,
+                },
+            }
+        })
     }));
     result.unwrap_or(FfiDimensions {
         width: 0,
@@ -794,8 +835,7 @@ pub unsafe extern "C" fn photostax_stack_image_rotate(
         };
 
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        let image_ref = match get_image_ref(&borrowed, variant) {
+        let image_ref = match get_image_ref(&inner.inner, variant) {
             Some(img) => img,
             None => {
                 return FfiResult::error(&format!(
@@ -808,10 +848,12 @@ pub unsafe extern "C" fn photostax_stack_image_rotate(
             return FfiResult::error("Image variant is not present");
         }
 
-        match image_ref.rotate(rotation) {
-            Ok(()) => FfiResult::success(),
-            Err(e) => FfiResult::error(&e.to_string()),
-        }
+        inner.runtime.block_on(async {
+            match image_ref.rotate(rotation).await {
+                Ok(()) => FfiResult::success(),
+                Err(e) => FfiResult::error(&e.to_string()),
+            }
+        })
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
@@ -828,9 +870,10 @@ pub unsafe extern "C" fn photostax_stack_image_invalidate(
             return;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        if let Some(image_ref) = get_image_ref(&borrowed, variant) {
-            image_ref.invalidate_caches();
+        if let Some(image_ref) = get_image_ref(&inner.inner, variant) {
+            inner.runtime.block_on(async {
+                image_ref.invalidate_caches().await;
+            });
         }
     }));
 }
@@ -849,12 +892,13 @@ pub unsafe extern "C" fn photostax_stack_swap_front_back(
         }
 
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
 
-        match borrowed.swap_front_back() {
-            Ok(()) => FfiResult::success(),
-            Err(e) => FfiResult::error(&e.to_string()),
-        }
+        inner.runtime.block_on(async {
+            match inner.inner.swap_front_back().await {
+                Ok(()) => FfiResult::success(),
+                Err(e) => FfiResult::error(&e.to_string()),
+            }
+        })
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
@@ -874,8 +918,7 @@ pub unsafe extern "C" fn photostax_stack_images_present(stack: *const PhotostaxS
             return 0;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        borrowed.images_present().bits()
+        inner.inner.images_present().bits()
     }));
     result.unwrap_or(0)
 }
@@ -890,8 +933,9 @@ pub unsafe extern "C" fn photostax_stack_metadata_is_loaded(stack: *const Photos
             return false;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        borrowed.metadata().is_loaded()
+        inner.runtime.block_on(async {
+            inner.inner.metadata().is_loaded().await
+        })
     }));
     result.unwrap_or(false)
 }
@@ -910,22 +954,23 @@ pub unsafe extern "C" fn photostax_stack_metadata_read(
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        inner.runtime.block_on(async {
+            let metadata = match inner.inner.metadata().read().await {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        let metadata_json = serde_json::json!({
-            "exif_tags": metadata.exif_tags,
-            "xmp_tags": metadata.xmp_tags,
-            "custom_tags": metadata.custom_tags,
-        });
+            let metadata_json = serde_json::json!({
+                "exif_tags": metadata.exif_tags,
+                "xmp_tags": metadata.xmp_tags,
+                "custom_tags": metadata.custom_tags,
+            });
 
-        let json_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-        CString::new(json_str)
-            .map(|s| s.into_raw())
-            .unwrap_or(ptr::null_mut())
+            let json_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+            CString::new(json_str)
+                .map(|s| s.into_raw())
+                .unwrap_or(ptr::null_mut())
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -944,22 +989,23 @@ pub unsafe extern "C" fn photostax_stack_metadata_cached(
             return ptr::null_mut();
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match borrowed.metadata().cached() {
-            Some(metadata) => {
-                let metadata_json = serde_json::json!({
-                    "exif_tags": metadata.exif_tags,
-                    "xmp_tags": metadata.xmp_tags,
-                    "custom_tags": metadata.custom_tags,
-                });
-                let json_str =
-                    serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-                CString::new(json_str)
-                    .map(|s| s.into_raw())
-                    .unwrap_or(ptr::null_mut())
+        inner.runtime.block_on(async {
+            match inner.inner.metadata().cached().await {
+                Some(metadata) => {
+                    let metadata_json = serde_json::json!({
+                        "exif_tags": metadata.exif_tags,
+                        "xmp_tags": metadata.xmp_tags,
+                        "custom_tags": metadata.custom_tags,
+                    });
+                    let json_str =
+                        serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+                    CString::new(json_str)
+                        .map(|s| s.into_raw())
+                        .unwrap_or(ptr::null_mut())
+                }
+                None => ptr::null_mut(),
             }
-            None => ptr::null_mut(),
-        }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -999,11 +1045,12 @@ pub unsafe extern "C" fn photostax_stack_metadata_write(
         };
 
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        match borrowed.metadata().write(&metadata) {
-            Ok(()) => FfiResult::success(),
-            Err(e) => FfiResult::error(&e.to_string()),
-        }
+        inner.runtime.block_on(async {
+            match inner.inner.metadata().write(&metadata).await {
+                Ok(()) => FfiResult::success(),
+                Err(e) => FfiResult::error(&e.to_string()),
+            }
+        })
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
@@ -1017,8 +1064,9 @@ pub unsafe extern "C" fn photostax_stack_metadata_invalidate(stack: *const Photo
             return;
         }
         let inner = unsafe { &*stack };
-        let borrowed = inner.inner.borrow();
-        borrowed.metadata().invalidate();
+        inner.runtime.block_on(async {
+            inner.inner.metadata().invalidate().await;
+        });
     }));
 }
 
@@ -1038,9 +1086,14 @@ pub unsafe extern "C" fn photostax_stack_metadata_invalidate(stack: *const Photo
 #[no_mangle]
 pub unsafe extern "C" fn photostax_manager_new() -> *mut PhotostaxRepo {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return ptr::null_mut(),
+        };
         let mgr = StackManager::new();
         let boxed = Box::new(PhotostaxRepo {
-            inner: RefCell::new(mgr),
+            inner: tokio::sync::Mutex::new(mgr),
+            runtime,
         });
         Box::into_raw(boxed)
     }));
@@ -1089,7 +1142,7 @@ pub unsafe extern "C" fn photostax_manager_add_repo(
         let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mgr_ref = unsafe { &*mgr };
-        let mut mgr_inner = mgr_ref.inner.borrow_mut();
+        let mut mgr_inner = mgr_ref.runtime.block_on(mgr_ref.inner.lock());
         match mgr_inner.add_repo(Box::new(repo), scanner_profile) {
             Ok(_) => FfiResult::success(),
             Err(e) => FfiResult::error(&e.to_string()),
@@ -1144,7 +1197,7 @@ pub unsafe extern "C" fn photostax_manager_add_foreign_repo(
         let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mgr_ref = unsafe { &*mgr };
-        let mut mgr_inner = mgr_ref.inner.borrow_mut();
+        let mut mgr_inner = mgr_ref.runtime.block_on(mgr_ref.inner.lock());
         match mgr_inner.add_repo(Box::new(repo), scanner_profile) {
             Ok(_) => FfiResult::success(),
             Err(e) => FfiResult::error(&e.to_string()),
@@ -1167,7 +1220,8 @@ pub unsafe extern "C" fn photostax_manager_repo_count(mgr: *const PhotostaxRepo)
             return 0;
         }
         let mgr_ref = unsafe { &*mgr };
-        mgr_ref.inner.borrow().repo_count()
+        let mgr_inner = mgr_ref.runtime.block_on(mgr_ref.inner.lock());
+        mgr_inner.repo_count()
     }));
     result.unwrap_or(0)
 }

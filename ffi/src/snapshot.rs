@@ -12,12 +12,13 @@ use photostax_core::photo_stack::ScannerProfile;
 use photostax_core::search::SearchQuery;
 use photostax_core::snapshot::ScanSnapshot;
 
-use crate::repository::{stacks_to_paginated_handles, ScanProgressFn};
+use crate::repository::{stacks_to_paginated_handles, ScanProgressFn, SendPtr};
 use crate::types::{FfiPaginatedHandleResult, PhotostaxRepo};
 
 /// Opaque handle to a scan snapshot.
 pub struct PhotostaxSnapshot {
     inner: ScanSnapshot,
+    runtime: tokio::runtime::Handle,
 }
 
 /// Staleness information returned by [`photostax_snapshot_check_status`].
@@ -58,24 +59,28 @@ pub unsafe extern "C" fn photostax_create_snapshot(
         }
 
         let repo_ref = unsafe { &*repo };
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return ptr::null_mut(),
-        };
-        if load_metadata {
-            for stack in initial.all_stacks() {
-                let _ = stack.metadata().read();
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.invalidate_cache();
+            let initial = match mgr.query(None, None, None).await {
+                Ok(r) => r,
+                Err(_) => return ptr::null_mut(),
+            };
+            if load_metadata {
+                for stack in initial.all_stacks() {
+                    let _ = stack.metadata().read().await;
+                }
             }
-        }
-        let snap = match mgr.query(None, None, None) {
-            Ok(r) => r.into_snapshot(),
-            Err(_) => return ptr::null_mut(),
-        };
-        drop(mgr);
+            let snap = match mgr.query(None, None, None).await {
+                Ok(r) => r.into_snapshot(),
+                Err(_) => return ptr::null_mut(),
+            };
 
-        Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
+            Box::into_raw(Box::new(PhotostaxSnapshot {
+                inner: snap,
+                runtime: repo_ref.runtime.handle().clone(),
+            }))
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -116,35 +121,40 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
         let scanner_profile = ScannerProfile::from_int(profile).unwrap_or_default();
 
         let mut cb_wrapper;
-        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
+        let ud = SendPtr(user_data);
+        let progress: Option<&mut (dyn FnMut(photostax_core::photo_stack::ScanProgress) + Send)> =
             if let Some(cb_fn) = callback {
-                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, user_data);
+                cb_wrapper = move |p: photostax_core::photo_stack::ScanProgress| unsafe {
+                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
                 };
                 Some(&mut cb_wrapper)
             } else {
                 None
             };
 
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.set_profile(scanner_profile);
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, progress) {
-            Ok(r) => r,
-            Err(_) => return ptr::null_mut(),
-        };
-        if load_metadata {
-            for stack in initial.all_stacks() {
-                let _ = stack.metadata().read();
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.set_profile(scanner_profile);
+            mgr.invalidate_cache();
+            let initial = match mgr.query(None, None, progress).await {
+                Ok(r) => r,
+                Err(_) => return ptr::null_mut(),
+            };
+            if load_metadata {
+                for stack in initial.all_stacks() {
+                    let _ = stack.metadata().read().await;
+                }
             }
-        }
-        let snap = match mgr.query(None, None, None) {
-            Ok(r) => r.into_snapshot(),
-            Err(_) => return ptr::null_mut(),
-        };
-        drop(mgr);
+            let snap = match mgr.query(None, None, None).await {
+                Ok(r) => r.into_snapshot(),
+                Err(_) => return ptr::null_mut(),
+            };
 
-        Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
+            Box::into_raw(Box::new(PhotostaxSnapshot {
+                inner: snap,
+                runtime: repo_ref.runtime.handle().clone(),
+            }))
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -199,6 +209,7 @@ pub unsafe extern "C" fn photostax_snapshot_get_page(
             paginated.offset,
             paginated.limit,
             paginated.has_more,
+            &snap.runtime,
         )
     }));
 
@@ -238,22 +249,23 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
         let repo_ref = unsafe { &*repo };
         let snap = unsafe { &*snapshot };
 
-        // Re-scan to get the current state for comparison
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        if mgr.query(None, None, None).is_err() {
-            return error_status;
-        }
-        let status = mgr.check_status(&snap.inner);
-        drop(mgr);
+        repo_ref.runtime.block_on(async {
+            // Re-scan to get the current state for comparison
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.invalidate_cache();
+            if mgr.query(None, None, None).await.is_err() {
+                return error_status;
+            }
+            let status = mgr.check_status(&snap.inner);
 
-        FfiSnapshotStatus {
-            is_stale: status.is_stale,
-            snapshot_count: status.snapshot_count,
-            current_count: status.current_count,
-            added: status.added,
-            removed: status.removed,
-        }
+            FfiSnapshotStatus {
+                is_stale: status.is_stale,
+                snapshot_count: status.snapshot_count,
+                current_count: status.current_count,
+                added: status.added,
+                removed: status.removed,
+            }
+        })
     }));
 
     result.unwrap_or(error_status)
@@ -329,8 +341,11 @@ pub unsafe extern "C" fn photostax_snapshot_filter(
             query = query.with_ids(ids);
         }
 
-        let filtered = snap.inner.filter(&query);
-        Box::into_raw(Box::new(PhotostaxSnapshot { inner: filtered }))
+        let filtered = snap.runtime.block_on(snap.inner.filter(&query));
+        Box::into_raw(Box::new(PhotostaxSnapshot {
+            inner: filtered,
+            runtime: snap.runtime.clone(),
+        }))
     }));
 
     result.unwrap_or(ptr::null_mut())

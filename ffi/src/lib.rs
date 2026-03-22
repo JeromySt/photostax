@@ -64,7 +64,11 @@ pub unsafe extern "C" fn photostax_repository_scan_count(repo: *const LocalRepos
     }
 
     let repo = unsafe { &*repo };
-    match repo.scan() {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(_) => return -1,
+    };
+    match rt.block_on(repo.scan()) {
         Ok(stacks) => stacks.len() as i32,
         Err(_) => -1,
     }

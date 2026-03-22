@@ -29,24 +29,25 @@ pub unsafe extern "C" fn photostax_get_metadata(stack: *const PhotostaxStack) ->
         }
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read().await {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        let metadata_json = serde_json::json!({
-            "exif_tags": metadata.exif_tags,
-            "xmp_tags": metadata.xmp_tags,
-            "custom_tags": metadata.custom_tags,
-        });
+            let metadata_json = serde_json::json!({
+                "exif_tags": metadata.exif_tags,
+                "xmp_tags": metadata.xmp_tags,
+                "custom_tags": metadata.custom_tags,
+            });
 
-        let json_str =
-            serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-        CString::new(json_str)
-            .map(|s| s.into_raw())
-            .unwrap_or(ptr::null_mut())
+            let json_str =
+                serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+            CString::new(json_str)
+                .map(|s| s.into_raw())
+                .unwrap_or(ptr::null_mut())
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -79,19 +80,20 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read().await {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        match metadata.exif_tags.get(tag_name_str) {
-            Some(value) => CString::new(value.as_str())
-                .map(|s| s.into_raw())
-                .unwrap_or(ptr::null_mut()),
-            None => ptr::null_mut(),
-        }
+            match metadata.exif_tags.get(tag_name_str) {
+                Some(value) => CString::new(value.as_str())
+                    .map(|s| s.into_raw())
+                    .unwrap_or(ptr::null_mut()),
+                None => ptr::null_mut(),
+            }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -124,22 +126,23 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read().await {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        match metadata.custom_tags.get(tag_name_str) {
-            Some(value) => {
-                let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-                CString::new(json_str)
-                    .map(|s| s.into_raw())
-                    .unwrap_or(ptr::null_mut())
+            match metadata.custom_tags.get(tag_name_str) {
+                Some(value) => {
+                    let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+                    CString::new(json_str)
+                        .map(|s| s.into_raw())
+                        .unwrap_or(ptr::null_mut())
+                }
+                None => ptr::null_mut(),
             }
-            None => ptr::null_mut(),
-        }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -195,12 +198,13 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        match borrowed.metadata().write(&metadata) {
-            Ok(()) => FfiResult::success(),
-            Err(e) => FfiResult::error(&e.to_string()),
-        }
+        stack_ref.runtime.block_on(async {
+            match stack_ref.inner.metadata().write(&metadata).await {
+                Ok(()) => FfiResult::success(),
+                Err(e) => FfiResult::error(&e.to_string()),
+            }
+        })
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
