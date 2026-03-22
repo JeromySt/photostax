@@ -111,6 +111,10 @@ pub enum RepositoryError {
     /// handle has been invalidated (e.g., after the file was deleted from disk).
     #[error("photo stack has been deleted")]
     StackDeleted,
+
+    /// The operation was cancelled via a [`CancellationToken`](tokio_util::sync::CancellationToken).
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 /// Abstraction over a storage backend containing Epson FastFoto photo stacks.

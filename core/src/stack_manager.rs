@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
+
 use crate::backends::local_handles::LocalImageHandle;
 use crate::classifier::{DefaultClassifier, ImageClassifier};
 use crate::events::{CacheEvent, FileVariant, StackEvent};
@@ -62,15 +65,19 @@ pub struct StackManager {
     cache: HashMap<String, PhotoStack>,
     /// Image classifier shared with all registered repos.
     classifier: Arc<dyn ImageClassifier>,
+    /// Broadcast sender for cache events (reactive notifications).
+    event_tx: broadcast::Sender<CacheEvent>,
 }
 
 impl StackManager {
     /// Create an empty `StackManager` with no repositories.
     pub fn new() -> Self {
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             repos: HashMap::new(),
             cache: HashMap::new(),
             classifier: Arc::new(DefaultClassifier),
+            event_tx,
         }
     }
 
@@ -123,22 +130,35 @@ impl StackManager {
     fn scan_repos(
         &mut self,
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
+        cancel: Option<&CancellationToken>,
     ) -> Result<usize, StackManagerError> {
         self.cache.clear();
         let mut all_stacks = Vec::new();
         if let Some(cb) = progress {
             for reg in self.repos.values() {
+                if let Some(token) = cancel {
+                    if token.is_cancelled() {
+                        return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+                    }
+                }
                 let stacks = reg.repo.scan_with_progress(reg.profile, Some(&mut *cb))?;
                 all_stacks.extend(stacks);
             }
         } else {
             for reg in self.repos.values() {
+                if let Some(token) = cancel {
+                    if token.is_cancelled() {
+                        return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+                    }
+                }
                 let stacks = reg.repo.scan_with_progress(reg.profile, None)?;
                 all_stacks.extend(stacks);
             }
         }
         for stack in all_stacks {
-            self.cache.insert(stack.id(), stack);
+            let id = stack.id();
+            self.cache.insert(id.clone(), stack);
+            let _ = self.event_tx.send(CacheEvent::StackAdded(id));
         }
         Ok(self.cache.len())
     }
@@ -173,6 +193,8 @@ impl StackManager {
     /// - `query: Some(&SearchQuery)` = scan (if needed) + filter + return matching
     /// - `page_size: None` = single page with all results (`usize::MAX`)
     /// - `page_size: Some(n)` = paginate into pages of `n` stacks
+    /// - `cancel: None` = no cancellation support
+    /// - `cancel: Some(token)` = check token before scanning each repo
     ///
     /// # Examples
     ///
@@ -181,13 +203,13 @@ impl StackManager {
     /// # use photostax_core::search::SearchQuery;
     /// # let mut mgr = StackManager::new();
     /// // All stacks (auto-scans on first call)
-    /// let result = mgr.query(None, None, None).unwrap();
+    /// let result = mgr.query(None, None, None, None).unwrap();
     ///
     /// // Filtered + paginated + progress feedback
     /// let query = SearchQuery::new().with_has_back(true);
     /// let mut result = mgr.query(Some(&query), Some(20), Some(&mut |p| {
     ///     println!("Phase {:?}: {}/{}", p.phase, p.current, p.total);
-    /// })).unwrap();
+    /// }), None).unwrap();
     /// for stack in result.current_page() {
     ///     println!("{}", stack.name());
     /// }
@@ -197,10 +219,17 @@ impl StackManager {
         query: Option<&SearchQuery>,
         page_size: Option<usize>,
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
+        cancel: Option<CancellationToken>,
     ) -> Result<QueryResult, StackManagerError> {
+        if let Some(ref token) = cancel {
+            if token.is_cancelled() {
+                return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+            }
+        }
+
         // Auto-scan if cache is empty and we have repos
         if self.cache.is_empty() && !self.repos.is_empty() {
-            self.scan_repos(progress)?;
+            self.scan_repos(progress, cancel.as_ref())?;
         }
 
         let default_query = SearchQuery::new();
@@ -214,9 +243,11 @@ impl StackManager {
             .cloned()
             .collect();
 
-        Ok(QueryResult::new(
+        let event_rx = self.event_tx.subscribe();
+        Ok(QueryResult::new_with_events(
             ScanSnapshot::from_stacks(filtered),
             page_size.unwrap_or(usize::MAX),
+            event_rx,
         ))
     }
 
@@ -232,7 +263,7 @@ impl StackManager {
     /// # use photostax_core::stack_manager::StackManager;
     /// # let mut mgr = StackManager::new();
     /// mgr.invalidate_cache();
-    /// let result = mgr.query(None, None, None).unwrap(); // re-scans
+    /// let result = mgr.query(None, None, None, None).unwrap(); // re-scans
     /// ```
     pub fn invalidate_cache(&mut self) {
         self.cache.clear();
@@ -265,20 +296,27 @@ impl StackManager {
 
     /// Subscribe to cache-level events (stack added/updated/removed).
     ///
-    /// Returns a receiver for [`CacheEvent`]s. Drop it to unsubscribe.
-    pub fn subscribe_cache_events(&self) -> std::sync::mpsc::Receiver<CacheEvent> {
-        let (_tx, rx) = std::sync::mpsc::channel();
-        rx
+    /// Returns a broadcast receiver for [`CacheEvent`]s. Drop it to unsubscribe.
+    /// Multiple subscribers can listen concurrently.
+    pub fn subscribe_cache_events(&self) -> broadcast::Receiver<CacheEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Start watching all registered repos for changes.
-    /// Returns a receiver for CacheEvents that consumers can listen to.
-    pub fn watch(&self) -> Result<std::sync::mpsc::Receiver<CacheEvent>, StackManagerError> {
-        let (cache_tx, cache_rx) = std::sync::mpsc::channel();
+    ///
+    /// Spawns a background thread per repository that translates
+    /// [`StackEvent`]s into [`CacheEvent`]s and broadcasts them.
+    /// Returns a broadcast receiver for the events.
+    ///
+    /// **Note:** The watcher does not update the internal cache.
+    /// Consumers should call [`invalidate_cache()`](Self::invalidate_cache)
+    /// and re-query to pick up changes.
+    pub fn watch(&self) -> Result<broadcast::Receiver<CacheEvent>, StackManagerError> {
+        let rx = self.event_tx.subscribe();
 
         for reg in self.repos.values() {
             let repo_rx = reg.repo.watch()?;
-            let tx = cache_tx.clone();
+            let tx = self.event_tx.clone();
 
             std::thread::spawn(move || {
                 for event in repo_rx {
@@ -287,23 +325,24 @@ impl StackManager {
                             CacheEvent::StackUpdated(stack_id.clone())
                         }
                         StackEvent::FileRemoved { stack_id, .. } => {
-                            CacheEvent::StackUpdated(stack_id.clone())
+                            CacheEvent::StackRemoved(stack_id.clone())
                         }
                     };
                     if tx.send(cache_event).is_err() {
-                        return;
+                        return; // no receivers
                     }
                 }
             });
         }
 
-        Ok(cache_rx)
+        Ok(rx)
     }
 
     /// Process a single StackEvent, updating the cache.
     /// Returns the CacheEvent that resulted, if any.
+    /// Also broadcasts the event to all subscribers.
     pub fn apply_event(&mut self, event: &StackEvent) -> Option<CacheEvent> {
-        match event {
+        let cache_event = match event {
             StackEvent::FileChanged {
                 stack_id,
                 variant,
@@ -354,7 +393,13 @@ impl StackManager {
                     None
                 }
             }
+        };
+
+        if let Some(ref evt) = cache_event {
+            let _ = self.event_tx.send(evt.clone());
         }
+
+        cache_event
     }
 }
 
@@ -424,7 +469,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 1);
         assert_eq!(mgr.len(), 1);
         assert!(!mgr.is_empty());
@@ -458,7 +503,7 @@ mod tests {
         mgr.add_repo(Box::new(repo2), ScannerProfile::EnhancedAndBack)
             .unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 2);
         assert_eq!(mgr.repo_count(), 2);
 
@@ -514,7 +559,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         let snapshot = result.into_snapshot();
         assert_eq!(snapshot.total_count(), 1);
 
@@ -534,7 +579,7 @@ mod tests {
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        let _ = mgr2.query(None, None, None).unwrap();
+        let _ = mgr2.query(None, None, None, None).unwrap();
 
         // Old snapshot vs new cache should be stale
         let status = mgr2.check_status(&snapshot);
@@ -564,13 +609,13 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(mgr.len(), 2);
 
         // Look up each by ID via query
         for stack in result.all_stacks() {
             let id_query = SearchQuery::new().with_ids(vec![stack.id()]);
-            let found = mgr.query(Some(&id_query), None, None).unwrap();
+            let found = mgr.query(Some(&id_query), None, None, None).unwrap();
             assert_eq!(found.total_count(), 1);
             assert_eq!(found.all_stacks()[0].id(), stack.id());
             assert_eq!(found.all_stacks()[0].name(), stack.name());
@@ -578,7 +623,7 @@ mod tests {
 
         // Non-existent ID returns empty
         let missing = SearchQuery::new().with_ids(vec!["nonexistent".to_string()]);
-        let result = mgr.query(Some(&missing), None, None).unwrap();
+        let result = mgr.query(Some(&missing), None, None, None).unwrap();
         assert_eq!(result.total_count(), 0);
     }
 
@@ -593,7 +638,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         let stack = &result.all_stacks()[0];
 
         // Metadata is loaded via the handle (Arc<RwLock> — no mutable manager access needed)
@@ -621,7 +666,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
 
         // Rotation via ImageRef handle — use stack from query result directly
         let stack = &result.all_stacks()[0];
@@ -640,7 +685,7 @@ mod tests {
         assert!(mgr.is_empty());
         assert_eq!(mgr.len(), 0);
         assert_eq!(mgr.repo_count(), 0);
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 0);
     }
 
@@ -671,14 +716,14 @@ mod tests {
 
         // Query with repo_id filter for each repo
         let query1 = SearchQuery::new().with_repo_id(&repo1_loc);
-        let snap1 = mgr.query(Some(&query1), None, None).unwrap();
+        let snap1 = mgr.query(Some(&query1), None, None, None).unwrap();
         let query2 = SearchQuery::new().with_repo_id(&repo2_loc);
-        let snap2 = mgr.query(Some(&query2), None, None).unwrap();
+        let snap2 = mgr.query(Some(&query2), None, None, None).unwrap();
         assert_eq!(snap1.total_count(), 1);
         assert_eq!(snap2.total_count(), 1);
 
         // Full query has both
-        let snap_all = mgr.query(None, None, None).unwrap();
+        let snap_all = mgr.query(None, None, None, None).unwrap();
         assert_eq!(snap_all.total_count(), 2);
     }
 
@@ -699,6 +744,7 @@ mod tests {
                 Some(&mut |_progress: &ScanProgress| {
                     progress_called = true;
                 }),
+                None,
             )
             .unwrap();
         assert_eq!(result.total_count(), 1);
@@ -714,14 +760,14 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         let stack = result.all_stacks()[0].clone(); // Arc clone — same underlying data
 
         // Mutate through the Arc<RwLock> inner
         stack.inner.write().unwrap().name = "RENAMED".to_string();
 
         // Visible through a fresh query (same Arc in cache)
-        let result2 = mgr.query(None, None, None).unwrap();
+        let result2 = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result2.all_stacks()[0].name(), "RENAMED");
     }
 
@@ -741,6 +787,7 @@ mod tests {
         let found = mgr
             .query(
                 Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
                 None,
                 None,
             )
@@ -767,6 +814,7 @@ mod tests {
         let found = mgr
             .query(
                 Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
                 None,
                 None,
             )
@@ -801,6 +849,7 @@ mod tests {
                 Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
                 None,
                 None,
+                None,
             )
             .unwrap();
         let stack = &found.all_stacks()[0];
@@ -825,6 +874,7 @@ mod tests {
         let found = mgr
             .query(
                 Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
                 None,
                 None,
             )
@@ -860,7 +910,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 1);
     }
 
@@ -872,10 +922,10 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.query(None, None, None).unwrap();
+        mgr.query(None, None, None, None).unwrap();
 
         let query = SearchQuery::new().with_repo_id("file:///nonexistent");
-        let snap = mgr.query(Some(&query), None, None).unwrap();
+        let snap = mgr.query(Some(&query), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 0);
     }
 
@@ -888,7 +938,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(mgr.len(), 2);
         let snapshot = result.into_snapshot();
 
@@ -897,7 +947,7 @@ mod tests {
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        let _ = mgr2.query(None, None, None).unwrap();
+        let _ = mgr2.query(None, None, None, None).unwrap();
 
         let status = mgr2.check_status(&snapshot);
         assert!(status.is_stale);
@@ -916,7 +966,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 2);
 
         // Load metadata directly through Arc stacks (no manager mutation needed)
@@ -925,7 +975,7 @@ mod tests {
         }
 
         // All stacks should still be accessible via a new query
-        let result2 = mgr.query(None, None, None).unwrap();
+        let result2 = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result2.total_count(), 2);
     }
 
@@ -976,6 +1026,7 @@ mod tests {
                 Some(&SearchQuery::new().with_ids(vec!["test_stack".to_string()])),
                 None,
                 None,
+                None,
             )
             .unwrap();
         let s = &stack.all_stacks()[0];
@@ -1017,6 +1068,7 @@ mod tests {
                 Some(&SearchQuery::new().with_ids(vec!["s1".to_string()])),
                 None,
                 None,
+                None,
             )
             .unwrap();
         let stack = &found.all_stacks()[0];
@@ -1033,6 +1085,7 @@ mod tests {
         let found = mgr
             .query(
                 Some(&SearchQuery::new().with_ids(vec!["s1".to_string()])),
+                None,
                 None,
                 None,
             )
@@ -1077,7 +1130,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 3);
         assert_eq!(snap.all_stacks().len(), 3);
     }
@@ -1100,7 +1153,7 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 5);
 
         let page1 = snap.snapshot().get_page(0, 2);
@@ -1127,7 +1180,7 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(Some(&query), None, None).unwrap();
+        let snap = mgr.query(Some(&query), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
         assert_eq!(snap.all_stacks()[0].name(), "IMG_001");
     }
@@ -1153,7 +1206,7 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
-        let snap = mgr.query(Some(&query), None, None).unwrap();
+        let snap = mgr.query(Some(&query), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 3);
 
         let page = snap.snapshot().get_page(0, 2);
@@ -1165,7 +1218,7 @@ mod tests {
     #[test]
     fn query_empty_cache() {
         let mut mgr = StackManager::new();
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
+        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 0);
         assert!(snap.all_stacks().is_empty());
     }
@@ -1180,7 +1233,7 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         // Do NOT call rescan(); query should auto-scan
-        let snap = mgr.query(None, None, None).unwrap();
+        let snap = mgr.query(None, None, None, None).unwrap();
         assert!(snap.total_count() > 0);
         assert_eq!(snap.total_count(), 2);
     }
@@ -1195,7 +1248,7 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         let query = SearchQuery::new().with_text("IMG_001");
-        let snap = mgr.query(Some(&query), None, None).unwrap();
+        let snap = mgr.query(Some(&query), None, None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
         assert_eq!(snap.all_stacks()[0].name(), "IMG_001");
     }
@@ -1217,6 +1270,7 @@ mod tests {
                 Some(&mut |_p: &ScanProgress| {
                     call_count += 1;
                 }),
+                None,
             )
             .unwrap();
         assert!(snap.total_count() > 0);
@@ -1232,13 +1286,13 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 2);
         assert_eq!(mgr.len(), 2);
 
         // Invalidate and re-query to repopulate
         mgr.invalidate_cache();
-        let result = mgr.query(None, None, None).unwrap();
+        let result = mgr.query(None, None, None, None).unwrap();
         assert_eq!(result.total_count(), 2);
         assert_eq!(mgr.len(), 2);
     }
@@ -1257,7 +1311,7 @@ mod tests {
         assert_eq!(mgr.len(), 0);
 
         // After scan (query auto-scans)
-        mgr.query(None, None, None).unwrap();
+        mgr.query(None, None, None, None).unwrap();
         assert!(!mgr.is_empty());
         assert_eq!(mgr.len(), 1);
     }

@@ -1,8 +1,32 @@
 //! Paginated query result with cursor navigation.
 
+use std::collections::HashSet;
+use std::fmt;
+
+use tokio::sync::broadcast;
+
+use crate::events::CacheEvent;
 use crate::photo_stack::PhotoStack;
 use crate::search::SearchQuery;
 use crate::snapshot::ScanSnapshot;
+
+/// Summary of changes since the QueryResult was created.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryDelta {
+    /// Number of stacks added since query.
+    pub added: usize,
+    /// Number of stacks removed since query.
+    pub removed: usize,
+    /// Number of stacks modified since query.
+    pub modified: usize,
+}
+
+impl QueryDelta {
+    /// True if any changes have occurred.
+    pub fn has_changes(&self) -> bool {
+        self.added > 0 || self.removed > 0 || self.modified > 0
+    }
+}
 
 /// Paginated query result wrapping a [`ScanSnapshot`].
 ///
@@ -27,13 +51,50 @@ use crate::snapshot::ScanSnapshot;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
 pub struct QueryResult {
     snapshot: ScanSnapshot,
     page_size: usize,
     current_page_index: usize,
     /// Per-stack cursor for next_stack() iteration
     stack_cursor: usize,
+    /// Tracks IDs that were added since this result was created.
+    pending_added: HashSet<String>,
+    /// Tracks IDs that were removed since this result was created.
+    pending_removed: HashSet<String>,
+    /// Tracks IDs that were modified since this result was created.
+    pending_modified: HashSet<String>,
+    /// Broadcast receiver for cache events (optional).
+    event_rx: Option<broadcast::Receiver<CacheEvent>>,
+}
+
+impl Clone for QueryResult {
+    fn clone(&self) -> Self {
+        Self {
+            snapshot: self.snapshot.clone(),
+            page_size: self.page_size,
+            current_page_index: self.current_page_index,
+            stack_cursor: self.stack_cursor,
+            pending_added: self.pending_added.clone(),
+            pending_removed: self.pending_removed.clone(),
+            pending_modified: self.pending_modified.clone(),
+            event_rx: None, // broadcast::Receiver is not Clone
+        }
+    }
+}
+
+impl fmt::Debug for QueryResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryResult")
+            .field("snapshot", &self.snapshot)
+            .field("page_size", &self.page_size)
+            .field("current_page_index", &self.current_page_index)
+            .field("stack_cursor", &self.stack_cursor)
+            .field("pending_added", &self.pending_added)
+            .field("pending_removed", &self.pending_removed)
+            .field("pending_modified", &self.pending_modified)
+            .field("event_rx", &self.event_rx.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl QueryResult {
@@ -45,6 +106,30 @@ impl QueryResult {
             page_size,
             current_page_index: 0,
             stack_cursor: 0,
+            pending_added: HashSet::new(),
+            pending_removed: HashSet::new(),
+            pending_modified: HashSet::new(),
+            event_rx: None,
+        }
+    }
+
+    /// Create a new QueryResult with a broadcast event receiver for
+    /// reactive change notifications via [`pending_changes`](Self::pending_changes).
+    pub fn new_with_events(
+        snapshot: ScanSnapshot,
+        page_size: usize,
+        event_rx: broadcast::Receiver<CacheEvent>,
+    ) -> Self {
+        let page_size = if page_size == 0 { 1 } else { page_size };
+        Self {
+            snapshot,
+            page_size,
+            current_page_index: 0,
+            stack_cursor: 0,
+            pending_added: HashSet::new(),
+            pending_removed: HashSet::new(),
+            pending_modified: HashSet::new(),
+            event_rx: Some(event_rx),
         }
     }
 
@@ -165,6 +250,49 @@ impl QueryResult {
         self.snapshot.stacks()
     }
 
+    /// Drain pending cache events and return a summary of changes since
+    /// this result was created (or since the last call to `pending_changes`).
+    ///
+    /// Returns a [`QueryDelta`] describing how many stacks were added,
+    /// removed, or modified. Only counts events relevant to the snapshot
+    /// contained in this result.
+    ///
+    /// If this `QueryResult` was created without an event receiver
+    /// (e.g. via [`new()`](Self::new) or by cloning), the returned delta
+    /// is always empty.
+    pub fn pending_changes(&mut self) -> QueryDelta {
+        if let Some(ref mut rx) = self.event_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(CacheEvent::StackAdded(id)) => {
+                        if !self.snapshot.ids().contains(&id) {
+                            self.pending_added.insert(id);
+                        }
+                    }
+                    Ok(CacheEvent::StackRemoved(id)) => {
+                        if self.snapshot.ids().contains(&id) {
+                            self.pending_removed.insert(id);
+                        }
+                    }
+                    Ok(CacheEvent::StackUpdated(id)) => {
+                        if self.snapshot.ids().contains(&id) {
+                            self.pending_modified.insert(id);
+                        }
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+        }
+
+        QueryDelta {
+            added: self.pending_added.len(),
+            removed: self.pending_removed.len(),
+            modified: self.pending_modified.len(),
+        }
+    }
+
     /// Sub-query this result, producing a new [`QueryResult`] filtered
     /// from the internal snapshot.
     ///
@@ -181,7 +309,7 @@ impl QueryResult {
     ///
     /// ```rust,ignore
     /// // Get all stacks, then sub-query for those with back scans
-    /// let all = mgr.query(None, Some(20), None)?;
+    /// let all = mgr.query(None, Some(20), None, None)?;
     /// let with_backs = all.query(
     ///     Some(&SearchQuery::new().with_has_back(true)),
     ///     None,

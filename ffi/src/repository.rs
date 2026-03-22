@@ -268,7 +268,7 @@ pub unsafe extern "C" fn photostax_repo_scan(repo: *const PhotostaxRepo) -> FfiS
         let repo_ref = unsafe { &*repo };
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
-            let all = match mgr.query(None, None, None).await {
+            let all = match mgr.query(None, None, None, None).await {
                 Ok(snap) => snap,
                 Err(_) => return FfiStackHandleArray::empty(),
             };
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.set_profile(scanner_profile);
-            let all = match mgr.query(None, None, progress).await {
+            let all = match mgr.query(None, None, progress, None).await {
                 Ok(snap) => snap,
                 Err(_) => return FfiStackHandleArray::empty(),
             };
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn photostax_repo_get_stack(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             let query = SearchQuery::new().with_ids(vec![id_str.to_string()]);
-            match mgr.query(Some(&query), None, None).await {
+            match mgr.query(Some(&query), None, None, None).await {
                 Ok(result) => {
                     if let Some(stack) = result.all_stacks().first() {
                         Box::into_raw(Box::new(PhotostaxStack {
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, None).await {
+            let initial = match mgr.query(None, None, None, None).await {
                 Ok(r) => r,
                 Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
             };
@@ -419,7 +419,7 @@ pub unsafe extern "C" fn photostax_repo_scan_paginated(
                     let _ = stack.metadata().read().await;
                 }
             }
-            let snapshot = match mgr.query(None, None, None).await {
+            let snapshot = match mgr.query(None, None, None, None).await {
                 Ok(snap) => snap,
                 Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
             };
@@ -505,7 +505,7 @@ pub unsafe extern "C" fn photostax_query(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
 
-            let snapshot = match mgr.query(Some(&query), None, progress).await {
+            let snapshot = match mgr.query(Some(&query), None, progress, None).await {
                 Ok(snap) => snap,
                 Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
             };

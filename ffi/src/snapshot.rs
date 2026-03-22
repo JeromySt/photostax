@@ -62,7 +62,7 @@ pub unsafe extern "C" fn photostax_create_snapshot(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, None).await {
+            let initial = match mgr.query(None, None, None, None).await {
                 Ok(r) => r,
                 Err(_) => return ptr::null_mut(),
             };
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn photostax_create_snapshot(
                     let _ = stack.metadata().read().await;
                 }
             }
-            let snap = match mgr.query(None, None, None).await {
+            let snap = match mgr.query(None, None, None, None).await {
                 Ok(r) => r.into_snapshot(),
                 Err(_) => return ptr::null_mut(),
             };
@@ -136,7 +136,7 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
             let mut mgr = repo_ref.inner.lock().await;
             mgr.set_profile(scanner_profile);
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, progress).await {
+            let initial = match mgr.query(None, None, progress, None).await {
                 Ok(r) => r,
                 Err(_) => return ptr::null_mut(),
             };
@@ -145,7 +145,7 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
                     let _ = stack.metadata().read().await;
                 }
             }
-            let snap = match mgr.query(None, None, None).await {
+            let snap = match mgr.query(None, None, None, None).await {
                 Ok(r) => r.into_snapshot(),
                 Err(_) => return ptr::null_mut(),
             };
@@ -253,7 +253,7 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
             // Re-scan to get the current state for comparison
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            if mgr.query(None, None, None).await.is_err() {
+            if mgr.query(None, None, None, None).await.is_err() {
                 return error_status;
             }
             let status = mgr.check_status(&snap.inner);

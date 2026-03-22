@@ -489,7 +489,7 @@ pub async fn cmd_scan(
     };
 
     if load_metadata {
-        let result = match mgr.query(None, None, None).await {
+        let result = match mgr.query(None, None, None, None).await {
             Ok(r) => r,
             Err(e) => {
                 let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -499,7 +499,7 @@ pub async fn cmd_scan(
         for stack in result.all_stacks() {
             let _ = stack.metadata().read().await;
         }
-    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb)).await {
+    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb), None).await {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
@@ -572,7 +572,7 @@ pub async fn cmd_search(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None).await {
+    let result = match mgr.query(None, None, None, None).await {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -604,7 +604,7 @@ pub async fn cmd_search(
 
     // Apply pagination if limit > 0
     if limit > 0 {
-        let snapshot = match mgr.query(Some(&search), None, None).await {
+        let snapshot = match mgr.query(Some(&search), None, None, None).await {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
@@ -634,7 +634,7 @@ pub async fn cmd_search(
             );
         }
     } else {
-        let results = match mgr.query(Some(&search), None, None).await {
+        let results = match mgr.query(Some(&search), None, None, None).await {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
@@ -654,19 +654,19 @@ async fn resolve_stack(
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
     if mgr.is_empty() {
-        mgr.query(None, None, None).await
+        mgr.query(None, None, None, None).await
             .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     }
     // Try by exact ID first
     let id_query = SearchQuery::new().with_ids(vec![id_or_name.to_string()]);
-    if let Ok(result) = mgr.query(Some(&id_query), None, None).await {
+    if let Ok(result) = mgr.query(Some(&id_query), None, None, None).await {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
     }
     // Fall back to name matching via text query
     let text_query = SearchQuery::new().with_text(id_or_name.to_string());
-    if let Ok(result) = mgr.query(Some(&text_query), None, None).await {
+    if let Ok(result) = mgr.query(Some(&text_query), None, None, None).await {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
@@ -887,7 +887,7 @@ pub async fn cmd_export(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None).await {
+    let result = match mgr.query(None, None, None, None).await {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
