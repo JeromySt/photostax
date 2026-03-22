@@ -357,81 +357,45 @@ public sealed class StackManager : IDisposable
     }
 
     /// <summary>
-    /// Scans all registered repositories and returns all discovered photo stacks.
-    /// </summary>
-    public IReadOnlyList<PhotoStack> Scan()
-    {
-        ThrowIfDisposed();
-
-        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
-        try
-        {
-            return PhotoStack.ConvertHandleArray(array);
-        }
-        finally
-        {
-            NativeMethods.photostax_stack_handle_array_free(array);
-        }
-    }
-
-    /// <summary>
-    /// Gets a single photo stack by its opaque ID.
-    /// </summary>
-    public PhotoStack GetStack(string id)
-    {
-        ArgumentNullException.ThrowIfNull(id);
-        ThrowIfDisposed();
-
-        var ptr = NativeMethods.photostax_repo_get_stack(_handle.DangerousGetHandle(), id);
-        if (ptr == IntPtr.Zero)
-        {
-            throw new PhotostaxException($"Stack '{id}' not found");
-        }
-
-        return new PhotoStack(ptr);
-    }
-
-    /// <summary>
     /// Unified query: search and paginate across all repositories in a single call.
+    /// This is the primary way to retrieve stacks — it auto-scans on first call.
     /// </summary>
     /// <param name="query">Search criteria, or null to match all stacks.</param>
-    /// <param name="offset">Number of stacks to skip (0-based).</param>
-    /// <param name="limit">Maximum stacks to return. Use 0 to return all matching stacks.</param>
-    /// <returns>A paginated result containing matching photo stacks.</returns>
-    public PaginatedResult<PhotoStack> Query(SearchQuery? query = null, int offset = 0, int limit = 0)
+    /// <param name="pageSize">Number of stacks per page. Use 0 to put all stacks on a single page.</param>
+    /// <param name="onProgress">Optional progress callback invoked during scanning phases.</param>
+    /// <returns>A paginated query result with page-based navigation.</returns>
+    public QueryResult Query(SearchQuery? query = null, int pageSize = 0, Action<ScanPhase, int, int>? onProgress = null)
     {
         ThrowIfDisposed();
 
         var queryJson = query?.ToJson();
+
+        NativeMethods.ScanProgressCallback? nativeCallback = null;
+        if (onProgress != null)
+        {
+            nativeCallback = (phase, current, total, _) =>
+            {
+                onProgress((ScanPhase)phase, (int)current, (int)total);
+            };
+        }
+
         var result = NativeMethods.photostax_query(
             _handle.DangerousGetHandle(),
             queryJson,
-            (nuint)offset,
-            (nuint)limit);
+            (nuint)0,
+            (nuint)0,
+            nativeCallback,
+            IntPtr.Zero);
         try
         {
-            return PhotoStack.ConvertPaginatedHandleResult(result);
+            var stacks = PhotoStack.ConvertPaginatedHandleResultToList(result);
+            return new QueryResult(stacks, pageSize);
         }
         finally
         {
             NativeMethods.photostax_paginated_handle_result_free(result);
+            GC.KeepAlive(nativeCallback);
         }
-    }
-
-    /// <summary>
-    /// Scans all repositories and loads full metadata for every stack.
-    /// </summary>
-    public IReadOnlyList<PhotoStack> ScanWithMetadata()
-    {
-        ThrowIfDisposed();
-
-        var stacks = Scan();
-        foreach (var stack in stacks)
-        {
-            try { stack.Metadata.Read(); }
-            catch { /* skip stacks that fail metadata loading */ }
-        }
-        return stacks;
     }
 
     /// <summary>

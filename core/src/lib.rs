@@ -36,13 +36,13 @@
 //!
 //! // Iterate current page
 //! for stack in result.current_page() {
-//!     println!("Photo: {} ({})", stack.name, stack.id);
+//!     println!("Photo: {} ({})", stack.name(), stack.id());
 //! }
 //!
 //! // Navigate to next page
-//! while result.next_page() {
-//!     for stack in result.current_page() {
-//!         println!("Photo: {}", stack.name);
+//! while let Some(page) = result.next_page() {
+//!     for stack in page {
+//!         println!("Photo: {}", stack.name());
 //!     }
 //! }
 //! ```
