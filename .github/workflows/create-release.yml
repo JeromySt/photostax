@@ -66,10 +66,12 @@ jobs:
           fi
         done
 
-        # Check TS Cargo.toml dependency if present
+        # Check TS Cargo.toml dependency if present (skip path-only deps)
         if grep -q 'photostax-core' bindings/typescript/Cargo.toml; then
-          DEP_VER=$(grep 'photostax-core' bindings/typescript/Cargo.toml | grep -oP '\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?')
-          if [ "$DEP_VER" != "$VERSION" ]; then
+          DEP_VER=$(grep 'photostax-core' bindings/typescript/Cargo.toml | grep -oP '\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?' || true)
+          if [ -z "$DEP_VER" ]; then
+            echo "ℹ️  bindings/typescript/Cargo.toml: photostax-core is a path-only dependency (no version constraint)"
+          elif [ "$DEP_VER" != "$VERSION" ]; then
             echo "❌ bindings/typescript/Cargo.toml: photostax-core dependency is $DEP_VER, expected $VERSION"
             ERRORS=$((ERRORS + 1))
           else
