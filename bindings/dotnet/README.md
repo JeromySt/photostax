@@ -16,7 +16,7 @@ This package provides idiomatic C# access to Epson FastFoto photo repositories. 
 - **O(1) stack lookups** by opaque ID
 - **PhotoStack-centric I/O** — `stack.Original.Read()`, `stack.Metadata.Read()`, etc.
 - **Lazy, cached accessors** — image data and metadata loaded on demand
-- **ScanSnapshot queries** — `Query()` returns a `QueryResult` for page-based navigation
+- **ScanSnapshot queries** — `Query()` returns a snapshot for consistent pagination
 
 > **Multi-repo support:** Use the `StackManager` class to manage multiple repositories through a single cache.
 
@@ -28,9 +28,10 @@ mgr.AddRepo("/photos/2024", recursive: true);
 mgr.AddRepo("/photos/2023", recursive: true);
 Console.WriteLine($"Managing {mgr.RepoCount} repos");
 
-// Query across all repos — returns a QueryResult (auto-scans on first call)
-var result = mgr.Query(new SearchQuery().WithText("birthday"), pageSize: 20);
-foreach (var stack in result.CurrentPage)
+// Query across all repos — returns a ScanSnapshot (auto-scans on first call)
+var snap = mgr.Query(new SearchQuery().WithText("birthday"));
+var page = snap.GetPage(0, 20);
+foreach (var stack in page.Items)
 {
     Console.WriteLine($"{stack.Name} ({stack.Id})");
 
@@ -88,13 +89,12 @@ using Photostax;
 // Open a repository
 using var repo = new PhotostaxRepository("/path/to/photos");
 
-// Query all stacks — Query() is the sole entry point for retrieving stacks
-var result = repo.Query(pageSize: 20);
+// Query all stacks — returns a ScanSnapshot
+var snap = repo.Query();
 
-// Iterate the first page
-foreach (var stack in result.CurrentPage)
+foreach (var stack in snap.Stacks)
 {
-    Console.WriteLine($"{stack.Name}: {stack.Original.IsPresent}");
+    Console.WriteLine($"{stack.Name} ({stack.Id})");
     Console.WriteLine($"  Folder: {stack.Folder ?? "(root)"}");
 
     // Read images via ImageRef (lazy, cached)
@@ -110,21 +110,21 @@ foreach (var stack in result.CurrentPage)
     Console.WriteLine($"  Camera: {meta.ExifTags.GetValueOrDefault("Make", "unknown")}");
 }
 
-// Navigate remaining pages
-while (result.NextPage() is { } page)
+// Search with pagination via ScanSnapshot
+var snap2 = repo.Query(
+    new SearchQuery().WithText("birthday").WithHasBack(true)
+);
+var page = snap2.GetPage(0, 20);
+Console.WriteLine($"Page has {page.Items.Count} of {page.TotalCount} total");
+
+if (page.HasMore)
 {
-    foreach (var stack in page)
-    {
-        Console.WriteLine($"{stack.Name} ({stack.Id})");
-    }
+    var page2 = snap2.GetPage(20, 20);
 }
 
-// Filtered query — pass a SearchQuery to filter instead of scan
-var filtered = repo.Query(
-    new SearchQuery().WithText("birthday").WithHasBack(true),
-    pageSize: 20
-);
-Console.WriteLine($"Page has {filtered.CurrentPage.Count} of {filtered.TotalCount} total");
+// Write metadata directly on the stack
+var metadata = new Metadata().WithCustomTag("album", "Family Photos");
+snap.Stacks[0].Metadata.Write(metadata);
 ```
 
 ## API Overview
@@ -135,7 +135,7 @@ The main entry point for working with photo repositories.
 
 | Method | Description |
 |--------|-------------|
-| `Query(query?, pageSize, onProgress?)` | Returns a `QueryResult` for page-based navigation. Auto-scans on first call. |
+| `Query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. Auto-scans on first call. |
 
 ### StackManager
 
@@ -147,7 +147,9 @@ Multi-repository manager for unified access across directories and custom backen
 | `AddRepo(path, ...)` | Register a local directory |
 | `AddRepo(IRepositoryProvider, ...)` | Register a custom repository provider |
 | `RepoCount` | Number of registered repositories |
-| `Query(query?, pageSize, onProgress?)` | Search across all repos, returns `QueryResult`. Auto-scans on first call. |
+| `GetStack(id)` | Retrieve a single stack by opaque ID |
+| `Query(filter?)` | Search across all repos, returns `ScanSnapshot` |
+| `CreateSnapshot()` | Create a point-in-time snapshot |
 
 ### PhotoStack (v0.4.0)
 
@@ -213,22 +215,6 @@ var query = new SearchQuery()
     .WithHasBack(true)              // Has back scan
     .WithRepoId("a1b2c3d4");       // Filter by repository (v0.4.0)
 ```
-
-### QueryResult
-
-Page-based query result with navigation:
-
-| Property/Method | Type | Description |
-|----------------|------|-------------|
-| `CurrentPage` | `IReadOnlyList<PhotoStack>` | Stacks on the current page |
-| `TotalCount` | `int` | Total matching stacks across all pages |
-| `PageCount` | `int` | Total number of pages |
-| `CurrentPageIndex` | `int` | Zero-based index of current page |
-| `PageSize` | `int` | Items per page |
-| `NextPage()` | `IReadOnlyList<PhotoStack>?` | Advance to next page, returns it (or null) |
-| `PreviousPage()` | `IReadOnlyList<PhotoStack>?` | Go to previous page (or null) |
-| `SetPage(index)` | `IReadOnlyList<PhotoStack>?` | Jump to specific page (or null) |
-| `Query(query)` | `QueryResult` | Sub-query on current result set |
 
 ## Building from Source
 

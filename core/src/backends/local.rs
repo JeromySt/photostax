@@ -41,10 +41,10 @@
 //!
 //! // Load metadata via handle when needed
 //! let mut stack = stacks.into_iter().next().unwrap();
-//! let meta = stack.metadata().read()?;
+//! let meta = stack.metadata.read()?;
 //! println!("{} (id={}): {} EXIF tags, {} custom tags",
-//!     stack.name(),
-//!     stack.id(),
+//!     stack.name,
+//!     stack.id,
 //!     meta.exif_tags.len(),
 //!     meta.custom_tags.len());
 //!
@@ -185,36 +185,34 @@ impl LocalRepository {
     /// Determines the best image path for EXIF/XMP reading by checking
     /// which image variants are present (enhanced preferred over original).
     fn attach_metadata_handle(&self, stack: &mut PhotoStack) {
-        let inner_r = stack.inner.read().unwrap();
-        let sidecar_dir = inner_r
+        let sidecar_dir = stack
             .location
             .as_ref()
             .map(|l| self.root.join(l))
             .unwrap_or_else(|| self.root.clone());
 
         // Try to find the best image path for EXIF/XMP reading
-        let image_path = self.find_image_path_inner(&inner_r);
+        let image_path = self.find_image_path(stack);
         let image_format = image_path.as_ref().and_then(|p| detect_image_format(p));
 
         let handle = LocalMetadataHandle::with_folder(
-            inner_r.name.clone(),
+            stack.name.clone(),
             sidecar_dir,
             image_path,
             image_format,
-            inner_r.folder.clone(),
+            stack.folder.clone(),
         );
-        drop(inner_r);
-        stack.inner.write().unwrap().metadata = MetadataRef::new(Arc::new(handle));
+        stack.metadata = MetadataRef::new(Arc::new(handle));
     }
 
-    /// Internal helper that works with an already-locked inner.
-    fn find_image_path_inner(
-        &self,
-        inner: &crate::photo_stack::PhotoStackInner,
-    ) -> Option<PathBuf> {
+    /// Find the filesystem path for the best image in a stack (enhanced preferred).
+    ///
+    /// Uses Any trait downcasting isn't available on `dyn ImageHandle`, so we
+    /// re-derive the path from the scan data stored in `location`.
+    fn find_image_path(&self, stack: &PhotoStack) -> Option<PathBuf> {
         // Since LocalImageHandle stores the path but we can't downcast,
         // we reconstruct the path from the stack's name and location.
-        let dir = inner
+        let dir = stack
             .location
             .as_ref()
             .map(|l| self.root.join(l))
@@ -224,9 +222,9 @@ impl LocalRepository {
         let extensions = &self.config.extensions;
         for suffix in [&self.config.enhanced_suffix, ""] {
             let stem = if suffix.is_empty() {
-                inner.name.clone()
+                stack.name.clone()
             } else {
-                format!("{}{}", inner.name, suffix)
+                format!("{}{}", stack.name, suffix)
             };
             for ext in extensions {
                 let candidate = dir.join(format!("{stem}.{ext}"));
@@ -256,7 +254,7 @@ impl LocalRepository {
     pub fn scan_with_metadata(&self) -> Result<Vec<PhotoStack>, RepositoryError> {
         let mut stacks = self.scan()?;
         for stack in &mut stacks {
-            let _ = stack.inner.write().unwrap().metadata.read()?;
+            let _ = stack.metadata.read()?;
         }
         Ok(stacks)
     }
@@ -303,10 +301,7 @@ impl Repository for LocalRepository {
 
         for (i, stack) in stacks.iter_mut().enumerate() {
             // Set location for sidecar resolution
-            {
-                let mut inner = stack.inner.write().unwrap();
-                inner.location = inner.folder.clone();
-            }
+            stack.location = stack.folder.clone();
 
             // Attach a metadata handle that knows how to lazily load
             // EXIF/XMP/sidecar + folder-derived metadata.
@@ -326,10 +321,7 @@ impl Repository for LocalRepository {
             let ambiguous_indices: Vec<usize> = stacks
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| {
-                    let inner = s.inner.read().unwrap();
-                    inner.enhanced.is_present() && !inner.back.is_present()
-                })
+                .filter(|(_, s)| s.enhanced.is_present() && !s.back.is_present())
                 .map(|(i, _)| i)
                 .collect();
 
@@ -491,7 +483,7 @@ mod tests {
         let stacks = repo.scan()?;
         stacks
             .into_iter()
-            .find(|s| s.name() == name)
+            .find(|s| s.name == name)
             .ok_or_else(|| RepositoryError::NotFound(name.to_string()))
     }
 
@@ -568,11 +560,11 @@ mod tests {
         let stacks = repo.scan().unwrap();
 
         assert_eq!(stacks.len(), 2);
-        assert!(stacks.iter().any(|s| s.name() == "IMG_001"));
-        assert!(stacks.iter().any(|s| s.name() == "IMG_002"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_001"));
+        assert!(stacks.iter().any(|s| s.name == "IMG_002"));
         // Scan is lazy — metadata should not be loaded yet
         for stack in &stacks {
-            assert!(!stack.metadata().is_loaded());
+            assert!(!stack.metadata.is_loaded());
         }
     }
 
@@ -602,7 +594,7 @@ mod tests {
         assert_eq!(stacks.len(), 1);
         assert_eq!(
             stacks[0]
-                .metadata()
+                .metadata
                 .cached()
                 .unwrap()
                 .custom_tags
@@ -631,9 +623,9 @@ mod tests {
         let repo = LocalRepository::new(dir);
         let stack = find_stack_by_name(&repo, "IMG_001").unwrap();
 
-        assert_eq!(stack.name(), "IMG_001");
-        assert!(stack.original().is_present());
-        assert!(stack.enhanced().is_present());
+        assert_eq!(stack.name, "IMG_001");
+        assert!(stack.original.is_present());
+        assert!(stack.enhanced.is_present());
     }
 
     #[test]
@@ -696,7 +688,7 @@ mod tests {
             .custom_tags
             .insert("processed".to_string(), serde_json::json!(true));
 
-        stack.metadata().write(&metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
 
         // Verify tags were written by reading them back from sidecar
         let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
@@ -726,7 +718,7 @@ mod tests {
             .xmp_tags
             .insert("description".to_string(), "Test description".to_string());
 
-        stack.metadata().write(&metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
 
         // Verify XMP was written to the sidecar
         let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
@@ -752,7 +744,7 @@ mod tests {
             .exif_tags
             .insert("CustomMake".to_string(), "TestMake".to_string());
 
-        stack.metadata().write(&metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
 
         // EXIF overrides stored in sidecar
         let sidecar_data = crate::metadata::sidecar::read_sidecar(dir, "IMG_001").unwrap();
@@ -774,7 +766,7 @@ mod tests {
         let stack = find_stack_by_name(&repo, "IMG_001").unwrap();
 
         let metadata = crate::photo_stack::Metadata::default();
-        let result = stack.metadata().write(&metadata);
+        let result = stack.metadata.write(&metadata);
         assert!(result.is_ok());
     }
 
@@ -798,13 +790,13 @@ mod tests {
         crate::metadata::sidecar::write_sidecar(dir, "IMG_001", &data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = find_stack_by_name(&repo, "IMG_001").unwrap();
+        let mut stack = find_stack_by_name(&repo, "IMG_001").unwrap();
 
         // Before read, sidecar tags should NOT be loaded
-        assert!(stack.metadata().cached().is_none());
+        assert!(stack.metadata.cached().is_none());
 
         // After read, sidecar tags should be loaded
-        let meta = stack.metadata().read().unwrap();
+        let meta = stack.metadata.read().unwrap();
         assert_eq!(
             meta.custom_tags.get("custom_tag"),
             Some(&serde_json::json!("custom_value"))
@@ -823,11 +815,11 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
         // Just verify the stack has both image handles
-        assert!(stack.original().is_present());
-        assert!(stack.enhanced().is_present());
+        assert!(stack.original.is_present());
+        assert!(stack.enhanced.is_present());
     }
 
     #[test]
@@ -840,8 +832,8 @@ mod tests {
         fs::write(dir.join("IMG_001.jpg"), &jpeg_data).unwrap();
 
         let repo = LocalRepository::new(dir);
-        let stack = find_stack_by_name(&repo, "IMG_001").unwrap();
-        let meta = stack.metadata().read().unwrap();
+        let mut stack = find_stack_by_name(&repo, "IMG_001").unwrap();
+        let meta = stack.metadata.read().unwrap();
 
         // Should have no sidecar-derived custom tags.
         // (folder-derived tags with `folder_` prefix may be present from the
@@ -875,9 +867,9 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         let stack = &stacks[0];
-        assert!(stack.original().is_present());
-        assert!(stack.enhanced().is_present());
-        assert!(stack.back().is_present());
+        assert!(stack.original.is_present());
+        assert!(stack.enhanced.is_present());
+        assert!(stack.back.is_present());
     }
 
     #[test]
@@ -885,8 +877,8 @@ mod tests {
         let _tmp = TempDir::new().unwrap();
 
         // A stack with no images — using a NullMetadataHandle returns empty
-        let stack = PhotoStack::new("empty");
-        let meta = stack.metadata().read().unwrap();
+        let mut stack = PhotoStack::new("empty");
+        let meta = stack.metadata.read().unwrap();
         assert!(meta.exif_tags.is_empty());
     }
 
@@ -907,10 +899,10 @@ mod tests {
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
 
-        let stacks = repo.scan().unwrap();
+        let mut stacks = repo.scan().unwrap();
         assert_eq!(stacks.len(), 1);
         // Load metadata to trigger folder metadata population
-        let meta = stacks[0].metadata().read().unwrap();
+        let meta = stacks[0].metadata.read().unwrap();
         assert_eq!(
             meta.custom_tags.get("folder_year"),
             Some(&serde_json::json!(1984))
@@ -937,8 +929,8 @@ mod tests {
             ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        let stacks = repo.scan().unwrap();
-        let meta = stacks[0].metadata().read().unwrap();
+        let mut stacks = repo.scan().unwrap();
+        let meta = stacks[0].metadata.read().unwrap();
 
         assert_eq!(
             meta.custom_tags.get("folder_year"),
@@ -967,8 +959,8 @@ mod tests {
             ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        let stacks = repo.scan().unwrap();
-        let meta = stacks[0].metadata().read().unwrap();
+        let mut stacks = repo.scan().unwrap();
+        let meta = stacks[0].metadata.read().unwrap();
 
         assert!(!meta.custom_tags.contains_key("folder_year"));
         assert_eq!(
@@ -1012,7 +1004,7 @@ mod tests {
         // Use scan_with_metadata since we need sidecar loaded to test priority
         let stacks = repo.scan_with_metadata().unwrap();
 
-        let meta = stacks[0].metadata().cached().unwrap();
+        let meta = stacks[0].metadata.cached().unwrap();
         // Sidecar value should win for xmp_tags["subject"]
         assert_eq!(
             meta.xmp_tags.get("subject"),
@@ -1038,8 +1030,8 @@ mod tests {
             ..ScannerConfig::default()
         };
         let repo = LocalRepository::with_config(tmp.path(), config);
-        let stacks = repo.scan().unwrap();
-        let meta = stacks[0].metadata().read().unwrap();
+        let mut stacks = repo.scan().unwrap();
+        let meta = stacks[0].metadata.read().unwrap();
 
         assert_eq!(
             meta.custom_tags.get("folder_year"),
@@ -1066,14 +1058,14 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
         stack
-            .original()
+            .original
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
         stack
-            .enhanced()
+            .enhanced
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
 
@@ -1095,10 +1087,10 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
         stack
-            .original()
+            .original
             .rotate(crate::photo_stack::Rotation::Ccw90)
             .unwrap();
 
@@ -1116,10 +1108,10 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
 
         stack
-            .original()
+            .original
             .rotate(crate::photo_stack::Rotation::Cw180)
             .unwrap();
 
@@ -1140,19 +1132,19 @@ mod tests {
 
         let repo = LocalRepository::new(dir);
         let stacks = repo.scan().unwrap();
-        let stack = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let stack = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
         assert_eq!(stack.image_count(), 3);
 
         stack
-            .original()
+            .original
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
         stack
-            .enhanced()
+            .enhanced
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
         stack
-            .back()
+            .back
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
 
@@ -1210,11 +1202,10 @@ mod tests {
         let snap = crate::snapshot::ScanSnapshot::from_scan_with_metadata(&repo).unwrap();
         assert!(snap.total_count() > 0);
         // Metadata should be populated
-        let has_exif = snap.stacks().iter().any(|s| {
-            s.metadata()
-                .cached()
-                .is_some_and(|m| !m.exif_tags.is_empty())
-        });
+        let has_exif = snap
+            .stacks()
+            .iter()
+            .any(|s| s.metadata.cached().is_some_and(|m| !m.exif_tags.is_empty()));
         assert!(has_exif, "At least one stack should have EXIF tags");
     }
 
@@ -1233,7 +1224,7 @@ mod tests {
 
         // pages don't overlap (IDs are different)
         if !page1.items.is_empty() && !page2.items.is_empty() {
-            assert_ne!(page1.items[0].id(), page2.items[0].id());
+            assert_ne!(page1.items[0].id, page2.items[0].id);
         }
     }
 
@@ -1312,9 +1303,9 @@ mod tests {
         assert_eq!(page.total_count, filtered.total_count());
         for item in &page.items {
             assert!(
-                item.name().contains("FamilyPhotos"),
+                item.name.contains("FamilyPhotos"),
                 "filtered item {} should match",
-                item.name()
+                item.name
             );
         }
     }

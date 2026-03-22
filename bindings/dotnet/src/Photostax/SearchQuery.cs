@@ -84,35 +84,6 @@ public sealed class SearchQuery
     }
 
     /// <summary>
-    /// Tests whether a stack matches this query's criteria.
-    /// Used for client-side sub-query filtering.
-    /// </summary>
-    internal bool Matches(PhotoStack stack)
-    {
-        // Text filter — match against name, folder
-        if (!string.IsNullOrEmpty(_textQuery))
-        {
-            bool nameMatch = stack.Name?.Contains(_textQuery, StringComparison.OrdinalIgnoreCase) == true;
-            bool folderMatch = stack.Folder?.Contains(_textQuery, StringComparison.OrdinalIgnoreCase) == true;
-            if (!nameMatch && !folderMatch) return false;
-        }
-
-        // Has back filter
-        if (_hasBack.HasValue && stack.Back.IsPresent != _hasBack.Value)
-            return false;
-
-        // Has enhanced filter
-        if (_hasEnhanced.HasValue && stack.Enhanced.IsPresent != _hasEnhanced.Value)
-            return false;
-
-        // Stack IDs filter
-        if (_stackIds is { Count: > 0 } && !_stackIds.Contains(stack.Id))
-            return false;
-
-        return true;
-    }
-
-    /// <summary>
     /// Serializes the query to JSON for FFI.
     /// </summary>
     internal string ToJson()

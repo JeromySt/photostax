@@ -173,10 +173,7 @@ impl Repository for ForeignRepository {
 
         let stack_count = stacks.len();
         for (i, stack) in stacks.iter_mut().enumerate() {
-            {
-                let mut inner = stack.inner.write().unwrap();
-                inner.location = inner.folder.clone();
-            }
+            stack.location = stack.folder.clone();
 
             if let Some(ref mut cb) = progress {
                 cb(&ScanProgress {
@@ -192,10 +189,7 @@ impl Repository for ForeignRepository {
             let ambiguous_indices: Vec<usize> = stacks
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| {
-                    let inner = s.inner.read().unwrap();
-                    inner.enhanced.is_present() && !inner.back.is_present()
-                })
+                .filter(|(_, s)| s.enhanced.is_present() && !s.back.is_present())
                 .map(|(i, _)| i)
                 .collect();
 
@@ -379,16 +373,16 @@ mod tests {
 
         assert_eq!(stacks.len(), 2);
 
-        let s1 = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
-        assert!(s1.original().is_present());
-        assert!(s1.enhanced().is_present());
-        assert!(s1.back().is_present());
-        assert_eq!(s1.repo_id().as_deref(), Some("cloud://photos"));
+        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
+        assert!(s1.original.is_present());
+        assert!(s1.enhanced.is_present());
+        assert!(s1.back.is_present());
+        assert_eq!(s1.repo_id.as_deref(), Some("cloud://photos"));
 
-        let s2 = stacks.iter().find(|s| s.name() == "IMG_002").unwrap();
-        assert!(s2.original().is_present());
-        assert!(!s2.enhanced().is_present());
-        assert!(!s2.back().is_present());
+        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
+        assert!(s2.original.is_present());
+        assert!(!s2.enhanced.is_present());
+        assert!(!s2.back.is_present());
     }
 
     #[test]
@@ -485,10 +479,10 @@ mod tests {
 
         assert_eq!(stacks.len(), 1);
         let stack = &stacks[0];
-        assert_eq!(stack.name(), "IMG_001");
-        assert_eq!(stack.folder().as_deref(), Some("1984_Mexico"));
+        assert_eq!(stack.name, "IMG_001");
+        assert_eq!(stack.folder.as_deref(), Some("1984_Mexico"));
         // Folder is stored for downstream metadata loading
-        assert_eq!(stack.location().as_deref(), Some("1984_Mexico"));
+        assert_eq!(stack.location.as_deref(), Some("1984_Mexico"));
     }
 
     #[test]
@@ -513,8 +507,8 @@ mod tests {
         let stacks = repo.scan().unwrap();
 
         assert_eq!(stacks.len(), 1);
-        assert_eq!(stacks[0].name(), "IMG_001");
-        assert!(stacks[0].enhanced().is_present());
+        assert_eq!(stacks[0].name, "IMG_001");
+        assert!(stacks[0].enhanced.is_present());
     }
 
     #[test]

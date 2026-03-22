@@ -98,13 +98,14 @@ pub unsafe extern "C" fn photostax_search(
 
         // Get all stacks with metadata (search needs metadata to filter)
         let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return FfiStackHandleArray::empty(),
-        };
-        for stack in initial.all_stacks() {
-            let _ = stack.metadata().read();
+        if mgr.rescan(None).is_err() {
+            return FfiStackHandleArray::empty();
+        }
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
         }
 
         // Apply the filter using query()
@@ -195,13 +196,14 @@ pub unsafe extern "C" fn photostax_search_paginated(
         }
 
         let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
-        for stack in initial.all_stacks() {
-            let _ = stack.metadata().read();
+        if mgr.rescan(None).is_err() {
+            return FfiPaginatedHandleResult::empty(offset, limit);
+        }
+        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+        for id in &ids {
+            if let Some(s) = mgr.get_stack_mut(id) {
+                let _ = s.metadata.read();
+            }
         }
 
         let snapshot = match mgr.query(Some(&query), None, None) {

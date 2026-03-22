@@ -59,20 +59,18 @@ pub unsafe extern "C" fn photostax_create_snapshot(
 
         let repo_ref = unsafe { &*repo };
         let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return ptr::null_mut(),
-        };
+        if mgr.rescan(None).is_err() {
+            return ptr::null_mut();
+        }
         if load_metadata {
-            for stack in initial.all_stacks() {
-                let _ = stack.metadata().read();
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in &ids {
+                if let Some(s) = mgr.get_stack_mut(id) {
+                    let _ = s.metadata.read();
+                }
             }
         }
-        let snap = match mgr.query(None, None, None) {
-            Ok(r) => r.into_snapshot(),
-            Err(_) => return ptr::null_mut(),
-        };
+        let snap = mgr.snapshot();
         drop(mgr);
 
         Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
@@ -128,20 +126,18 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
 
         let mut mgr = repo_ref.inner.borrow_mut();
         mgr.set_profile(scanner_profile);
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, progress) {
-            Ok(r) => r,
-            Err(_) => return ptr::null_mut(),
-        };
+        if mgr.rescan(progress).is_err() {
+            return ptr::null_mut();
+        }
         if load_metadata {
-            for stack in initial.all_stacks() {
-                let _ = stack.metadata().read();
+            let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
+            for id in &ids {
+                if let Some(s) = mgr.get_stack_mut(id) {
+                    let _ = s.metadata.read();
+                }
             }
         }
-        let snap = match mgr.query(None, None, None) {
-            Ok(r) => r.into_snapshot(),
-            Err(_) => return ptr::null_mut(),
-        };
+        let snap = mgr.snapshot();
         drop(mgr);
 
         Box::into_raw(Box::new(PhotostaxSnapshot { inner: snap }))
@@ -240,8 +236,7 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
 
         // Re-scan to get the current state for comparison
         let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        if mgr.query(None, None, None).is_err() {
+        if mgr.rescan(None).is_err() {
             return error_status;
         }
         let status = mgr.check_status(&snap.inner);

@@ -41,49 +41,207 @@ public sealed class PhotostaxRepository : IDisposable
     }
 
     /// <summary>
-    /// Query the repository for stacks with optional filtering and pagination.
+    /// Scans the repository and returns all photo stacks.
     /// </summary>
-    /// <remarks>
-    /// This is the sole entry point for retrieving stacks, matching the Rust
-    /// <c>StackManager.query()</c> model. Pass <c>null</c> to match all stacks
-    /// (equivalent to a scan), or provide a <see cref="SearchQuery"/> to filter.
-    /// </remarks>
-    /// <param name="query">Search criteria, or null to match all stacks.</param>
-    /// <param name="pageSize">Number of stacks per page. Use 0 to put all stacks on a single page.</param>
-    /// <param name="onProgress">Optional progress callback invoked during scanning phases.</param>
-    /// <returns>A paginated query result with page-based navigation.</returns>
+    /// <returns>A list of photo stacks found in the repository.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public QueryResult Query(SearchQuery? query = null, int pageSize = 0, Action<ScanPhase, int, int>? onProgress = null)
+    public IReadOnlyList<PhotoStack> Scan()
     {
         ThrowIfDisposed();
 
-        var queryJson = query?.ToJson();
+        var array = NativeMethods.photostax_repo_scan(_handle.DangerousGetHandle());
+        try
+        {
+            return PhotoStack.ConvertHandleArray(array);
+        }
+        finally
+        {
+            NativeMethods.photostax_stack_handle_array_free(array);
+        }
+    }
+
+    /// <summary>
+    /// Scans with a <see cref="ScannerProfile"/> and optional progress callback.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <paramref name="profile"/> tells the engine how the FastFoto was configured:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="ScannerProfile.Auto"/> — unknown config, uses pixel analysis for ambiguous _a (disk I/O)</item>
+    ///   <item><see cref="ScannerProfile.EnhancedAndBack"/> — _a = enhanced, _b = back (no I/O)</item>
+    ///   <item><see cref="ScannerProfile.EnhancedOnly"/> — _a = enhanced, no back files (no I/O)</item>
+    ///   <item><see cref="ScannerProfile.OriginalOnly"/> — no _a or _b expected (no I/O)</item>
+    /// </list>
+    /// <para>
+    /// The <paramref name="onProgress"/> callback is invoked for each progress step with the
+    /// current phase, items processed, and total items.
+    /// </para>
+    /// </remarks>
+    /// <param name="profile">FastFoto scanner configuration.</param>
+    /// <param name="onProgress">Optional progress callback (phase, current, total).</param>
+    /// <returns>A list of photo stacks.</returns>
+    public IReadOnlyList<PhotoStack> ScanWithProgress(
+        ScannerProfile profile = ScannerProfile.Auto,
+        Action<ScanPhase, int, int>? onProgress = null)
+    {
+        ThrowIfDisposed();
 
         NativeMethods.ScanProgressCallback? nativeCallback = null;
         if (onProgress != null)
         {
             nativeCallback = (phase, current, total, _) =>
-            {
                 onProgress((ScanPhase)phase, (int)current, (int)total);
-            };
         }
 
-        var result = NativeMethods.photostax_query(
+        var array = NativeMethods.photostax_repo_scan_with_progress(
             _handle.DangerousGetHandle(),
-            queryJson,
-            (nuint)0,
-            (nuint)0,
+            (int)profile,
             nativeCallback,
             IntPtr.Zero);
         try
         {
-            var stacks = PhotoStack.ConvertPaginatedHandleResultToList(result);
-            return new QueryResult(stacks, pageSize);
+            return PhotoStack.ConvertHandleArray(array);
+        }
+        finally
+        {
+            NativeMethods.photostax_stack_handle_array_free(array);
+        }
+    }
+
+    /// <summary>
+    /// Scans the repository and returns all photo stacks with full metadata loaded.
+    /// </summary>
+    /// <remarks>
+    /// This is the slower path that reads EXIF, XMP, and sidecar data for every stack.
+    /// Prefer <see cref="Scan"/> and then calling <c>stack.Metadata.Read()</c> for lazy-loading in large repositories.
+    /// </remarks>
+    /// <returns>A list of photo stacks with complete metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public IReadOnlyList<PhotoStack> ScanWithMetadata()
+    {
+        ThrowIfDisposed();
+
+        var stacks = Scan();
+        foreach (var stack in stacks)
+        {
+            try { stack.Metadata.Read(); }
+            catch { /* skip stacks that fail metadata loading */ }
+        }
+        return stacks;
+    }
+
+    /// <summary>
+    /// Searches for photo stacks matching the specified query.
+    /// </summary>
+    /// <param name="query">The search query.</param>
+    /// <returns>A list of matching photo stacks.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public IReadOnlyList<PhotoStack> Search(SearchQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ThrowIfDisposed();
+
+        var queryJson = query.ToJson();
+        var array = NativeMethods.photostax_search(_handle.DangerousGetHandle(), queryJson);
+        try
+        {
+            return PhotoStack.ConvertHandleArray(array);
+        }
+        finally
+        {
+            NativeMethods.photostax_stack_handle_array_free(array);
+        }
+    }
+
+    /// <summary>
+    /// Scans the repository and returns a paginated result of photo stacks.
+    /// </summary>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <param name="loadMetadata">When true, loads EXIF/XMP/sidecar metadata for each stack in the page.</param>
+    /// <returns>A paginated result containing photo stacks and metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> ScanPaginated(int offset, int limit, bool loadMetadata = false)
+    {
+        ThrowIfDisposed();
+
+        var result = NativeMethods.photostax_repo_scan_paginated(
+            _handle.DangerousGetHandle(),
+            (nuint)offset,
+            (nuint)limit,
+            loadMetadata);
+        try
+        {
+            return PhotoStack.ConvertPaginatedHandleResult(result);
         }
         finally
         {
             NativeMethods.photostax_paginated_handle_result_free(result);
-            GC.KeepAlive(nativeCallback);
+        }
+    }
+
+    /// <summary>
+    /// Searches for photo stacks with pagination.
+    /// </summary>
+    /// <param name="query">The search query.</param>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum number of stacks to return per page.</param>
+    /// <returns>A paginated result containing matching photo stacks and metadata.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> SearchPaginated(SearchQuery query, int offset, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ThrowIfDisposed();
+
+        var queryJson = query.ToJson();
+        var result = NativeMethods.photostax_search_paginated(
+            _handle.DangerousGetHandle(),
+            queryJson,
+            (nuint)offset,
+            (nuint)limit);
+        try
+        {
+            return PhotoStack.ConvertPaginatedHandleResult(result);
+        }
+        finally
+        {
+            NativeMethods.photostax_paginated_handle_result_free(result);
+        }
+    }
+
+    /// <summary>
+    /// Unified query: search and paginate the cache in a single call.
+    /// </summary>
+    /// <remarks>
+    /// This is the preferred way to retrieve stacks. Combines filtering and
+    /// pagination into one operation. Call <see cref="Scan"/> or <see cref="ScanWithMetadata"/>
+    /// first to populate the cache.
+    /// </remarks>
+    /// <param name="query">Search criteria, or null to match all stacks.</param>
+    /// <param name="offset">Number of stacks to skip (0-based).</param>
+    /// <param name="limit">Maximum stacks to return. Use 0 to return all matching stacks.</param>
+    /// <returns>A paginated result containing matching photo stacks and metadata.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
+    public PaginatedResult<PhotoStack> Query(SearchQuery? query = null, int offset = 0, int limit = 0)
+    {
+        ThrowIfDisposed();
+
+        var queryJson = query?.ToJson();
+        var result = NativeMethods.photostax_query(
+            _handle.DangerousGetHandle(),
+            queryJson,
+            (nuint)offset,
+            (nuint)limit);
+        try
+        {
+            return PhotoStack.ConvertPaginatedHandleResult(result);
+        }
+        finally
+        {
+            NativeMethods.photostax_paginated_handle_result_free(result);
         }
     }
 

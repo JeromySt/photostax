@@ -24,73 +24,61 @@ public sealed class PhotoStack : IDisposable
     public MetadataRef Metadata { get; }
 
     /// <summary>Gets the unique identifier (opaque SHA-256 hash).</summary>
-    public string Id { get; }
-
-    /// <summary>Gets the human-readable display name.</summary>
-    public string Name { get; }
-
-    /// <summary>Gets the subfolder within the repository, or null if root-level.</summary>
-    public string? Folder { get; }
-
-    /// <summary>Gets which image variants are present as a flags enum.</summary>
-    public ImageVariants ImagesPresent
+    public string Id
     {
         get
         {
             ThrowIfDisposed();
-            var flags = ImageVariants.None;
-            if (Original.IsPresent) flags |= ImageVariants.Original;
-            if (Enhanced.IsPresent) flags |= ImageVariants.Enhanced;
-            if (Back.IsPresent) flags |= ImageVariants.Back;
-            return flags;
+            var ptr = NativeMethods.photostax_stack_id(Handle);
+            if (ptr == IntPtr.Zero) return string.Empty;
+            try { return Marshal.PtrToStringUTF8(ptr) ?? string.Empty; }
+            finally { NativeMethods.photostax_string_free(ptr); }
+        }
+    }
+
+    /// <summary>Gets the human-readable display name.</summary>
+    public string Name
+    {
+        get
+        {
+            ThrowIfDisposed();
+            var ptr = NativeMethods.photostax_stack_name(Handle);
+            if (ptr == IntPtr.Zero) return string.Empty;
+            try { return Marshal.PtrToStringUTF8(ptr) ?? string.Empty; }
+            finally { NativeMethods.photostax_string_free(ptr); }
+        }
+    }
+
+    /// <summary>Gets the subfolder within the repository, or null if root-level.</summary>
+    public string? Folder
+    {
+        get
+        {
+            ThrowIfDisposed();
+            var ptr = NativeMethods.photostax_stack_folder(Handle);
+            if (ptr == IntPtr.Zero) return null;
+            try { return Marshal.PtrToStringUTF8(ptr); }
+            finally { NativeMethods.photostax_string_free(ptr); }
         }
     }
 
     /// <summary>Gets whether this stack has any image variant present.</summary>
-    public bool HasAnyImage => ImagesPresent != ImageVariants.None;
+    public bool HasAnyImage => Original.IsPresent || Enhanced.IsPresent || Back.IsPresent;
+
+    /// <summary>
+    /// Gets the image format, or null if no images are present.
+    /// Format detection is deferred to image reading.
+    /// </summary>
+    public ImageFormat? Format => HasAnyImage ? ImageFormat.Jpeg : null;
 
     internal PhotoStack(IntPtr handle)
     {
         Handle = handle != IntPtr.Zero ? handle
             : throw new ArgumentException("Handle cannot be zero.", nameof(handle));
-
-        // Cache immutable properties eagerly (avoids repeated FFI calls)
-        Id = ReadString(NativeMethods.photostax_stack_id(handle)) ?? string.Empty;
-        Name = ReadString(NativeMethods.photostax_stack_name(handle)) ?? Id;
-        Folder = ReadString(NativeMethods.photostax_stack_folder(handle));
-
         Original = new ImageRef(this, 0);
         Enhanced = new ImageRef(this, 1);
         Back = new ImageRef(this, 2);
         Metadata = new MetadataRef(this);
-    }
-
-    private static string? ReadString(IntPtr ptr)
-    {
-        if (ptr == IntPtr.Zero) return null;
-        try { return Marshal.PtrToStringUTF8(ptr); }
-        finally { NativeMethods.photostax_string_free(ptr); }
-    }
-
-    /// <summary>
-    /// Swaps front and back images when a photo was accidentally scanned backwards.
-    /// After swap: original ← old back, back ← old original, enhanced ← deleted.
-    /// Files are renamed on disk to match their new roles.
-    /// </summary>
-    /// <exception cref="PhotostaxException">Thrown when the swap fails (e.g., no back image).</exception>
-    public void SwapFrontBack()
-    {
-        ThrowIfDisposed();
-
-        var result = NativeMethods.photostax_stack_swap_front_back(Handle);
-        if (!result.Success)
-        {
-            var msg = result.ErrorMessage != IntPtr.Zero
-                ? Marshal.PtrToStringUTF8(result.ErrorMessage) : "Unknown error";
-            if (result.ErrorMessage != IntPtr.Zero)
-                NativeMethods.photostax_string_free(result.ErrorMessage);
-            throw new PhotostaxException(msg!);
-        }
     }
 
     /// <summary>
@@ -176,32 +164,6 @@ public sealed class PhotoStack : IDisposable
         }
 
         return stacks;
-    }
-
-    /// <summary>
-    /// Convert an FfiPaginatedHandleResult to a flat list, discarding pagination metadata.
-    /// Takes ownership of individual handles.
-    /// </summary>
-    internal static IReadOnlyList<PhotoStack> ConvertPaginatedHandleResultToList(FfiPaginatedHandleResult result)
-    {
-        var items = new List<PhotoStack>();
-
-        if (result.Handles != IntPtr.Zero && result.Len > 0)
-        {
-            var ptrSize = IntPtr.Size;
-            for (nuint i = 0; i < result.Len; i++)
-            {
-                var offset = (int)i * ptrSize;
-                var handlePtr = Marshal.ReadIntPtr(result.Handles, offset);
-                if (handlePtr != IntPtr.Zero)
-                {
-                    items.Add(new PhotoStack(handlePtr));
-                    Marshal.WriteIntPtr(result.Handles, offset, IntPtr.Zero);
-                }
-            }
-        }
-
-        return items.AsReadOnly();
     }
 
     /// <summary>

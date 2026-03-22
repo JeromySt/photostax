@@ -11,15 +11,13 @@
 //! # Design
 //!
 //! ```text
-//! User → stack.original().read()
+//! User → stack.original.read()
 //!      → ImageRef.read()
 //!      → Arc<dyn ImageHandle>.read()
 //!      → LocalImageHandle (std::fs::File::open)
 //! ```
 
-use std::any::Any;
 use std::io::Read;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::file_access::ReadSeek;
@@ -70,47 +68,6 @@ pub trait ImageHandle: Send + Sync {
     /// Called by the repository when the backing file is deleted or the
     /// stack is removed.
     fn invalidate(&self);
-
-    /// Returns the file path, if this handle is backed by a local file.
-    ///
-    /// Non-local backends (cloud, foreign) return `None`.
-    fn path(&self) -> Option<&Path> {
-        None
-    }
-
-    /// Deletes the underlying file from disk and invalidates this handle.
-    ///
-    /// After deletion, [`is_valid`](Self::is_valid) returns `false` and all
-    /// I/O methods return [`RepositoryError::StackDeleted`].
-    fn delete(&self) -> Result<(), RepositoryError> {
-        Err(RepositoryError::Other(
-            "delete not supported for this backend".into(),
-        ))
-    }
-
-    /// Clears cached data (hash, etc.) without invalidating the handle.
-    ///
-    /// Unlike [`invalidate`](Self::invalidate), the handle remains valid
-    /// and can still perform I/O. Use this after the backing file's
-    /// contents change externally (e.g., a file rename/swap).
-    fn clear_caches(&self) {}
-
-    /// Downcast to `Any` for backend-specific operations (e.g., swap).
-    fn as_any(&self) -> &dyn Any;
-
-    /// Swap the physical backing storage with another handle.
-    ///
-    /// For local-file handles this performs a three-way rename on disk.
-    /// Both handles must be from the same backend; cross-backend swaps
-    /// return an error.
-    ///
-    /// After a successful swap the file contents at each handle's path
-    /// are exchanged. Both handles' caches are cleared automatically.
-    fn swap_with(&self, _other: &dyn ImageHandle) -> Result<(), RepositoryError> {
-        Err(RepositoryError::Other(
-            "swap not supported for this backend".into(),
-        ))
-    }
 }
 
 /// User-facing accessor for a single image variant within a [`PhotoStack`](crate::photo_stack::PhotoStack).
@@ -223,63 +180,6 @@ impl ImageRef {
         handle.rotate(rotation)
     }
 
-    /// Returns the file path of the backing file, if available.
-    ///
-    /// Returns `None` if the variant is absent or backed by a non-local handle.
-    pub fn path(&self) -> Option<&Path> {
-        self.handle.as_ref().and_then(|h| h.path())
-    }
-
-    /// Deletes the backing file from disk and invalidates the handle.
-    ///
-    /// # Errors
-    ///
-    /// - [`RepositoryError::NotFound`] if the variant is absent
-    /// - [`RepositoryError::StackDeleted`] if the handle was already invalidated
-    /// - [`RepositoryError::Io`] on I/O failure
-    pub fn delete(&self) -> Result<(), RepositoryError> {
-        let handle = self.require_handle()?;
-        handle.delete()
-    }
-
-    /// Clears cached data on the underlying handle without invalidating it.
-    ///
-    /// Call this after the backing file's contents change externally
-    /// (e.g., a file rename/swap on disk).
-    pub fn clear_handle_caches(&self) {
-        if let Some(ref h) = self.handle {
-            h.clear_caches();
-        }
-    }
-
-    /// Swap the physical backing storage with another image ref.
-    ///
-    /// When both sides are present, delegates to [`ImageHandle::swap_with`]
-    /// so the repository backend controls the actual I/O (e.g., three-way
-    /// file rename for local files).
-    ///
-    /// When one or both sides are absent, performs a logical pointer swap
-    /// (the `Arc` handles simply trade places between the two `ImageRef`s).
-    ///
-    /// Clears all cached hashes and dimensions on both sides.
-    pub fn swap_with(&mut self, other: &mut ImageRef) -> Result<(), RepositoryError> {
-        match (&self.handle, &other.handle) {
-            (Some(a), Some(b)) => {
-                // Both present — delegate to the backend handle
-                a.swap_with(b.as_ref())?;
-            }
-            _ => {
-                // One or both absent — logical pointer swap
-                std::mem::swap(&mut self.handle, &mut other.handle);
-            }
-        }
-        self.cached_hash = None;
-        self.cached_dimensions = None;
-        other.cached_hash = None;
-        other.cached_dimensions = None;
-        Ok(())
-    }
-
     /// Clear cached hash and dimensions. The next access will re-read
     /// from the backing file.
     pub fn invalidate_caches(&mut self) {
@@ -378,10 +278,6 @@ mod tests {
 
         fn invalidate(&self) {
             self.valid.store(false, Ordering::Relaxed);
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 

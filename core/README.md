@@ -32,7 +32,7 @@ cargo add photostax-core
 - **Repository trait** — pluggable storage backends (local filesystem included)
 - **SessionManager** — multi-repo cache with unified query and pagination
 - **Search & filter** — query stacks by metadata with a fluent builder API
-- **QueryResult** — page-based results with `next_page()`, `prev_page()`, and sub-queries
+- **ScanSnapshot** — point-in-time snapshots with O(1) staleness detection
 
 ## Quick Start
 
@@ -42,26 +42,26 @@ use photostax_core::stack_manager::StackManager;
 use photostax_core::photo_stack::ScannerProfile;
 use photostax_core::search::SearchQuery;
 
+// Create a manager with a local repository
 let repo = LocalRepository::new("/path/to/photos");
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
+// Query all stacks → returns a ScanSnapshot (auto-scans on first call)
+let snap = mgr.query(None, None)?;
 
-// Query all stacks — query() auto-scans on first call
-let mut result = mgr.query(None, Some(20), None).unwrap();
-for stack in result.current_page() {
-    println!("Photo: {} ({})", stack.name(), stack.id());
-    if stack.has_original() {
-        println!("  Has original image");
+for stack in snap.stacks() {
+    println!("Photo: {} ({})", stack.name, stack.id);
+
+    // Read original image via ImageRef
+    if stack.original.is_present() {
+        let mut reader = stack.original.read().unwrap();
+        // ... process image bytes ...
     }
-}
 
-// Search with pagination
-let query = SearchQuery::new().with_has_back(true);
-let mut result = mgr.query(Some(&query), Some(20), None).unwrap();
-println!("Page 1: {} stacks of {} total", result.current_page().len(), result.total_count());
-
-// Navigate pages
-while let Some(page) = result.next_page() {
-    println!("Next page: {} stacks", page.len());
+    // Read metadata via MetadataRef (lazy-loaded)
+    let meta = stack.metadata.read().unwrap();
+    if let Some(make) = meta.exif_tags.get("Make") {
+        println!("  Camera: {make}");
+    }
 }
 ```
 
@@ -79,7 +79,8 @@ while let Some(page) = result.next_page() {
 | `LocalRepository` | Local filesystem implementation |
 | `StackManager` | Multi-repo cache manager (aliased as `SessionManager`) |
 | `SearchQuery` | Builder for filtering stacks by metadata |
-| `QueryResult` | Page-based query result with `next_page()`, `prev_page()`, `current_page()`, `query()` sub-queries |
+| `ScanSnapshot` | Point-in-time snapshot for consistent pagination |
+| `PaginatedResult<T>` | A page of results with total count and navigation metadata |
 
 ### Key Operations
 
@@ -87,31 +88,29 @@ while let Some(page) = result.next_page() {
 // Create a manager — query() auto-scans on first call
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto)?;
 
-// Query with pagination and progress
-let mut result = mgr.query(
-    Some(&SearchQuery::new().with_text("vacation").with_has_back(true)),
-    Some(20),
-    Some(&mut |p| println!("{:?}: {}/{}", p.phase, p.current, p.total)),
-)?;
+// Per-stack image I/O via ImageRef
+let stack = snap.stacks().first().unwrap();
+let mut reader = stack.original.read()?;      // Read image bytes
+let hash = stack.enhanced.hash()?;            // SHA-256 (cached)
+let (w, h) = stack.back.dimensions()?;        // Image dimensions (cached)
+stack.back.rotate(Rotation::Cw90)?;           // Rotate in place
 
-// Per-stack image I/O via accessor methods
-let stack = result.current_page().first().unwrap();
-let mut reader = stack.original_read()?;         // Read image bytes
-let hash = stack.enhanced_hash()?;               // SHA-256 (cached)
-stack.back_rotate(Rotation::Cw90)?;              // Rotate in place
+// Per-stack metadata via MetadataRef
+let meta = stack.metadata.read()?;            // Lazy load EXIF/XMP/custom
+stack.metadata.write(&updated_meta)?;         // Write back
 
-// Per-stack metadata
-let meta = stack.metadata_read()?;               // Lazy load EXIF/XMP/custom
-stack.metadata_write(&updated_meta)?;            // Write back
+// Search + pagination via ScanSnapshot
+let query = SearchQuery::new()
+    .with_text("vacation")
+    .with_has_back(true);
+let snap = mgr.query(&query);
+let page = snap.get_page(0, 20);
+println!("{} of {} stacks", page.items.len(), page.total_count);
 
-// Page navigation
-println!("{} of {} stacks", result.current_page().len(), result.total_count());
-while let Some(page) = result.next_page() {
-    println!("Page: {} stacks", page.len());
+// Next page from the same snapshot
+if page.has_more {
+    let page2 = snap.get_page(20, 20);
 }
-
-// Sub-query on existing results
-let sub = result.query(&SearchQuery::new().with_text("beach"), Some(10));
 ```
 
 ## Building from Source

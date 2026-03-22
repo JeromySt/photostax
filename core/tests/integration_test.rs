@@ -39,59 +39,59 @@ fn test_end_to_end_scan_search_metadata() {
         "Expected at least 5 stacks, found {}",
         stacks.len()
     );
-    assert!(stacks.iter().any(|s| s.name() == "FamilyPhotos_0001"));
-    assert!(stacks.iter().any(|s| s.name() == "FamilyPhotos_0002"));
-    assert!(stacks.iter().any(|s| s.name() == "FamilyPhotos_0003"));
-    assert!(stacks.iter().any(|s| s.name() == "FamilyPhotos_0004"));
-    assert!(stacks.iter().any(|s| s.name() == "FamilyPhotos_0005"));
+    assert!(stacks.iter().any(|s| s.name == "FamilyPhotos_0001"));
+    assert!(stacks.iter().any(|s| s.name == "FamilyPhotos_0002"));
+    assert!(stacks.iter().any(|s| s.name == "FamilyPhotos_0003"));
+    assert!(stacks.iter().any(|s| s.name == "FamilyPhotos_0004"));
+    assert!(stacks.iter().any(|s| s.name == "FamilyPhotos_0005"));
 
     // Search for stacks with back scans
     let q = SearchQuery::new().with_has_back(true);
     let with_back = filter_stacks(&stacks, &q);
-    assert!(with_back.iter().any(|s| s.name() == "FamilyPhotos_0001"));
-    assert!(with_back.iter().any(|s| s.name() == "FamilyPhotos_0005"));
+    assert!(with_back.iter().any(|s| s.name == "FamilyPhotos_0001"));
+    assert!(with_back.iter().any(|s| s.name == "FamilyPhotos_0005"));
 
     // Verify all 3 stack configurations:
 
     // Config 1: Original only (1 file, no enhanced, no back)
     let stack_0004 = stacks
         .iter()
-        .find(|s| s.name() == "FamilyPhotos_0004")
+        .find(|s| s.name == "FamilyPhotos_0004")
         .unwrap();
-    assert!(stack_0004.original().is_present());
-    assert!(!stack_0004.enhanced().is_present());
-    assert!(!stack_0004.back().is_present());
+    assert!(stack_0004.original.is_present());
+    assert!(!stack_0004.enhanced.is_present());
+    assert!(!stack_0004.back.is_present());
 
     // Config 2: Original + _a file (2 files; with the default classifier
     // synthetic solid-colour images may be reclassified)
     let stack_0002 = stacks
         .iter()
-        .find(|s| s.name() == "FamilyPhotos_0002")
+        .find(|s| s.name == "FamilyPhotos_0002")
         .unwrap();
-    assert!(stack_0002.original().is_present());
+    assert!(stack_0002.original.is_present());
     // The _a file is present as either enhanced or back depending on classification
-    assert!(stack_0002.enhanced().is_present() || stack_0002.back().is_present());
+    assert!(stack_0002.enhanced.is_present() || stack_0002.back.is_present());
 
     // Config 3: Original + back (2 files, no enhanced)
     let stack_0005 = stacks
         .iter()
-        .find(|s| s.name() == "FamilyPhotos_0005")
+        .find(|s| s.name == "FamilyPhotos_0005")
         .unwrap();
-    assert!(stack_0005.original().is_present());
-    assert!(!stack_0005.enhanced().is_present());
-    assert!(stack_0005.back().is_present());
+    assert!(stack_0005.original.is_present());
+    assert!(!stack_0005.enhanced.is_present());
+    assert!(stack_0005.back.is_present());
 
     // Get specific stack and verify structure
     let stack = {
         let stacks_tmp = repo.scan().unwrap();
         stacks_tmp
             .into_iter()
-            .find(|s| s.name() == "FamilyPhotos_0001")
+            .find(|s| s.name == "FamilyPhotos_0001")
             .unwrap()
     };
-    assert!(stack.original().is_present());
-    assert!(stack.enhanced().is_present());
-    assert!(stack.back().is_present());
+    assert!(stack.original.is_present());
+    assert!(stack.enhanced.is_present());
+    assert!(stack.back.is_present());
 
     // Write metadata via handle
     let mut metadata = Metadata::default();
@@ -102,17 +102,17 @@ fn test_end_to_end_scan_search_metadata() {
         .custom_tags
         .insert("ocr_text".to_string(), serde_json::json!("Reunion 2024"));
 
-    stack.metadata().write(&metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // Re-scan and verify metadata persists (use scan_with_metadata to load sidecar)
     let stacks_after = repo.scan_with_metadata().unwrap();
     let stack_after = stacks_after
         .iter()
-        .find(|s| s.name() == "FamilyPhotos_0001")
+        .find(|s| s.name == "FamilyPhotos_0001")
         .unwrap();
 
     // Custom tags should be in sidecar
-    let meta_after = stack_after.metadata().cached().unwrap();
+    let meta_after = stack_after.metadata.cached().unwrap();
     assert_eq!(
         meta_after.custom_tags.get("ocr_text"),
         Some(&serde_json::json!("Reunion 2024"))
@@ -138,7 +138,7 @@ fn test_xmp_readable_by_exif_tools() {
         let stacks_tmp = repo.scan().unwrap();
         stacks_tmp
             .into_iter()
-            .find(|s| s.name() == "TestPhoto_0001")
+            .find(|s| s.name == "TestPhoto_0001")
             .unwrap()
     };
 
@@ -152,7 +152,7 @@ fn test_xmp_readable_by_exif_tools() {
         .xmp_tags
         .insert("creator".to_string(), "Test Author".to_string());
 
-    stack.metadata().write(&metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // write_metadata prefers enhanced image, so read from enhanced.
     // Construct path directly since ImageRef does not expose paths.
@@ -217,22 +217,22 @@ fn test_search_workflow() {
     let stacks = repo.scan().unwrap();
 
     // Add OCR text to one stack via handle
-    if let Some(stack) = stacks.iter().find(|s| s.name() == "FamilyPhotos_0001") {
+    if let Some(stack) = stacks.iter().find(|s| s.name == "FamilyPhotos_0001") {
         let mut metadata = Metadata::default();
         metadata
             .custom_tags
             .insert("ocr_text".to_string(), serde_json::json!("Birthday party"));
-        stack.metadata().write(&metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
     }
 
     // Add different OCR text to another stack via handle
-    if let Some(stack) = stacks.iter().find(|s| s.name() == "FamilyPhotos_0002") {
+    if let Some(stack) = stacks.iter().find(|s| s.name == "FamilyPhotos_0002") {
         let mut metadata = Metadata::default();
         metadata.custom_tags.insert(
             "ocr_text".to_string(),
             serde_json::json!("Wedding ceremony"),
         );
-        stack.metadata().write(&metadata).unwrap();
+        stack.metadata.write(&metadata).unwrap();
     }
 
     // Re-scan with metadata to pick up sidecar data for searching
@@ -241,13 +241,13 @@ fn test_search_workflow() {
     // Search for birthday
     let q = SearchQuery::new().with_text("birthday");
     let results = filter_stacks(&stacks, &q);
-    assert!(results.iter().any(|s| s.name() == "FamilyPhotos_0001"));
-    assert!(!results.iter().any(|s| s.name() == "FamilyPhotos_0002"));
+    assert!(results.iter().any(|s| s.name == "FamilyPhotos_0001"));
+    assert!(!results.iter().any(|s| s.name == "FamilyPhotos_0002"));
 
     // Search for wedding
     let q = SearchQuery::new().with_text("wedding");
     let results = filter_stacks(&stacks, &q);
-    assert!(results.iter().any(|s| s.name() == "FamilyPhotos_0002"));
+    assert!(results.iter().any(|s| s.name == "FamilyPhotos_0002"));
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn test_tiff_workflow() {
 
     assert_eq!(stacks.len(), 1);
     let stack = &stacks[0];
-    assert_eq!(stack.name(), "TiffTest_0001");
+    assert_eq!(stack.name, "TiffTest_0001");
 
     // Write XMP metadata via handle (should create sidecar for TIFF)
     let mut metadata = Metadata::default();
@@ -271,7 +271,7 @@ fn test_tiff_workflow() {
         .xmp_tags
         .insert("description".to_string(), "TIFF test".to_string());
 
-    stack.metadata().write(&metadata).unwrap();
+    stack.metadata.write(&metadata).unwrap();
 
     // Verify sidecar was created - write_metadata uses enhanced or original.
     // Construct path directly since ImageRef does not expose paths.
@@ -301,7 +301,7 @@ fn test_read_image_content() {
     // Read the image via handle
     let mut content = Vec::new();
     stack
-        .original()
+        .original
         .read()
         .unwrap()
         .read_to_end(&mut content)
@@ -324,13 +324,13 @@ fn test_mixed_format_stack() {
         let stacks_tmp = repo.scan().unwrap();
         stacks_tmp
             .into_iter()
-            .find(|s| s.name() == "MixedBatch_0001")
+            .find(|s| s.name == "MixedBatch_0001")
             .unwrap()
     };
 
     // Original should be present
-    assert!(stack.original().is_present());
+    assert!(stack.original.is_present());
 
     // Back should be present
-    assert!(stack.back().is_present());
+    assert!(stack.back.is_present());
 }

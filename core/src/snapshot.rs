@@ -126,10 +126,10 @@ impl ScanSnapshot {
         let mut stacks = repo.scan_with_progress(profile, progress)?;
         if load_metadata {
             for stack in &mut stacks {
-                let _ = stack.inner.write().unwrap().metadata.read()?;
+                let _ = stack.metadata.read()?;
             }
         }
-        let ids = stacks.iter().map(|s| s.id()).collect();
+        let ids = stacks.iter().map(|s| s.id.clone()).collect();
         Ok(Self {
             stacks,
             ids,
@@ -141,7 +141,7 @@ impl ScanSnapshot {
     ///
     /// Useful for creating filtered sub-snapshots or testing.
     pub fn from_stacks(stacks: Vec<PhotoStack>) -> Self {
-        let ids = stacks.iter().map(|s| s.id()).collect();
+        let ids = stacks.iter().map(|s| s.id.clone()).collect();
         Self {
             stacks,
             ids,
@@ -209,7 +209,7 @@ impl ScanSnapshot {
     /// Returns [`RepositoryError::Io`] if the re-scan fails.
     pub fn check_status(&self, repo: &dyn Repository) -> Result<SnapshotStatus, RepositoryError> {
         let current_stacks = repo.scan()?;
-        let current_ids: HashSet<String> = current_stacks.iter().map(|s| s.id()).collect();
+        let current_ids: HashSet<String> = current_stacks.iter().map(|s| s.id.clone()).collect();
 
         let added = current_ids.difference(&self.ids).count();
         let removed = self.ids.difference(&current_ids).count();
@@ -267,14 +267,11 @@ mod tests {
             true
         }
         fn invalidate(&self) {}
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
     }
 
     fn make_stack(id: &str) -> PhotoStack {
-        let stack = PhotoStack::new(id);
-        stack.inner.write().unwrap().original = ImageRef::new(Arc::new(MockImg));
+        let mut stack = PhotoStack::new(id);
+        stack.original = ImageRef::new(Arc::new(MockImg));
         stack
     }
 
@@ -306,9 +303,9 @@ mod tests {
         assert_eq!(page3.total_count, 10);
 
         // pages don't overlap
-        assert_eq!(page1.items[0].id(), "IMG_000");
-        assert_eq!(page2.items[0].id(), "IMG_003");
-        assert_eq!(page3.items[0].id(), "IMG_006");
+        assert_eq!(page1.items[0].id, "IMG_000");
+        assert_eq!(page2.items[0].id, "IMG_003");
+        assert_eq!(page3.items[0].id, "IMG_006");
 
         // has_more is correct
         assert!(page1.has_more);
@@ -345,27 +342,27 @@ mod tests {
 
     #[test]
     fn test_filter_returns_subset() {
-        let stacks = make_stacks(4);
-        stacks[0].inner.write().unwrap().back = ImageRef::new(Arc::new(MockImg));
-        stacks[2].inner.write().unwrap().back = ImageRef::new(Arc::new(MockImg));
+        let mut stacks = make_stacks(4);
+        stacks[0].back = ImageRef::new(Arc::new(MockImg));
+        stacks[2].back = ImageRef::new(Arc::new(MockImg));
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));
 
         assert_eq!(filtered.total_count(), 2);
-        assert_eq!(filtered.stacks()[0].id(), "IMG_000");
-        assert_eq!(filtered.stacks()[1].id(), "IMG_002");
+        assert_eq!(filtered.stacks()[0].id, "IMG_000");
+        assert_eq!(filtered.stacks()[1].id, "IMG_002");
     }
 
     #[test]
     fn test_filter_then_page() {
         let mut stacks = make_stacks(10);
         for s in &mut stacks {
-            s.inner.write().unwrap().back = ImageRef::new(Arc::new(MockImg));
+            s.back = ImageRef::new(Arc::new(MockImg));
         }
         // Remove back from two stacks
-        stacks[3].inner.write().unwrap().back = ImageRef::absent();
-        stacks[7].inner.write().unwrap().back = ImageRef::absent();
+        stacks[3].back = ImageRef::absent();
+        stacks[7].back = ImageRef::absent();
 
         let snap = ScanSnapshot::from_stacks(stacks);
         let filtered = snap.filter(&SearchQuery::new().with_has_back(true));
@@ -384,15 +381,15 @@ mod tests {
             &SearchQuery::new().with_ids(vec!["IMG_001".to_string(), "IMG_003".to_string()]),
         );
         assert_eq!(filtered.total_count(), 2);
-        assert_eq!(filtered.stacks()[0].id(), "IMG_001");
-        assert_eq!(filtered.stacks()[1].id(), "IMG_003");
+        assert_eq!(filtered.stacks()[0].id, "IMG_001");
+        assert_eq!(filtered.stacks()[1].id, "IMG_003");
     }
 
     #[test]
     fn test_stacks_borrow() {
         let snap = ScanSnapshot::from_stacks(make_stacks(3));
         assert_eq!(snap.stacks().len(), 3);
-        assert_eq!(snap.stacks()[0].id(), "IMG_000");
+        assert_eq!(snap.stacks()[0].id, "IMG_000");
     }
 
     // Integration tests with real repo are in backends/local.rs

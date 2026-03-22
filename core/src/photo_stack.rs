@@ -21,13 +21,11 @@
 //! (e.g., `IMG_0001` in the example above).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::file_access::ReadSeek;
 use crate::image_handle::ImageRef;
 use crate::metadata_handle::{MetadataRef, NullMetadataHandle};
 use crate::repository::RepositoryError;
@@ -283,104 +281,10 @@ impl Rotation {
     }
 }
 
-/// Flags indicating which image variants are present in a [`PhotoStack`].
-///
-/// This is a convenience type for checking presence of multiple variants
-/// in a single call, e.g. `stack.images_present().contains(ImageVariants::BACK)`.
-///
-/// # Examples
-///
-/// ```
-/// use photostax_core::photo_stack::{PhotoStack, ImageVariants};
-///
-/// let stack = PhotoStack::new("test");
-/// assert!(stack.images_present().is_empty());
-/// assert!(!stack.images_present().contains(ImageVariants::ORIGINAL));
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ImageVariants(u8);
-
-impl ImageVariants {
-    /// No image variants present.
-    pub const NONE: Self = Self(0);
-    /// Original (raw scan) image.
-    pub const ORIGINAL: Self = Self(1);
-    /// Enhanced (color-corrected) image.
-    pub const ENHANCED: Self = Self(2);
-    /// Back-of-photo image.
-    pub const BACK: Self = Self(4);
-
-    /// Returns true if no variants are present.
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Returns true if this flags set contains the given flag.
-    pub fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0 && other.0 != 0
-    }
-
-    /// Returns the raw bits value.
-    pub fn bits(self) -> u8 {
-        self.0
-    }
-}
-
-impl std::ops::BitOr for ImageVariants {
-    type Output = Self;
-    fn bitor(self, rhs: Self) -> Self {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl std::ops::BitOrAssign for ImageVariants {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl std::ops::BitAnd for ImageVariants {
-    type Output = Self;
-    fn bitand(self, rhs: Self) -> Self {
-        Self(self.0 & rhs.0)
-    }
-}
-
-/// Which image variant a proxy refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImageVariantSlot {
-    Original,
-    Enhanced,
-    Back,
-}
-
-/// Internal mutable state of a photo stack.
-///
-/// This is the single source of truth. All [`PhotoStack`] handles
-/// (including those in query results and snapshots) share the same
-/// `PhotoStackInner` via `Arc<RwLock<>>`.
-#[derive(Debug)]
-pub(crate) struct PhotoStackInner {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) folder: Option<String>,
-    pub(crate) repo_id: Option<String>,
-    pub(crate) location: Option<String>,
-    pub(crate) original: ImageRef,
-    pub(crate) enhanced: ImageRef,
-    pub(crate) back: ImageRef,
-    pub(crate) metadata: MetadataRef,
-}
-
 /// A unified representation of a single scanned photo from an Epson FastFoto scanner.
 ///
 /// Groups the original scan, enhanced version, and back-of-photo image into
 /// a single logical unit with associated metadata. Supports both JPEG and TIFF formats.
-///
-/// `PhotoStack` is a lightweight handle backed by `Arc<RwLock<>>`. Cloning
-/// a stack produces another handle to the **same** data — mutations
-/// (metadata loading, hash caching, etc.) are visible through all handles.
-/// This means query result snapshots share state with the StackManager cache.
 ///
 /// # Naming Convention
 ///
@@ -400,178 +304,45 @@ pub(crate) struct PhotoStackInner {
 ///
 /// assert!(!stack.has_any_image());
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PhotoStack {
-    pub(crate) inner: Arc<RwLock<PhotoStackInner>>,
-}
+    /// Unique identifier derived from the base filename (without `_a`/`_b` suffix or extension).
+    ///
+    /// For example, files `IMG_001.jpg`, `IMG_001_a.jpg`, and `IMG_001_b.jpg`
+    /// all share the ID `IMG_001`.
+    pub id: String,
 
-impl std::fmt::Debug for PhotoStack {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.inner.try_read() {
-            Ok(inner) => f
-                .debug_struct("PhotoStack")
-                .field("id", &inner.id)
-                .field("name", &inner.name)
-                .field("folder", &inner.folder)
-                .finish(),
-            Err(_) => f
-                .debug_struct("PhotoStack")
-                .field("state", &"<locked>")
-                .finish(),
-        }
-    }
-}
+    /// Human-readable stem name (e.g., `"IMG_001"`).
+    pub name: String,
 
-/// Proxy for accessing a single image variant (original, enhanced, or back)
-/// on a [`PhotoStack`].
-///
-/// Obtained via [`PhotoStack::original()`], [`PhotoStack::enhanced()`],
-/// or [`PhotoStack::back()`]. Each method call acquires the lock
-/// independently — no lock is held between calls.
-pub struct ImageProxy<'a> {
-    inner: &'a Arc<RwLock<PhotoStackInner>>,
-    variant: ImageVariantSlot,
-}
+    /// Subfolder name this stack was scanned from (e.g., `"1984_Mexico"`).
+    pub folder: Option<String>,
 
-impl<'a> ImageProxy<'a> {
-    /// Whether this image variant exists in the stack.
-    pub fn is_present(&self) -> bool {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).is_present()
-    }
+    /// Which repository this stack belongs to.
+    pub repo_id: Option<String>,
 
-    /// Whether the underlying file handle is still valid.
-    pub fn is_valid(&self) -> bool {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).is_valid()
-    }
+    /// Base directory where this stack's files live (for sidecar I/O).
+    pub location: Option<String>,
 
-    /// File size in bytes, or `None` if the variant is absent.
-    pub fn size(&self) -> Option<u64> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).size()
-    }
+    /// Original front scan (e.g., `IMG_001.jpg` or `IMG_001.tif`).
+    ///
+    /// This is the unprocessed scan directly from the FastFoto scanner.
+    pub original: ImageRef,
 
-    /// Read the full image as a seekable byte stream.
-    pub fn read(&self) -> Result<Box<dyn ReadSeek>, RepositoryError> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).read()
-    }
+    /// Enhanced front scan (e.g., `IMG_001_a.jpg` or `IMG_001_a.tif`).
+    ///
+    /// This is the color-corrected, enhanced version produced by FastFoto software.
+    /// The `_a` suffix indicates the "auto-enhanced" variant.
+    pub enhanced: ImageRef,
 
-    /// Open a streaming reader that computes the content hash as bytes
-    /// are consumed.
-    pub fn stream(
-        &self,
-    ) -> Result<crate::hashing::HashingReader<Box<dyn std::io::Read + Send>>, RepositoryError> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).stream()
-    }
+    /// Back-of-photo scan (e.g., `IMG_001_b.jpg` or `IMG_001_b.tif`).
+    ///
+    /// Captures any handwriting, dates, or notes on the photo's reverse side.
+    /// Useful for OCR workflows to extract written metadata.
+    pub back: ImageRef,
 
-    /// Return the content hash, computing and caching it on first call.
-    pub fn hash(&self) -> Result<String, RepositoryError> {
-        let mut inner = self.inner.write().unwrap();
-        self.get_mut(&mut inner).hash().map(|s| s.to_owned())
-    }
-
-    /// Return the cached hash without triggering computation.
-    pub fn cached_hash(&self) -> Option<String> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).cached_hash().map(|s| s.to_owned())
-    }
-
-    /// Return image dimensions `(width, height)`, computing and caching
-    /// on first call.
-    pub fn dimensions(&self) -> Result<(u32, u32), RepositoryError> {
-        let mut inner = self.inner.write().unwrap();
-        self.get_mut(&mut inner).dimensions()
-    }
-
-    /// Rotate the image on disk.
-    pub fn rotate(&self, rotation: Rotation) -> Result<(), RepositoryError> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).rotate(rotation)
-    }
-
-    /// Returns the file path of the backing file, if available.
-    pub fn path(&self) -> Option<PathBuf> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).path().map(|p| p.to_owned())
-    }
-
-    /// Deletes the backing file from disk and invalidates the handle.
-    pub fn delete(&self) -> Result<(), RepositoryError> {
-        let inner = self.inner.read().unwrap();
-        self.get(&inner).delete()
-    }
-
-    /// Clear cached hash and dimensions.
-    pub fn invalidate_caches(&self) {
-        let mut inner = self.inner.write().unwrap();
-        self.get_mut(&mut inner).invalidate_caches();
-    }
-
-    fn get<'b>(&self, inner: &'b PhotoStackInner) -> &'b ImageRef {
-        match self.variant {
-            ImageVariantSlot::Original => &inner.original,
-            ImageVariantSlot::Enhanced => &inner.enhanced,
-            ImageVariantSlot::Back => &inner.back,
-        }
-    }
-
-    fn get_mut<'b>(&self, inner: &'b mut PhotoStackInner) -> &'b mut ImageRef {
-        match self.variant {
-            ImageVariantSlot::Original => &mut inner.original,
-            ImageVariantSlot::Enhanced => &mut inner.enhanced,
-            ImageVariantSlot::Back => &mut inner.back,
-        }
-    }
-}
-
-/// Proxy for accessing metadata on a [`PhotoStack`].
-///
-/// Obtained via [`PhotoStack::metadata()`]. Each method call acquires
-/// the lock independently.
-pub struct MetadataProxy<'a> {
-    inner: &'a Arc<RwLock<PhotoStackInner>>,
-}
-
-impl<'a> MetadataProxy<'a> {
-    /// Whether metadata has been loaded from the backing store.
-    pub fn is_loaded(&self) -> bool {
-        let inner = self.inner.read().unwrap();
-        inner.metadata.is_loaded()
-    }
-
-    /// Whether the underlying handle is still valid.
-    pub fn is_valid(&self) -> bool {
-        let inner = self.inner.read().unwrap();
-        inner.metadata.is_valid()
-    }
-
-    /// Load metadata from the backing store, caching the result.
-    /// Returns an owned clone of the metadata.
-    pub fn read(&self) -> Result<Metadata, RepositoryError> {
-        let mut inner = self.inner.write().unwrap();
-        inner.metadata.read().cloned()
-    }
-
-    /// Get cached metadata without triggering a load.
-    pub fn cached(&self) -> Option<Metadata> {
-        let inner = self.inner.read().unwrap();
-        inner.metadata.cached().cloned()
-    }
-
-    /// Write metadata to the backing store.
-    pub fn write(&self, tags: &Metadata) -> Result<(), RepositoryError> {
-        let inner = self.inner.read().unwrap();
-        inner.metadata.write(tags)
-    }
-
-    /// Invalidate the cached metadata, forcing a re-read on next access.
-    pub fn invalidate(&self) {
-        let mut inner = self.inner.write().unwrap();
-        inner.metadata.invalidate();
-    }
+    /// Unified metadata from EXIF, XMP, and XMP sidecar file sources.
+    pub metadata: MetadataRef,
 }
 
 /// Metadata associated with a [`PhotoStack`].
@@ -706,6 +477,9 @@ impl Metadata {
 impl PhotoStack {
     /// Creates a new `PhotoStack` with only an ID and no associated files.
     ///
+    /// Use this as a starting point when building stacks programmatically.
+    /// Files and metadata can be added after construction.
+    ///
     /// # Examples
     ///
     /// ```
@@ -717,103 +491,21 @@ impl PhotoStack {
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
         Self {
-            inner: Arc::new(RwLock::new(PhotoStackInner {
-                name: id.clone(),
-                id,
-                folder: None,
-                repo_id: None,
-                location: None,
-                original: ImageRef::absent(),
-                enhanced: ImageRef::absent(),
-                back: ImageRef::absent(),
-                metadata: MetadataRef::new(Arc::new(NullMetadataHandle)),
-            })),
+            name: id.clone(),
+            id,
+            folder: None,
+            repo_id: None,
+            location: None,
+            original: ImageRef::absent(),
+            enhanced: ImageRef::absent(),
+            back: ImageRef::absent(),
+            metadata: MetadataRef::new(Arc::new(NullMetadataHandle)),
         }
     }
-
-    // ── Read accessors ──────────────────────────────────────────────────
-
-    /// Unique identifier derived from the base filename.
-    pub fn id(&self) -> String {
-        self.inner.read().unwrap().id.clone()
-    }
-
-    /// Human-readable stem name (e.g., `"IMG_001"`).
-    pub fn name(&self) -> String {
-        self.inner.read().unwrap().name.clone()
-    }
-
-    /// Subfolder name this stack was scanned from.
-    pub fn folder(&self) -> Option<String> {
-        self.inner.read().unwrap().folder.clone()
-    }
-
-    /// Which repository this stack belongs to.
-    pub fn repo_id(&self) -> Option<String> {
-        self.inner.read().unwrap().repo_id.clone()
-    }
-
-    /// Base directory where this stack's files live.
-    pub fn location(&self) -> Option<String> {
-        self.inner.read().unwrap().location.clone()
-    }
-
-    // ── Sub-object proxies ──────────────────────────────────────────────
-
-    /// Access the original (front scan) image variant.
-    pub fn original(&self) -> ImageProxy<'_> {
-        ImageProxy {
-            inner: &self.inner,
-            variant: ImageVariantSlot::Original,
-        }
-    }
-
-    /// Access the enhanced (color-corrected) image variant.
-    pub fn enhanced(&self) -> ImageProxy<'_> {
-        ImageProxy {
-            inner: &self.inner,
-            variant: ImageVariantSlot::Enhanced,
-        }
-    }
-
-    /// Access the back-of-photo image variant.
-    pub fn back(&self) -> ImageProxy<'_> {
-        ImageProxy {
-            inner: &self.inner,
-            variant: ImageVariantSlot::Back,
-        }
-    }
-
-    /// Access the unified metadata (EXIF + XMP + custom tags).
-    pub fn metadata(&self) -> MetadataProxy<'_> {
-        MetadataProxy { inner: &self.inner }
-    }
-
-    // ── Setters ────────────────────────────────────────────────────────
-
-    /// Replace the original image reference.
-    pub fn set_original(&self, image_ref: ImageRef) {
-        self.inner.write().unwrap().original = image_ref;
-    }
-
-    /// Replace the enhanced image reference.
-    pub fn set_enhanced(&self, image_ref: ImageRef) {
-        self.inner.write().unwrap().enhanced = image_ref;
-    }
-
-    /// Replace the back image reference.
-    pub fn set_back(&self, image_ref: ImageRef) {
-        self.inner.write().unwrap().back = image_ref;
-    }
-
-    /// Replace the metadata reference.
-    pub fn set_metadata(&self, metadata_ref: MetadataRef) {
-        self.inner.write().unwrap().metadata = metadata_ref;
-    }
-
-    // ── Convenience queries ─────────────────────────────────────────────
 
     /// Returns `true` if at least one image file is present in the stack.
+    ///
+    /// A stack without any images is typically an error condition from scanning.
     ///
     /// # Examples
     ///
@@ -824,38 +516,13 @@ impl PhotoStack {
     /// assert!(!empty.has_any_image());
     /// ```
     pub fn has_any_image(&self) -> bool {
-        let inner = self.inner.read().unwrap();
-        inner.original.is_present() || inner.enhanced.is_present() || inner.back.is_present()
-    }
-
-    /// Returns a flags set indicating which image variants are present.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use photostax_core::photo_stack::{PhotoStack, ImageVariants};
-    ///
-    /// let stack = PhotoStack::new("test");
-    /// let present = stack.images_present();
-    /// assert!(present.is_empty());
-    /// assert!(!present.contains(ImageVariants::ORIGINAL));
-    /// ```
-    pub fn images_present(&self) -> ImageVariants {
-        let inner = self.inner.read().unwrap();
-        let mut flags = ImageVariants::NONE;
-        if inner.original.is_present() {
-            flags |= ImageVariants::ORIGINAL;
-        }
-        if inner.enhanced.is_present() {
-            flags |= ImageVariants::ENHANCED;
-        }
-        if inner.back.is_present() {
-            flags |= ImageVariants::BACK;
-        }
-        flags
+        self.original.is_present() || self.enhanced.is_present() || self.back.is_present()
     }
 
     /// Returns the number of image files present in this stack.
+    ///
+    /// Counts the present image variants (original, enhanced, back).
+    /// This is available immediately after scanning without loading metadata.
     ///
     /// # Examples
     ///
@@ -866,62 +533,29 @@ impl PhotoStack {
     /// assert_eq!(stack.image_count(), 0);
     /// ```
     pub fn image_count(&self) -> usize {
-        let inner = self.inner.read().unwrap();
-        inner.original.is_present() as usize
-            + inner.enhanced.is_present() as usize
-            + inner.back.is_present() as usize
-    }
-
-    /// Swaps front and back images when a photo was scanned backwards.
-    ///
-    /// After swap:
-    /// - `original` ← old `back` content (the actual front of the photo)
-    /// - `back` ← old `original` content (the actual back of the photo)
-    /// - `enhanced` ← absent (old enhanced deleted — it was of the wrong side)
-    ///
-    /// The actual swap is delegated to the [`ImageHandle`](crate::image_handle::ImageHandle)
-    /// backend.
-    pub fn swap_front_back(&self) -> Result<(), RepositoryError> {
-        let mut inner = self.inner.write().unwrap();
-        if !inner.back.is_present() {
-            return Err(RepositoryError::Other(
-                "Cannot swap front/back: back image is not present".into(),
-            ));
-        }
-
-        // 1. Delete enhanced via handle (it was of the wrong side)
-        if inner.enhanced.is_present() {
-            let _ = inner.enhanced.delete();
-        }
-        inner.enhanced = ImageRef::absent();
-
-        // 2. Swap original ↔ back via the handle's backend implementation
-        // Split the borrows by using raw pointers to work around the borrow checker.
-        // Safety: original and back are distinct fields of the same struct.
-        let original_ptr = &mut inner.original as *mut ImageRef;
-        let back_ptr = &mut inner.back as *mut ImageRef;
-        unsafe {
-            (*original_ptr).swap_with(&mut *back_ptr)?;
-        }
-
-        Ok(())
+        self.original.is_present() as usize
+            + self.enhanced.is_present() as usize
+            + self.back.is_present() as usize
     }
 
     /// Compute a Merkle-style content hash over all present image files.
     ///
+    /// Iterates over `original`, `enhanced`, and `back` (in order), computes
+    /// each file's content hash (lazy — cached after first call), then feeds
+    /// all individual hashes into a single SHA-256 to produce a combined hash.
+    ///
     /// Returns `Ok(None)` when the stack contains no image files.
-    pub fn content_hash(&self) -> Result<Option<String>, RepositoryError> {
-        let mut inner = self.inner.write().unwrap();
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RepositoryError`] if any image file cannot be read.
+    pub fn content_hash(&mut self) -> Result<Option<String>, RepositoryError> {
         let mut hashes: Vec<String> = Vec::new();
 
-        if inner.original.is_present() {
-            hashes.push(inner.original.hash()?.to_string());
-        }
-        if inner.enhanced.is_present() {
-            hashes.push(inner.enhanced.hash()?.to_string());
-        }
-        if inner.back.is_present() {
-            hashes.push(inner.back.hash()?.to_string());
+        for r in [&mut self.original, &mut self.enhanced, &mut self.back] {
+            if r.is_present() {
+                hashes.push(r.hash()?.to_string());
+            }
         }
 
         if hashes.is_empty() {
@@ -994,20 +628,6 @@ mod tests {
             self.valid
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn swap_with(
-            &self,
-            _other: &dyn crate::image_handle::ImageHandle,
-        ) -> Result<(), crate::repository::RepositoryError> {
-            // Mock: no-op (no physical storage to swap)
-            Ok(())
-        }
-        fn delete(&self) -> Result<(), crate::repository::RepositoryError> {
-            self.invalidate();
-            Ok(())
-        }
     }
 
     fn mock_ref() -> ImageRef {
@@ -1017,13 +637,13 @@ mod tests {
     #[test]
     fn test_photo_stack_new_defaults() {
         let stack = PhotoStack::new("test_id");
-        assert_eq!(stack.id(), "test_id");
-        assert_eq!(stack.name(), "test_id");
-        assert!(stack.folder().is_none());
-        assert!(stack.repo_id().is_none());
-        assert!(!stack.original().is_present());
-        assert!(!stack.enhanced().is_present());
-        assert!(!stack.back().is_present());
+        assert_eq!(stack.id, "test_id");
+        assert_eq!(stack.name, "test_id");
+        assert!(stack.folder.is_none());
+        assert!(stack.repo_id.is_none());
+        assert!(!stack.original.is_present());
+        assert!(!stack.enhanced.is_present());
+        assert!(!stack.back.is_present());
     }
 
     #[test]
@@ -1034,50 +654,44 @@ mod tests {
 
     #[test]
     fn test_has_any_image_original_only() {
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().original = mock_ref();
+        let mut stack = PhotoStack::new("test");
+        stack.original = mock_ref();
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_enhanced_only() {
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().enhanced = mock_ref();
+        let mut stack = PhotoStack::new("test");
+        stack.enhanced = mock_ref();
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_back_only() {
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().back = mock_ref();
+        let mut stack = PhotoStack::new("test");
+        stack.back = mock_ref();
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_has_any_image_all() {
-        let stack = PhotoStack::new("test");
-        {
-            let mut inner = stack.inner.write().unwrap();
-            inner.original = mock_ref();
-            inner.enhanced = mock_ref();
-            inner.back = mock_ref();
-        }
+        let mut stack = PhotoStack::new("test");
+        stack.original = mock_ref();
+        stack.enhanced = mock_ref();
+        stack.back = mock_ref();
         assert!(stack.has_any_image());
     }
 
     #[test]
     fn test_image_count() {
-        let stack = PhotoStack::new("test");
+        let mut stack = PhotoStack::new("test");
         assert_eq!(stack.image_count(), 0);
 
-        {
-            let mut inner = stack.inner.write().unwrap();
-            inner.original = mock_ref();
-            inner.enhanced = mock_ref();
-        }
+        stack.original = mock_ref();
+        stack.enhanced = mock_ref();
         assert_eq!(stack.image_count(), 2);
 
-        stack.inner.write().unwrap().back = mock_ref();
+        stack.back = mock_ref();
         assert_eq!(stack.image_count(), 3);
     }
 
@@ -1137,18 +751,18 @@ mod tests {
 
     #[test]
     fn test_photo_stack_clone() {
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().original = mock_ref();
+        let mut stack = PhotoStack::new("test");
+        stack.original = mock_ref();
 
         let cloned = stack.clone();
-        assert_eq!(cloned.id(), stack.id());
-        assert!(cloned.original().is_present());
+        assert_eq!(cloned.id, stack.id);
+        assert!(cloned.original.is_present());
     }
 
     #[test]
     fn test_photo_stack_new_from_string() {
         let stack = PhotoStack::new(String::from("string_id"));
-        assert_eq!(stack.id(), "string_id");
+        assert_eq!(stack.id, "string_id");
     }
 
     #[test]
@@ -1211,66 +825,5 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let deser: Rotation = serde_json::from_str(&json).unwrap();
         assert_eq!(deser, r);
-    }
-
-    // ── swap_front_back tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_swap_front_back_no_back_returns_error() {
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().original = mock_ref();
-        let result = stack.swap_front_back();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_swap_front_back_logical_swap_with_mocks() {
-        // Mocks have no path(), so the logical (handle-swap) branch runs.
-        let stack = PhotoStack::new("test");
-        {
-            let mut inner = stack.inner.write().unwrap();
-            inner.original = mock_ref();
-            inner.enhanced = mock_ref();
-            inner.back = mock_ref();
-        }
-
-        assert_eq!(stack.image_count(), 3);
-        let result = stack.swap_front_back();
-        assert!(result.is_ok());
-
-        // Enhanced should be absent after swap
-        assert!(!stack.enhanced().is_present());
-        // Original and back should still be present
-        assert!(stack.original().is_present());
-        assert!(stack.back().is_present());
-        assert_eq!(stack.image_count(), 2);
-    }
-
-    #[test]
-    fn test_swap_front_back_no_enhanced() {
-        let stack = PhotoStack::new("test");
-        {
-            let mut inner = stack.inner.write().unwrap();
-            inner.original = mock_ref();
-            inner.back = mock_ref();
-        }
-
-        let result = stack.swap_front_back();
-        assert!(result.is_ok());
-        assert!(!stack.enhanced().is_present());
-        assert!(stack.original().is_present());
-        assert!(stack.back().is_present());
-    }
-
-    #[test]
-    fn test_swap_front_back_no_original_with_back() {
-        // Only back present, no original — logical swap moves back→original
-        let stack = PhotoStack::new("test");
-        stack.inner.write().unwrap().back = mock_ref();
-
-        let result = stack.swap_front_back();
-        assert!(result.is_ok());
-        assert!(stack.original().is_present());
-        assert!(!stack.back().is_present());
     }
 }

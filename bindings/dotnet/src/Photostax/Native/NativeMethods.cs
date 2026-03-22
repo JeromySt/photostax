@@ -197,9 +197,7 @@ internal static partial class NativeMethods
         IntPtr repo,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? queryJson,
         nuint offset,
-        nuint limit,
-        ScanProgressCallback? callback,
-        IntPtr userData);
+        nuint limit);
 
     // ── Stack accessor functions ──────────────────────────────────
 
@@ -317,10 +315,40 @@ internal static partial class NativeMethods
     internal static extern void photostax_stack_metadata_invalidate(IntPtr stack);
 
     /// <summary>
-    /// Swap front and back images (for accidentally backward-scanned photos).
+    /// Get metadata for a stack as a JSON string.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern FfiResult photostax_stack_swap_front_back(IntPtr stack);
+    internal static extern IntPtr photostax_get_metadata(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId);
+
+    /// <summary>
+    /// Get a specific EXIF tag value.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_get_exif_tag(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string tagName);
+
+    /// <summary>
+    /// Get a specific custom tag value as JSON.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr photostax_get_custom_tag(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string tagName);
+
+    /// <summary>
+    /// Set a custom tag value.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_set_custom_tag(
+        IntPtr repo,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stackId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string tagName,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string valueJson);
 
     /// <summary>
     /// Free a stack handle array (container and all handles).

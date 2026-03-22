@@ -395,57 +395,63 @@ const char *photostax_version(void);
  *
  * # Safety
  *
- * - `stack` must be a valid pointer from [`photostax_repo_get_stack`] or a handle array
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` must be a valid null-terminated UTF-8 string
  * - Returns null on error
  * - Caller owns the returned string and must call [`photostax_string_free`]
  *
- * [`photostax_repo_get_stack`]: crate::repository::photostax_repo_get_stack
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
  * [`photostax_string_free`]: crate::repository::photostax_string_free
  */
-char *photostax_get_metadata(const struct PhotostaxStack *stack);
+char *photostax_get_metadata(const struct PhotostaxRepo *repo, const char *stack_id);
 
 /**
  * Get a specific EXIF tag value.
  *
  * # Safety
  *
- * - `stack` must be a valid pointer from [`photostax_repo_get_stack`] or a handle array
- * - `tag_name` must be a valid null-terminated UTF-8 string
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
  * - Returns null if tag not found or on error
  * - Caller owns the returned string and must call [`photostax_string_free`]
  *
- * [`photostax_repo_get_stack`]: crate::repository::photostax_repo_get_stack
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
  * [`photostax_string_free`]: crate::repository::photostax_string_free
  */
-char *photostax_get_exif_tag(const struct PhotostaxStack *stack, const char *tag_name);
+char *photostax_get_exif_tag(const struct PhotostaxRepo *repo,
+                             const char *stack_id,
+                             const char *tag_name);
 
 /**
  * Get a specific custom tag value as JSON.
  *
  * # Safety
  *
- * - `stack` must be a valid pointer from [`photostax_repo_get_stack`] or a handle array
- * - `tag_name` must be a valid null-terminated UTF-8 string
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id` and `tag_name` must be valid null-terminated UTF-8 strings
  * - Returns null if tag not found or on error
  * - Caller owns the returned string and must call [`photostax_string_free`]
  *
- * [`photostax_repo_get_stack`]: crate::repository::photostax_repo_get_stack
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
  * [`photostax_string_free`]: crate::repository::photostax_string_free
  */
-char *photostax_get_custom_tag(const struct PhotostaxStack *stack, const char *tag_name);
+char *photostax_get_custom_tag(const struct PhotostaxRepo *repo,
+                               const char *stack_id,
+                               const char *tag_name);
 
 /**
  * Set a custom tag value.
  *
  * # Safety
  *
- * - `stack` must be a valid pointer from [`photostax_repo_get_stack`] or a handle array
- * - `tag_name` and `value_json` must be valid null-terminated UTF-8 strings
+ * - `repo` must be a valid pointer from [`photostax_repo_open`]
+ * - `stack_id`, `tag_name`, and `value_json` must be valid null-terminated UTF-8 strings
  * - `value_json` must be valid JSON
  *
- * [`photostax_repo_get_stack`]: crate::repository::photostax_repo_get_stack
+ * [`photostax_repo_open`]: crate::repository::photostax_repo_open
  */
-struct FfiResult photostax_set_custom_tag(const struct PhotostaxStack *stack,
+struct FfiResult photostax_set_custom_tag(const struct PhotostaxRepo *repo,
+                                          const char *stack_id,
                                           const char *tag_name,
                                           const char *value_json);
 
@@ -559,22 +565,17 @@ struct FfiPaginatedHandleResult photostax_repo_scan_paginated(const struct Photo
  * - `query_json` — JSON-serialized [`SearchQuery`], or null to match all stacks
  * - `offset` — number of items to skip (0-based)
  * - `limit` — maximum items to return; 0 means return all matching stacks
- * - `callback` — optional progress callback (may be null)
- * - `user_data` — opaque pointer forwarded to callback (may be null)
  *
  * # Safety
  *
  * - `repo` must be a valid pointer from [`photostax_repo_open`]
  * - `query_json`, if non-null, must be a valid null-terminated UTF-8 string
- * - `callback` and `user_data` must be valid for the duration of the call
  * - Caller owns the returned result and must call [`photostax_paginated_handle_result_free`]
  */
 struct FfiPaginatedHandleResult photostax_query(const struct PhotostaxRepo *repo,
                                                 const char *query_json,
                                                 uintptr_t offset,
-                                                uintptr_t limit,
-                                                ScanProgressFn callback,
-                                                void *user_data);
+                                                uintptr_t limit);
 
 /**
  * Return the stack's opaque ID as a C string.
@@ -671,25 +672,6 @@ struct FfiResult photostax_stack_image_rotate(const struct PhotostaxStack *stack
  * Invalidate cached hash and dimensions for an image variant.
  */
 void photostax_stack_image_invalidate(const struct PhotostaxStack *stack, int32_t variant);
-
-/**
- * Swap front and back images when a photo was scanned backwards.
- *
- * Renames files on disk so filenames match their new roles, deletes
- * the enhanced variant (it was of the wrong side), and clears caches.
- */
-struct FfiResult photostax_stack_swap_front_back(const struct PhotostaxStack *stack);
-
-/**
- * Return a bitmask of which image variants are present.
- *
- * - bit 0 (1) = original
- * - bit 1 (2) = enhanced
- * - bit 2 (4) = back
- *
- * Returns 0 if the stack pointer is null.
- */
-uint8_t photostax_stack_images_present(const struct PhotostaxStack *stack);
 
 /**
  * Check whether metadata has been loaded (cached) for this stack.
