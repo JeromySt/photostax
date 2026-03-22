@@ -1,0 +1,125 @@
+name: Create Release Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — validate versions without creating a tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Read version from workspace Cargo.toml
+      id: version
+      run: |
+        VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+        echo "📦 Detected version: $VERSION"
+
+    - name: Validate all version locations match
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        ERRORS=0
+
+        check_version() {
+          local file="$1"
+          local pattern="$2"
+          local actual
+          actual=$(grep -m1 "$pattern" "$file" | grep -oP '\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?')
+          if [ "$actual" != "$VERSION" ]; then
+            echo "❌ $file: expected $VERSION, found $actual"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ $file: $actual"
+          fi
+        }
+
+        echo "Checking version consistency across all packages..."
+        echo ""
+
+        check_version "Cargo.toml" '^version'
+        check_version "bindings/typescript/Cargo.toml" '^version'
+        check_version "bindings/typescript/package.json" '"version"'
+        check_version "bindings/dotnet/src/Photostax/Photostax.csproj" '<Version>'
+
+        # Dependency versions in crate Cargo.tomls
+        for f in ffi/Cargo.toml cli/Cargo.toml; do
+          DEP_VER=$(grep 'photostax-core' "$f" | grep -oP '\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?')
+          if [ "$DEP_VER" != "$VERSION" ]; then
+            echo "❌ $f: photostax-core dependency is $DEP_VER, expected $VERSION"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ $f: photostax-core = $DEP_VER"
+          fi
+        done
+
+        # Check TS Cargo.toml dependency if present
+        if grep -q 'photostax-core' bindings/typescript/Cargo.toml; then
+          DEP_VER=$(grep 'photostax-core' bindings/typescript/Cargo.toml | grep -oP '\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?')
+          if [ "$DEP_VER" != "$VERSION" ]; then
+            echo "❌ bindings/typescript/Cargo.toml: photostax-core dependency is $DEP_VER, expected $VERSION"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ bindings/typescript/Cargo.toml: photostax-core = $DEP_VER"
+          fi
+        fi
+
+        echo ""
+        if [ $ERRORS -gt 0 ]; then
+          echo "::error::$ERRORS version mismatch(es) found. Fix versions before releasing."
+          exit 1
+        fi
+        echo "All versions match: $VERSION ✅"
+
+    - name: Check CHANGELOG has entry for this version
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if grep -q "## \[$VERSION\]" CHANGELOG.md; then
+          echo "✅ CHANGELOG.md has entry for [$VERSION]"
+        else
+          echo "::error::CHANGELOG.md has no entry for [$VERSION]. Add a changelog entry before releasing."
+          exit 1
+        fi
+
+    - name: Check tag does not already exist
+      run: |
+        TAG="${{ steps.version.outputs.tag }}"
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
+          echo "::error::Tag $TAG already exists. Bump the version to create a new release."
+          exit 1
+        fi
+        echo "✅ Tag $TAG does not exist yet"
+
+    - name: Create and push tag
+      if: ${{ !inputs.dry_run }}
+      run: |
+        TAG="${{ steps.version.outputs.tag }}"
+        VERSION="${{ steps.version.outputs.version }}"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git tag -a "$TAG" -m "Release $VERSION"
+        git push origin "$TAG"
+
+        echo "🚀 Tag $TAG created and pushed — Release workflow will start automatically."
+
+    - name: Dry run summary
+      if: ${{ inputs.dry_run }}
+      run: |
+        echo "🏜️ Dry run complete — no tag was created."
+        echo "Version: ${{ steps.version.outputs.version }}"
+        echo "Tag: ${{ steps.version.outputs.tag }}"
+        echo "All validations passed. Run again without dry_run to create the release."
