@@ -139,7 +139,7 @@ internal static partial class NativeMethods
     /// Scan progress callback delegate matching the native function pointer signature.
     /// </summary>
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate void ScanProgressCallback(int phase, nuint current, nuint total, IntPtr userData);
+    internal delegate void ScanProgressCallback(IntPtr repoId, int phase, nuint current, nuint total, IntPtr userData);
 
     /// <summary>
     /// Scan with a scanner profile and optional progress callback.
@@ -315,6 +315,13 @@ internal static partial class NativeMethods
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void photostax_stack_metadata_invalidate(IntPtr stack);
+
+    /// <summary>
+    /// Read raw sidecar file bytes without parsing.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern FfiResult photostax_metadata_read_raw(
+        IntPtr stack, out IntPtr outData, out nuint outLen);
 
     /// <summary>
     /// Swap front and back images (for accidentally backward-scanned photos).

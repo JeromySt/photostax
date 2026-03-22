@@ -158,7 +158,7 @@ pub enum RepositoryError {
 /// ```
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
-pub trait Repository: FileAccess {
+pub trait Repository: FileAccess + Send + Sync {
     /// Returns the canonical URI of this repository.
     ///
     /// For local repositories this is a `file:///` URI derived from the

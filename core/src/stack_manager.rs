@@ -8,7 +8,7 @@
 //! - Classifier injection into repositories at registration time
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -67,17 +67,25 @@ pub struct StackManager {
     classifier: Arc<dyn ImageClassifier>,
     /// Broadcast sender for cache events (reactive notifications).
     event_tx: broadcast::Sender<CacheEvent>,
+    /// Receives StackEvents queued by the watcher threads. Wrapped in
+    /// Arc<Mutex> so watch() (which takes &self) can hand clones to threads.
+    pending_events_rx: Arc<Mutex<std_mpsc::Receiver<StackEvent>>>,
+    /// Sender half; cloned into each watcher thread.
+    pending_events_tx: std_mpsc::Sender<StackEvent>,
 }
 
 impl StackManager {
     /// Create an empty `StackManager` with no repositories.
     pub fn new() -> Self {
         let (event_tx, _) = broadcast::channel(256);
+        let (pending_events_tx, pending_events_rx) = std_mpsc::channel();
         Self {
             repos: HashMap::new(),
             cache: HashMap::new(),
             classifier: Arc::new(DefaultClassifier),
             event_tx,
+            pending_events_rx: Arc::new(Mutex::new(pending_events_rx)),
+            pending_events_tx,
         }
     }
 
@@ -123,38 +131,106 @@ impl StackManager {
         Ok(self.repos.get(&location).unwrap().repo.id())
     }
 
+    /// Remove a repository by its location URI.
+    ///
+    /// Removes the repository and all its stacks from the cache.
+    /// Broadcasts [`CacheEvent::StackRemoved`] for each evicted stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StackManagerError::RepoNotFound`] if no repository
+    /// matches the given location.
+    pub fn remove_repo(&mut self, location: &str) -> Result<(), StackManagerError> {
+        if self.repos.remove(location).is_none() {
+            return Err(StackManagerError::RepoNotFound(location.to_string()));
+        }
+
+        // Evict stacks belonging to this repo
+        let to_remove: Vec<String> = self
+            .cache
+            .iter()
+            .filter(|(_, stack)| stack.repo_id().as_deref() == Some(location))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in to_remove {
+            self.cache.remove(&id);
+            let _ = self.event_tx.send(CacheEvent::StackRemoved(id));
+        }
+
+        Ok(())
+    }
+
     /// Scan all registered repos and populate the cache.
     ///
-    /// This is called automatically by [`query`](Self::query) when the
-    /// cache is empty. You typically don't need to call it directly.
+    /// When there are multiple repos and no progress callback, repos are
+    /// scanned in parallel using OS threads. With a progress callback
+    /// (which is `&mut` and not `Send`), scanning falls back to sequential.
     fn scan_repos(
         &mut self,
         progress: Option<&mut dyn FnMut(&ScanProgress)>,
         cancel: Option<&CancellationToken>,
     ) -> Result<usize, StackManagerError> {
         self.cache.clear();
-        let mut all_stacks = Vec::new();
-        if let Some(cb) = progress {
-            for reg in self.repos.values() {
-                if let Some(token) = cancel {
-                    if token.is_cancelled() {
-                        return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+
+        let all_stacks = if progress.is_some() || self.repos.len() <= 1 {
+            // Sequential path: required when progress callback is present
+            // (FnMut is not Send) or there's only one repo.
+            let mut stacks = Vec::new();
+            if let Some(cb) = progress {
+                for reg in self.repos.values() {
+                    if let Some(token) = cancel {
+                        if token.is_cancelled() {
+                            return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+                        }
                     }
+                    let s = reg.repo.scan_with_progress(reg.profile, Some(&mut *cb))?;
+                    stacks.extend(s);
                 }
-                let stacks = reg.repo.scan_with_progress(reg.profile, Some(&mut *cb))?;
-                all_stacks.extend(stacks);
+            } else {
+                for reg in self.repos.values() {
+                    if let Some(token) = cancel {
+                        if token.is_cancelled() {
+                            return Err(StackManagerError::Repository(RepositoryError::Cancelled));
+                        }
+                    }
+                    let s = reg.repo.scan_with_progress(reg.profile, None)?;
+                    stacks.extend(s);
+                }
             }
+            stacks
         } else {
-            for reg in self.repos.values() {
-                if let Some(token) = cancel {
-                    if token.is_cancelled() {
-                        return Err(StackManagerError::Repository(RepositoryError::Cancelled));
-                    }
+            // Parallel path: scan all repos on separate threads.
+            let repos: Vec<&RegisteredRepo> = self.repos.values().collect();
+            let cancel_ref = cancel;
+
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = repos
+                    .iter()
+                    .map(|reg| {
+                        scope.spawn(move || {
+                            if let Some(token) = cancel_ref {
+                                if token.is_cancelled() {
+                                    return Err(StackManagerError::Repository(
+                                        RepositoryError::Cancelled,
+                                    ));
+                                }
+                            }
+                            reg.repo
+                                .scan_with_progress(reg.profile, None)
+                                .map_err(StackManagerError::from)
+                        })
+                    })
+                    .collect();
+
+                let mut stacks = Vec::new();
+                for h in handles {
+                    stacks.extend(h.join().expect("scan thread panicked")?);
                 }
-                let stacks = reg.repo.scan_with_progress(reg.profile, None)?;
-                all_stacks.extend(stacks);
-            }
-        }
+                Ok::<Vec<PhotoStack>, StackManagerError>(stacks)
+            })?
+        };
+
         for stack in all_stacks {
             let id = stack.id();
             self.cache.insert(id.clone(), stack);
@@ -286,8 +362,9 @@ impl StackManager {
 
     /// Update the scanner profile for all registered repositories.
     ///
-    /// The new profile takes effect on the next scan (via [`query`](Self::query)
-    /// or [`rescan`](Self::rescan)).
+    /// The new profile takes effect on the next scan (via
+    /// [`invalidate_cache`](Self::invalidate_cache) followed by
+    /// [`query`](Self::query)).
     pub fn set_profile(&mut self, profile: ScannerProfile) {
         for reg in self.repos.values_mut() {
             reg.profile = profile;
@@ -304,38 +381,51 @@ impl StackManager {
 
     /// Start watching all registered repos for changes.
     ///
-    /// Spawns a background thread per repository that translates
-    /// [`StackEvent`]s into [`CacheEvent`]s and broadcasts them.
-    /// Returns a broadcast receiver for the events.
+    /// Spawns a background thread per repository that forwards
+    /// [`StackEvent`]s into an internal queue. Call
+    /// [`apply_pending_events()`](Self::apply_pending_events) to drain
+    /// the queue, update the cache, and broadcast correct [`CacheEvent`]s.
     ///
-    /// **Note:** The watcher does not update the internal cache.
-    /// Consumers should call [`invalidate_cache()`](Self::invalidate_cache)
-    /// and re-query to pick up changes.
+    /// Also returns a broadcast receiver so callers can subscribe to
+    /// the resulting `CacheEvent`s without polling.
     pub fn watch(&self) -> Result<broadcast::Receiver<CacheEvent>, StackManagerError> {
         let rx = self.event_tx.subscribe();
 
         for reg in self.repos.values() {
             let repo_rx = reg.repo.watch()?;
-            let tx = self.event_tx.clone();
+            let tx = self.pending_events_tx.clone();
 
             std::thread::spawn(move || {
                 for event in repo_rx {
-                    let cache_event = match &event {
-                        StackEvent::FileChanged { stack_id, .. } => {
-                            CacheEvent::StackUpdated(stack_id.clone())
-                        }
-                        StackEvent::FileRemoved { stack_id, .. } => {
-                            CacheEvent::StackRemoved(stack_id.clone())
-                        }
-                    };
-                    if tx.send(cache_event).is_err() {
-                        return; // no receivers
+                    if tx.send(event).is_err() {
+                        return; // receiver dropped
                     }
                 }
             });
         }
 
         Ok(rx)
+    }
+
+    /// Drain pending filesystem events, update the cache, and broadcast
+    /// the resulting [`CacheEvent`]s.
+    ///
+    /// Returns the list of cache events that were applied. This should be
+    /// called periodically (e.g. before rendering a UI frame) or in
+    /// response to a wakeup from [`watch()`](Self::watch).
+    pub fn apply_pending_events(&mut self) -> Vec<CacheEvent> {
+        let events: Vec<StackEvent> = {
+            let rx = self.pending_events_rx.lock().unwrap();
+            rx.try_iter().collect()
+        };
+
+        let mut cache_events = Vec::new();
+        for event in &events {
+            if let Some(ce) = self.apply_event(event) {
+                cache_events.push(ce);
+            }
+        }
+        cache_events
     }
 
     /// Process a single StackEvent, updating the cache.
@@ -1130,7 +1220,9 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
+        let snap = mgr
+            .query(Some(&SearchQuery::new()), None, None, None)
+            .unwrap();
         assert_eq!(snap.total_count(), 3);
         assert_eq!(snap.all_stacks().len(), 3);
     }
@@ -1153,7 +1245,9 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
+        let snap = mgr
+            .query(Some(&SearchQuery::new()), None, None, None)
+            .unwrap();
         assert_eq!(snap.total_count(), 5);
 
         let page1 = snap.snapshot().get_page(0, 2);
@@ -1218,7 +1312,9 @@ mod tests {
     #[test]
     fn query_empty_cache() {
         let mut mgr = StackManager::new();
-        let snap = mgr.query(Some(&SearchQuery::new()), None, None, None).unwrap();
+        let snap = mgr
+            .query(Some(&SearchQuery::new()), None, None, None)
+            .unwrap();
         assert_eq!(snap.total_count(), 0);
         assert!(snap.all_stacks().is_empty());
     }

@@ -180,6 +180,7 @@ impl Repository for ForeignRepository {
 
             if let Some(ref mut cb) = progress {
                 cb(&ScanProgress {
+                    repo_id: self.repo_id.clone(),
                     phase: ScanPhase::Scanning,
                     current: i + 1,
                     total: stack_count,
@@ -204,6 +205,7 @@ impl Repository for ForeignRepository {
                 crate::classify::classify_ambiguous(&mut stacks[idx])?;
                 if let Some(ref mut cb) = progress {
                     cb(&ScanProgress {
+                        repo_id: self.repo_id.clone(),
                         phase: ScanPhase::Classifying,
                         current: step + 1,
                         total,
@@ -214,6 +216,7 @@ impl Repository for ForeignRepository {
 
         if let Some(ref mut cb) = progress {
             cb(&ScanProgress {
+                repo_id: self.repo_id.clone(),
                 phase: ScanPhase::Complete,
                 current: stacks.len(),
                 total: stacks.len(),

@@ -1,5 +1,144 @@
 # Migration Guide
 
+## v0.5.x → v0.6.0
+
+### ⚠️ Breaking: Async core architecture
+
+v0.6.0 migrates the entire Rust core to async. The FFI and bindings handle this internally via `block_on` bridges, so **most consumers won't need code changes** unless they:
+- Implement a custom `Repository` trait (now requires `Send + Sync`)
+- Use progress callbacks (signature changed)
+- Call `CreateSnapshot()` directly (removed from public API)
+
+### Progress callback signature changed
+
+The progress callback now includes `repo_id` as the first parameter so callers can identify which repository the progress belongs to (important for multi-repo setups).
+
+**Before (v0.5.x):**
+
+```rust
+// Rust
+let progress = |p: &ScanProgress| {
+    println!("{:?}: {}/{}", p.phase, p.current, p.total);
+};
+```
+
+```csharp
+// C#
+repo.Query(onProgress: (phase, current, total) => { ... });
+```
+
+```typescript
+// TypeScript
+repo.scanWithProgress("auto", (phase, current, total) => { ... });
+```
+
+**After (v0.6.0):**
+
+```rust
+// Rust
+let progress = |p: &ScanProgress| {
+    println!("[{}] {:?}: {}/{}", p.repo_id, p.phase, p.current, p.total);
+};
+```
+
+```csharp
+// C#
+repo.Query(onProgress: (repoId, phase, current, total) => { ... });
+```
+
+```typescript
+// TypeScript
+repo.scanWithProgress("auto", (repoId, phase, current, total) => { ... });
+```
+
+### query() accepts CancellationToken
+
+`query()` now takes an optional 4th parameter for cancellation.
+
+**Before (v0.5.x):**
+```rust
+let result = mgr.query(None, Some(20), None)?;
+```
+
+**After (v0.6.0):**
+```rust
+use tokio_util::sync::CancellationToken;
+
+let token = CancellationToken::new();
+let result = mgr.query(None, Some(20), None, Some(&token))?;
+// Or without cancellation:
+let result = mgr.query(None, Some(20), None, None)?;
+```
+
+### CreateSnapshot removed from public API
+
+`CreateSnapshot()` and `CheckSnapshotStatus()` have been removed from .NET and TypeScript public APIs. Snapshots are now internal to `QueryResult` — use `query()` instead.
+
+**Before (v0.5.x):**
+```csharp
+var snapshot = repo.CreateSnapshot(ScannerProfile.Auto);
+```
+
+**After (v0.6.0):**
+```csharp
+var result = repo.Query(pageSize: 20);
+// result IS the paginated snapshot — navigate with NextPage(), PreviousPage()
+```
+
+### Repository trait requires Send + Sync
+
+If you implement a custom `Repository`, it must now be `Send + Sync`:
+
+```rust
+// Your custom backend must be thread-safe
+pub struct MyCloudRepo { /* fields must be Send + Sync */ }
+impl Repository for MyCloudRepo { ... }
+// Compiler will enforce Send + Sync automatically
+```
+
+### Reactive notifications (new feature)
+
+Subscribe to cache changes for live UI updates:
+
+```rust
+let rx = mgr.subscribe_cache_events();
+// Or start filesystem watching:
+let rx = mgr.watch()?;
+
+// Periodically drain events into the cache:
+let events = mgr.apply_pending_events();
+
+// Check what changed since your last query:
+let delta = result.pending_changes();
+if delta.has_changes() {
+    println!("{} added, {} removed, {} modified", delta.added, delta.removed, delta.modified);
+}
+```
+
+### Raw sidecar access (new feature)
+
+Read raw sidecar XMP bytes without parsing — ideal for AI/ML pipelines:
+
+```rust
+// Rust
+if let Some(bytes) = stack.metadata().read_raw()? {
+    // bytes is the raw XMP XML
+}
+```
+
+```csharp
+// C#
+byte[]? raw = stack.Metadata.ReadRaw();
+using Stream? stream = stack.Metadata.ReadRawStream();
+```
+
+```typescript
+// TypeScript
+const raw: Buffer | null = stack.metadata.readRaw();
+```
+
+---
+
 ## v0.4.x → v0.5.0
 
 ### ⚠️ Breaking: query() is the sole entry point

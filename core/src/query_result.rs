@@ -319,7 +319,12 @@ impl QueryResult {
         let default_query = SearchQuery::new();
         let q = query.unwrap_or(&default_query);
         let filtered = self.snapshot.filter(q);
-        QueryResult::new(filtered, page_size.unwrap_or(self.page_size))
+        let ps = page_size.unwrap_or(self.page_size);
+        if let Some(ref rx) = self.event_rx {
+            QueryResult::new_with_events(filtered, ps, rx.resubscribe())
+        } else {
+            QueryResult::new(filtered, ps)
+        }
     }
 }
 
@@ -616,5 +621,38 @@ mod tests {
         assert_eq!(sub.page_count(), 3);
         assert_eq!(sub.current_page().len(), 2);
         assert!(sub.has_more());
+    }
+
+    #[test]
+    fn test_deep_sub_query_chain_inherits_events() {
+        let (tx, _) = broadcast::channel::<CacheEvent>(16);
+
+        // Level 0: root result with event receiver
+        let stacks = make_stacks(20);
+        let snapshot = ScanSnapshot::from_stacks(stacks);
+        let mut root = QueryResult::new_with_events(snapshot, 100, tx.subscribe());
+
+        // Build a 10-level deep sub-query chain
+        const DEPTH: usize = 10;
+        let mut chain: Vec<QueryResult> = Vec::with_capacity(DEPTH);
+        chain.push(root.query(None, None));
+        for i in 1..DEPTH {
+            let sub = chain[i - 1].query(None, None);
+            chain.push(sub);
+        }
+
+        // Send an event — it should reach every level
+        tx.send(CacheEvent::StackAdded("new_stack".to_string()))
+            .unwrap();
+
+        // Root should see it
+        let delta = root.pending_changes();
+        assert_eq!(delta.added, 1, "root must see the added event");
+
+        // Every level in the chain should see it
+        for (i, qr) in chain.iter_mut().enumerate() {
+            let delta = qr.pending_changes();
+            assert_eq!(delta.added, 1, "depth {i} must see the added event");
+        }
     }
 }

@@ -88,12 +88,17 @@ typedef struct FfiStackHandleArray {
  * C-compatible progress callback function pointer.
  *
  * Parameters:
+ * - `repo_id`: null-terminated UTF-8 string identifying the repository
  * - `phase`: 0 = Scanning, 1 = Classifying, 2 = Complete
  * - `current`: items processed so far in current phase
  * - `total`: total items in current phase
  * - `user_data`: opaque pointer passed through from the caller
  */
-typedef void (*ScanProgressFn)(int32_t phase, uintptr_t current, uintptr_t total, void *user_data);
+typedef void (*ScanProgressFn)(const char *repo_id,
+                               int32_t phase,
+                               uintptr_t current,
+                               uintptr_t total,
+                               void *user_data);
 
 /**
  * Paginated result of opaque PhotoStack handles.
@@ -451,6 +456,27 @@ char *photostax_get_custom_tag(const struct PhotostaxStack *stack, const char *t
 struct FfiResult photostax_set_custom_tag(const struct PhotostaxStack *stack,
                                           const char *tag_name,
                                           const char *value_json);
+
+/**
+ * Read the raw sidecar file bytes for a stack.
+ *
+ * Returns the unprocessed sidecar content (e.g., XMP XML). Unlike
+ * [`photostax_get_metadata`], this bypasses all metadata parsing.
+ *
+ * On success, sets `*out_data` and `*out_len`. If no sidecar exists,
+ * `*out_data` is null and `*out_len` is 0 (still returns success).
+ *
+ * # Safety
+ *
+ * - `stack` must be a valid pointer
+ * - `out_data` and `out_len` must be valid writable pointers
+ * - Caller owns the returned bytes and must call [`photostax_bytes_free`]
+ *
+ * [`photostax_bytes_free`]: crate::repository::photostax_bytes_free
+ */
+struct FfiResult photostax_metadata_read_raw(const struct PhotostaxStack *stack,
+                                             uint8_t **out_data,
+                                             uintptr_t *out_len);
 
 /**
  * Create a new repository from a directory path.

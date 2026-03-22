@@ -355,21 +355,24 @@ pub async fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32
             limit,
             offset,
             profile,
-        } => cmd_scan(
-            out,
-            err,
-            directory,
-            *format,
-            *show_metadata,
-            *metadata,
-            *tiff_only,
-            *jpeg_only,
-            *with_back,
-            *recursive,
-            *limit,
-            *offset,
-            (*profile).into(),
-        ).await,
+        } => {
+            cmd_scan(
+                out,
+                err,
+                directory,
+                *format,
+                *show_metadata,
+                *metadata,
+                *tiff_only,
+                *jpeg_only,
+                *with_back,
+                *recursive,
+                *limit,
+                *offset,
+                (*profile).into(),
+            )
+            .await
+        }
 
         Commands::Search {
             directory,
@@ -382,20 +385,23 @@ pub async fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32
             format,
             limit,
             offset,
-        } => cmd_search(
-            out,
-            err,
-            directory,
-            query,
-            exif_filters,
-            tag_filters,
-            *has_back,
-            *has_enhanced,
-            stack_ids,
-            *format,
-            *limit,
-            *offset,
-        ).await,
+        } => {
+            cmd_search(
+                out,
+                err,
+                directory,
+                query,
+                exif_filters,
+                tag_filters,
+                *has_back,
+                *has_enhanced,
+                stack_ids,
+                *format,
+                *limit,
+                *offset,
+            )
+            .await
+        }
 
         Commands::Info {
             directory,
@@ -431,15 +437,18 @@ pub async fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32
             degrees,
             target,
             format,
-        } => cmd_rotate(
-            out,
-            err,
-            directory,
-            stack_id,
-            *degrees,
-            (*target).into(),
-            *format,
-        ).await,
+        } => {
+            cmd_rotate(
+                out,
+                err,
+                directory,
+                stack_id,
+                *degrees,
+                (*target).into(),
+                *format,
+            )
+            .await
+        }
     }
 }
 
@@ -1651,7 +1660,8 @@ mod tests {
             OutputFormat::Json,
             false,
             &PathBuf::from("/photos"),
-        ).await;
+        )
+        .await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("IMG_0001"));
         assert!(output.contains("original"));
@@ -1841,7 +1851,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("photo stack(s)"));
@@ -1866,7 +1877,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos"));
@@ -1893,7 +1905,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("id,format"));
@@ -1917,7 +1930,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         // Should only contain JPEG stacks
@@ -1949,7 +1963,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -1971,7 +1986,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -1993,7 +2009,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         // Paths no longer shown; show_metadata shows "(original)", "(enhanced)", or "(back)"
@@ -2023,7 +2040,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("id,format,original,enhanced,back"));
@@ -2047,7 +2065,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         // LocalRepository::scan may return an error for nonexistent dirs
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
@@ -2069,7 +2088,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos"));
@@ -2092,7 +2112,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
@@ -2116,7 +2137,8 @@ mod tests {
             OutputFormat::Json,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -2137,7 +2159,8 @@ mod tests {
             OutputFormat::Csv,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -2158,7 +2181,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -2180,7 +2204,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -2202,7 +2227,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos_0001"));
@@ -2226,7 +2252,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
@@ -2242,7 +2269,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos_0001"));
@@ -2258,7 +2286,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Json,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         let _parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
@@ -2274,7 +2303,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Csv,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("type,key,value"));
@@ -2290,7 +2320,8 @@ mod tests {
             &testdata_path(),
             "nonexistent_stack",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
         let error_output = String::from_utf8(err).unwrap();
         assert!(error_output.contains("not found"));
@@ -2306,7 +2337,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Metadata"));
@@ -2322,7 +2354,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Json,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         let _parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
@@ -2338,7 +2371,8 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Csv,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -2352,7 +2386,8 @@ mod tests {
             &testdata_path(),
             "nonexistent",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
@@ -2371,7 +2406,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Wrote 2 tag(s)"));
@@ -2389,7 +2425,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "nonexistent",
             &tags,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
@@ -2405,7 +2442,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "nonexistent",
             &tags,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
@@ -2423,7 +2461,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        ).await;
+        )
+        .await;
 
         // Then delete it
         let mut out = Vec::new();
@@ -2435,7 +2474,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Deleted 1 tag(s)"));
@@ -2476,7 +2516,8 @@ mod tests {
             &mut err,
             &testdata_path(),
             Some(Path::new("/nonexistent/dir/out.json")),
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_ERROR);
         let error_output = String::from_utf8(err).unwrap();
         assert!(error_output.contains("Error writing"));
@@ -2501,7 +2542,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
@@ -2678,7 +2720,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags_w,
-        ).await;
+        )
+        .await;
 
         let cli = Cli {
             command: Commands::Metadata(MetadataCommand::Delete {
@@ -2890,7 +2933,8 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        ).await;
+        )
+        .await;
         // May succeed with 0 results or fail depending on OS
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
@@ -2904,7 +2948,8 @@ mod tests {
             &mut err,
             &PathBuf::from("/nonexistent/export/dir"),
             None,
-        ).await;
+        )
+        .await;
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
 
@@ -2920,7 +2965,8 @@ mod tests {
             &PathBuf::from("/nonexistent/info/dir"),
             "NO_STACK",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
@@ -2934,7 +2980,8 @@ mod tests {
             &PathBuf::from("/nonexistent/meta/dir"),
             "NO_STACK",
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
@@ -2949,7 +2996,8 @@ mod tests {
             &PathBuf::from("/nonexistent/write/dir"),
             "NO_STACK",
             &tags,
-        ).await;
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
@@ -2977,7 +3025,8 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Rotated"));
@@ -3000,7 +3049,8 @@ mod tests {
             -90,
             RotationTarget::All,
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("270°"));
@@ -3021,7 +3071,8 @@ mod tests {
             180,
             RotationTarget::All,
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
@@ -3037,7 +3088,8 @@ mod tests {
             45,
             RotationTarget::All,
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_ERROR);
         let err_output = String::from_utf8(err).unwrap();
         assert!(err_output.contains("Invalid rotation"));
@@ -3056,7 +3108,8 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Table,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
@@ -3075,7 +3128,8 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Json,
-        ).await;
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("\"name\": \"IMG_001\""));

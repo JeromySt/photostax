@@ -125,7 +125,14 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
         let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
             if let Some(cb_fn) = callback {
                 cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
+                    let c_repo_id = std::ffi::CString::new(p.repo_id.as_str()).unwrap_or_default();
+                    cb_fn(
+                        c_repo_id.as_ptr(),
+                        p.phase as i32,
+                        p.current,
+                        p.total,
+                        ud.as_ptr(),
+                    );
                 };
                 Some(&mut cb_wrapper)
             } else {

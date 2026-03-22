@@ -25,12 +25,20 @@ use crate::types::{
 /// C-compatible progress callback function pointer.
 ///
 /// Parameters:
+/// - `repo_id`: null-terminated UTF-8 string identifying the repository
 /// - `phase`: 0 = Scanning, 1 = Classifying, 2 = Complete
 /// - `current`: items processed so far in current phase
 /// - `total`: total items in current phase
 /// - `user_data`: opaque pointer passed through from the caller
-pub type ScanProgressFn =
-    Option<unsafe extern "C" fn(phase: i32, current: usize, total: usize, user_data: *mut c_void)>;
+pub type ScanProgressFn = Option<
+    unsafe extern "C" fn(
+        repo_id: *const c_char,
+        phase: i32,
+        current: usize,
+        total: usize,
+        user_data: *mut c_void,
+    ),
+>;
 
 /// Wrapper that marks a raw pointer as `Send`.
 ///
@@ -314,7 +322,14 @@ pub unsafe extern "C" fn photostax_repo_scan_with_progress(
         let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
             if let Some(cb_fn) = callback {
                 cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
+                    let c_repo_id = std::ffi::CString::new(p.repo_id.as_str()).unwrap_or_default();
+                    cb_fn(
+                        c_repo_id.as_ptr(),
+                        p.phase as i32,
+                        p.current,
+                        p.total,
+                        ud.as_ptr(),
+                    );
                 };
                 Some(&mut cb_wrapper)
             } else {
@@ -495,7 +510,14 @@ pub unsafe extern "C" fn photostax_query(
         let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
             if let Some(cb_fn) = callback {
                 cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
-                    cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
+                    let c_repo_id = std::ffi::CString::new(p.repo_id.as_str()).unwrap_or_default();
+                    cb_fn(
+                        c_repo_id.as_ptr(),
+                        p.phase as i32,
+                        p.current,
+                        p.total,
+                        ud.as_ptr(),
+                    );
                 };
                 Some(&mut cb_wrapper)
             } else {
@@ -933,9 +955,9 @@ pub unsafe extern "C" fn photostax_stack_metadata_is_loaded(stack: *const Photos
             return false;
         }
         let inner = unsafe { &*stack };
-        inner.runtime.block_on(async {
-            inner.inner.metadata().is_loaded()
-        })
+        inner
+            .runtime
+            .block_on(async { inner.inner.metadata().is_loaded() })
     }));
     result.unwrap_or(false)
 }
@@ -966,7 +988,8 @@ pub unsafe extern "C" fn photostax_stack_metadata_read(
                 "custom_tags": metadata.custom_tags,
             });
 
-            let json_str = serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+            let json_str =
+                serde_json::to_string(&metadata_json).unwrap_or_else(|_| "{}".to_string());
             CString::new(json_str)
                 .map(|s| s.into_raw())
                 .unwrap_or(ptr::null_mut())

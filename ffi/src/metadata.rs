@@ -135,7 +135,8 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
 
             match metadata.custom_tags.get(tag_name_str) {
                 Some(value) => {
-                    let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+                    let json_str =
+                        serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
                     CString::new(json_str)
                         .map(|s| s.into_raw())
                         .unwrap_or(ptr::null_mut())
@@ -205,6 +206,59 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
                 Err(e) => FfiResult::error(&e.to_string()),
             }
         })
+    }));
+
+    result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
+}
+
+/// Read the raw sidecar file bytes for a stack.
+///
+/// Returns the unprocessed sidecar content (e.g., XMP XML). Unlike
+/// [`photostax_get_metadata`], this bypasses all metadata parsing.
+///
+/// On success, sets `*out_data` and `*out_len`. If no sidecar exists,
+/// `*out_data` is null and `*out_len` is 0 (still returns success).
+///
+/// # Safety
+///
+/// - `stack` must be a valid pointer
+/// - `out_data` and `out_len` must be valid writable pointers
+/// - Caller owns the returned bytes and must call [`photostax_bytes_free`]
+///
+/// [`photostax_bytes_free`]: crate::repository::photostax_bytes_free
+#[no_mangle]
+pub unsafe extern "C" fn photostax_metadata_read_raw(
+    stack: *const PhotostaxStack,
+    out_data: *mut *mut u8,
+    out_len: *mut usize,
+) -> FfiResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if stack.is_null() || out_data.is_null() || out_len.is_null() {
+            return FfiResult::error("Null pointer");
+        }
+
+        let stack_ref = unsafe { &*stack };
+
+        match stack_ref.inner.metadata().read_raw() {
+            Ok(Some(bytes)) => {
+                let len = bytes.len();
+                let boxed = bytes.into_boxed_slice();
+                let ptr = Box::into_raw(boxed) as *mut u8;
+                unsafe {
+                    *out_data = ptr;
+                    *out_len = len;
+                }
+                FfiResult::success()
+            }
+            Ok(None) => {
+                unsafe {
+                    *out_data = ptr::null_mut();
+                    *out_len = 0;
+                }
+                FfiResult::success()
+            }
+            Err(e) => FfiResult::error(&e.to_string()),
+        }
     }));
 
     result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))

@@ -166,6 +166,8 @@ pub enum ScanPhase {
 /// - `total` — total items in the current phase (0 = indeterminate)
 #[derive(Debug, Clone)]
 pub struct ScanProgress {
+    /// Which repository this progress report belongs to.
+    pub repo_id: String,
     /// Current scan phase.
     pub phase: ScanPhase,
     /// Items processed so far in this phase.
@@ -571,6 +573,24 @@ impl<'a> MetadataProxy<'a> {
     pub fn invalidate(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.metadata.invalidate();
+    }
+
+    /// Read the raw sidecar file bytes without parsing.
+    ///
+    /// Returns `Ok(None)` if no sidecar file exists.
+    pub fn read_raw(&self) -> Result<Option<Vec<u8>>, RepositoryError> {
+        let inner = self.inner.read().unwrap();
+        inner.metadata.read_raw()
+    }
+
+    /// Open a stream to the raw sidecar file without parsing.
+    ///
+    /// Returns `Ok(None)` if no sidecar file exists.
+    pub fn read_raw_stream(
+        &self,
+    ) -> Result<Option<Box<dyn crate::file_access::ReadSeek>>, RepositoryError> {
+        let inner = self.inner.read().unwrap();
+        inner.metadata.read_raw_stream()
     }
 }
 

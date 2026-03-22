@@ -307,6 +307,31 @@ impl JsMetadataRef {
     pub fn invalidate(&self) {
         self.stack.metadata().invalidate();
     }
+
+    /// Read the raw sidecar file bytes without parsing.
+    ///
+    /// Returns the unprocessed sidecar content (e.g., XMP XML), or null
+    /// if no sidecar exists. Unlike `read()`, this bypasses all metadata
+    /// parsing and merging.
+    #[napi]
+    pub fn read_raw(&self) -> napi::Result<Option<Buffer>> {
+        match self.stack.metadata().read_raw() {
+            Ok(Some(bytes)) => Ok(Some(bytes.into())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(napi::Error::from_reason(e.to_string())),
+        }
+    }
+
+    /// Read the raw sidecar file as a streaming reader.
+    ///
+    /// Returns the unprocessed sidecar content as a Buffer (for streaming
+    /// consumers), or null if no sidecar exists.
+    #[napi]
+    pub fn read_raw_stream(&self) -> napi::Result<Option<Buffer>> {
+        // In Node.js, Buffer IS the stream-friendly type.
+        // Callers can wrap in Readable.from(buf) for streaming.
+        self.read_raw()
+    }
 }
 
 /// A photo stack with sub-object accessors for images and metadata.
@@ -844,7 +869,7 @@ impl PhotostaxRepository {
     /// @returns Array of photo stacks
     /// @throws Error if the directory cannot be accessed
     #[napi(
-        ts_args_type = "profile?: string, callback?: (phase: string, current: number, total: number) => void"
+        ts_args_type = "profile?: string, callback?: (repoId: string, phase: string, current: number, total: number) => void"
     )]
     pub fn scan_with_progress(
         &self,
@@ -947,7 +972,7 @@ impl PhotostaxRepository {
     /// @param pageSize - Number of stacks per page (null/undefined = all on one page)
     /// @param callback - Optional progress callback invoked during auto-scan
     /// @returns QueryResult with page navigation methods
-    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (phase: string, current: number, total: number) => void")]
+    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (repoId: string, phase: string, current: number, total: number) => void")]
     pub fn query(
         &self,
         query: Option<JsSearchQuery>,
@@ -1109,7 +1134,7 @@ impl PhotostaxRepository {
     /// @returns A frozen snapshot
     /// @throws Error if the scan fails
     #[napi(
-        ts_args_type = "profile?: string, loadMetadata?: boolean, callback?: (phase: string, current: number, total: number) => void"
+        ts_args_type = "profile?: string, loadMetadata?: boolean, callback?: (repoId: string, phase: string, current: number, total: number) => void"
     )]
     pub fn create_snapshot_with_progress(
         &self,
@@ -1751,7 +1776,7 @@ impl PhotostaxStackManager {
     }
 
     /// Unified query: search + paginate across all repos.
-    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (phase: string, current: number, total: number) => void")]
+    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (repoId: string, phase: string, current: number, total: number) => void")]
     pub fn query(
         &self,
         env: Env,
