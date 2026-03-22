@@ -2,8 +2,10 @@
 
 use clap::Parser;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = photostax_cli::Cli::parse();
-    let exit_code = photostax_cli::run_cli(&cli, &mut std::io::stdout(), &mut std::io::stderr());
+    let exit_code =
+        photostax_cli::run_cli(&cli, &mut std::io::stdout(), &mut std::io::stderr()).await;
     std::process::exit(exit_code);
 }

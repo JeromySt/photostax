@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-22
+
+### ⚠️ BREAKING CHANGES
+
+- **Full async Rust core** — all repository, scanning, and metadata I/O operations are now async (tokio). FFI and bindings use `block_on` bridges internally.
+- **`query()` signature changed** — now takes optional `CancellationToken` as 4th parameter: `query(query?, page_size?, progress?, cancel?)`
+- **`ScanProgress` adds `repo_id` field** — progress callbacks now receive `repo_id` as the first parameter identifying which repository the progress belongs to
+- **`Repository` trait requires `Send + Sync`** — custom repository implementations must be thread-safe
+- **`CreateSnapshot()` removed** from .NET `PhotostaxRepository`/`StackManager` and TypeScript `PhotostaxRepository`/`PhotostaxStackManager` public APIs (internal to `QueryResult`)
+- **Progress callback signature changed** across all layers:
+  - Rust: `ScanProgress` now includes `repo_id: String`
+  - FFI: callback adds `repo_id: *const c_char` as first parameter
+  - .NET: `Action<string, ScanPhase, int, int>` (was `Action<ScanPhase, int, int>`)
+  - TypeScript: `(repoId: string, phase: string, current: number, total: number)` (was 3 args)
+
+### Added
+
+- **Async architecture** — full async Rust core with tokio runtime; `async-trait` for dyn trait dispatch; per-Manager runtime ownership
+- **Reactive snapshot notifications** — `StackManager` broadcasts `CacheEvent` via `tokio::sync::broadcast` (capacity 256); `subscribe_cache_events()` returns live receiver; `QueryResult::pending_changes()` returns `QueryDelta { added, removed, modified }`
+- **Sub-query event propagation** — `QueryResult::query()` sub-queries inherit the parent's broadcast receiver via `resubscribe()`, supporting arbitrary depth chains
+- **`apply_pending_events()`** on `StackManager` — drains queued filesystem events, updates cache, and broadcasts correct `CacheEvent`s (replaces naive watch→broadcast)
+- **CancellationToken** — `query()` and `scan_repos()` accept `CancellationToken` for cooperative cancellation; maps to C# `CancellationToken` / JS `AbortSignal`
+- **`watch()` correctly wires to `apply_event()`** — filesystem changes now queue into internal channel; `apply_pending_events()` drains, applies to cache with correct `StackAdded` vs `StackUpdated` distinction
+- **`MetadataRef.read_raw()`** — raw sidecar file bytes without parsing (all layers); zero-overhead path for AI/ML ingestion
+- **`MetadataRef.read_raw_stream()`** — streaming variant (`BufReader` in Rust, `MemoryStream` in .NET, `Buffer` in TypeScript)
+- **`ImageRef::read_bytes()`** — convenience method returning `Vec<u8>`
+- **`PhotoStack.repo_id`** exposed in FFI, .NET, and TypeScript
+- **`StackManager::remove_repo()`** — removes a repository and evicts its stacks from cache with `StackRemoved` events
+- **Parallel repo scanning** — `scan_repos()` uses `std::thread::scope` for parallel scanning when multiple repos exist and no progress callback is present
+- **`photostax_bytes_free()`** — FFI function for freeing byte buffers returned by `read_raw`
+
+### Removed
+
+- `CreateSnapshot()` / `CheckSnapshotStatus()` from .NET `PhotostaxRepository` and `StackManager`
+- `create_snapshot()` / `create_snapshot_with_progress()` / `check_snapshot_status()` from TypeScript binding
+
 ## [0.5.0] - 2026-03-22
 
 ### ⚠️ BREAKING CHANGES

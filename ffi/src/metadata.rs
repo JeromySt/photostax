@@ -29,24 +29,25 @@ pub unsafe extern "C" fn photostax_get_metadata(stack: *const PhotostaxStack) ->
         }
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read() {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        let metadata_json = serde_json::json!({
-            "exif_tags": metadata.exif_tags,
-            "xmp_tags": metadata.xmp_tags,
-            "custom_tags": metadata.custom_tags,
-        });
+            let metadata_json = serde_json::json!({
+                "exif_tags": metadata.exif_tags,
+                "xmp_tags": metadata.xmp_tags,
+                "custom_tags": metadata.custom_tags,
+            });
 
-        let json_str =
-            serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
-        CString::new(json_str)
-            .map(|s| s.into_raw())
-            .unwrap_or(ptr::null_mut())
+            let json_str =
+                serde_json::to_string_pretty(&metadata_json).unwrap_or_else(|_| "{}".to_string());
+            CString::new(json_str)
+                .map(|s| s.into_raw())
+                .unwrap_or(ptr::null_mut())
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -79,19 +80,20 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read() {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        match metadata.exif_tags.get(tag_name_str) {
-            Some(value) => CString::new(value.as_str())
-                .map(|s| s.into_raw())
-                .unwrap_or(ptr::null_mut()),
-            None => ptr::null_mut(),
-        }
+            match metadata.exif_tags.get(tag_name_str) {
+                Some(value) => CString::new(value.as_str())
+                    .map(|s| s.into_raw())
+                    .unwrap_or(ptr::null_mut()),
+                None => ptr::null_mut(),
+            }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -124,22 +126,24 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        let metadata = match borrowed.metadata().read() {
-            Ok(m) => m,
-            Err(_) => return ptr::null_mut(),
-        };
+        stack_ref.runtime.block_on(async {
+            let metadata = match stack_ref.inner.metadata().read() {
+                Ok(m) => m,
+                Err(_) => return ptr::null_mut(),
+            };
 
-        match metadata.custom_tags.get(tag_name_str) {
-            Some(value) => {
-                let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-                CString::new(json_str)
-                    .map(|s| s.into_raw())
-                    .unwrap_or(ptr::null_mut())
+            match metadata.custom_tags.get(tag_name_str) {
+                Some(value) => {
+                    let json_str =
+                        serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+                    CString::new(json_str)
+                        .map(|s| s.into_raw())
+                        .unwrap_or(ptr::null_mut())
+                }
+                None => ptr::null_mut(),
             }
-            None => ptr::null_mut(),
-        }
+        })
     }));
 
     result.unwrap_or(ptr::null_mut())
@@ -195,10 +199,64 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
         };
 
         let stack_ref = unsafe { &*stack };
-        let borrowed = stack_ref.inner.borrow();
 
-        match borrowed.metadata().write(&metadata) {
-            Ok(()) => FfiResult::success(),
+        stack_ref.runtime.block_on(async {
+            match stack_ref.inner.metadata().write(&metadata) {
+                Ok(()) => FfiResult::success(),
+                Err(e) => FfiResult::error(&e.to_string()),
+            }
+        })
+    }));
+
+    result.unwrap_or_else(|_| FfiResult::error("Panic occurred"))
+}
+
+/// Read the raw sidecar file bytes for a stack.
+///
+/// Returns the unprocessed sidecar content (e.g., XMP XML). Unlike
+/// [`photostax_get_metadata`], this bypasses all metadata parsing.
+///
+/// On success, sets `*out_data` and `*out_len`. If no sidecar exists,
+/// `*out_data` is null and `*out_len` is 0 (still returns success).
+///
+/// # Safety
+///
+/// - `stack` must be a valid pointer
+/// - `out_data` and `out_len` must be valid writable pointers
+/// - Caller owns the returned bytes and must call [`photostax_bytes_free`]
+///
+/// [`photostax_bytes_free`]: crate::repository::photostax_bytes_free
+#[no_mangle]
+pub unsafe extern "C" fn photostax_metadata_read_raw(
+    stack: *const PhotostaxStack,
+    out_data: *mut *mut u8,
+    out_len: *mut usize,
+) -> FfiResult {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if stack.is_null() || out_data.is_null() || out_len.is_null() {
+            return FfiResult::error("Null pointer");
+        }
+
+        let stack_ref = unsafe { &*stack };
+
+        match stack_ref.inner.metadata().read_raw() {
+            Ok(Some(bytes)) => {
+                let len = bytes.len();
+                let boxed = bytes.into_boxed_slice();
+                let ptr = Box::into_raw(boxed) as *mut u8;
+                unsafe {
+                    *out_data = ptr;
+                    *out_len = len;
+                }
+                FfiResult::success()
+            }
+            Ok(None) => {
+                unsafe {
+                    *out_data = ptr::null_mut();
+                    *out_len = 0;
+                }
+                FfiResult::success()
+            }
             Err(e) => FfiResult::error(&e.to_string()),
         }
     }));

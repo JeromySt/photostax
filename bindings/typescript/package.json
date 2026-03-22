@@ -1,6 +1,6 @@
 {
   "name": "@photostax/core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Unified photo stack library for Epson FastFoto repositories - Node.js binding",
   "main": "index.js",
   "types": "index.d.ts",
@@ -23,9 +23,9 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.0.0",
-    "@types/jest": "^29.0.0",
+    "@types/jest": "^30.0.0",
     "@types/node": "^25.0.0",
-    "jest": "^29.0.0",
+    "jest": "^30.3.0",
     "ts-jest": "^29.0.0",
     "typescript": "^5.0.0"
   },

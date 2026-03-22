@@ -111,6 +111,10 @@ pub enum RepositoryError {
     /// handle has been invalidated (e.g., after the file was deleted from disk).
     #[error("photo stack has been deleted")]
     StackDeleted,
+
+    /// The operation was cancelled via a [`CancellationToken`](tokio_util::sync::CancellationToken).
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 /// Abstraction over a storage backend containing Epson FastFoto photo stacks.
@@ -154,7 +158,7 @@ pub enum RepositoryError {
 /// ```
 ///
 /// [`backends::local::LocalRepository`]: crate::backends::local::LocalRepository
-pub trait Repository: FileAccess {
+pub trait Repository: FileAccess + Send + Sync {
     /// Returns the canonical URI of this repository.
     ///
     /// For local repositories this is a `file:///` URI derived from the

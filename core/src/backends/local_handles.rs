@@ -341,6 +341,32 @@ impl MetadataHandle for LocalMetadataHandle {
     fn is_valid(&self) -> bool {
         self.valid.load(Ordering::Acquire)
     }
+
+    fn read_raw(&self) -> Result<Option<Vec<u8>>, RepositoryError> {
+        if !self.is_valid() {
+            return Err(RepositoryError::StackDeleted);
+        }
+        let path = sidecar::sidecar_path(&self.sidecar_dir, &self.stack_name);
+        if path.exists() {
+            let bytes = std::fs::read(&path).map_err(RepositoryError::Io)?;
+            Ok(Some(bytes))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn read_raw_stream(&self) -> Result<Option<Box<dyn ReadSeek>>, RepositoryError> {
+        if !self.is_valid() {
+            return Err(RepositoryError::StackDeleted);
+        }
+        let path = sidecar::sidecar_path(&self.sidecar_dir, &self.stack_name);
+        if path.exists() {
+            let file = std::fs::File::open(&path).map_err(RepositoryError::Io)?;
+            Ok(Some(Box::new(std::io::BufReader::new(file))))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]

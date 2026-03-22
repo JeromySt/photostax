@@ -31,7 +31,7 @@
 //! let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
 //!
 //! // Query all stacks (auto-scans on first call)
-//! let mut result = mgr.query(None, Some(20), None).unwrap();
+//! let mut result = mgr.query(None, Some(20), None, None).unwrap();
 //! println!("{} stacks across {} pages", result.total_count(), result.page_count());
 //!
 //! // Iterate current page

@@ -53,7 +53,7 @@ public sealed class PhotostaxRepository : IDisposable
     /// <param name="onProgress">Optional progress callback invoked during scanning phases.</param>
     /// <returns>A paginated query result with page-based navigation.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the repository has been disposed.</exception>
-    public QueryResult Query(SearchQuery? query = null, int pageSize = 0, Action<ScanPhase, int, int>? onProgress = null)
+    public QueryResult Query(SearchQuery? query = null, int pageSize = 0, Action<string, ScanPhase, int, int>? onProgress = null)
     {
         ThrowIfDisposed();
 
@@ -62,9 +62,10 @@ public sealed class PhotostaxRepository : IDisposable
         NativeMethods.ScanProgressCallback? nativeCallback = null;
         if (onProgress != null)
         {
-            nativeCallback = (phase, current, total, _) =>
+            nativeCallback = (repoIdPtr, phase, current, total, _) =>
             {
-                onProgress((ScanPhase)phase, (int)current, (int)total);
+                var repoId = repoIdPtr != IntPtr.Zero ? Marshal.PtrToStringUTF8(repoIdPtr) ?? "" : "";
+                onProgress(repoId, (ScanPhase)phase, (int)current, (int)total);
             };
         }
 
@@ -128,15 +129,18 @@ public sealed class PhotostaxRepository : IDisposable
     public ScanSnapshot CreateSnapshot(
         ScannerProfile profile,
         bool loadMetadata = false,
-        Action<ScanPhase, int, int>? onProgress = null)
+        Action<string, ScanPhase, int, int>? onProgress = null)
     {
         ThrowIfDisposed();
 
         NativeMethods.ScanProgressCallback? nativeCallback = null;
         if (onProgress != null)
         {
-            nativeCallback = (phase, current, total, _) =>
-                onProgress((ScanPhase)phase, (int)current, (int)total);
+            nativeCallback = (repoIdPtr, phase, current, total, _) =>
+            {
+                var repoId = repoIdPtr != IntPtr.Zero ? Marshal.PtrToStringUTF8(repoIdPtr) ?? "" : "";
+                onProgress(repoId, (ScanPhase)phase, (int)current, (int)total);
+            };
         }
 
         var ptr = NativeMethods.photostax_create_snapshot_with_progress(

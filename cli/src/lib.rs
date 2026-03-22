@@ -308,17 +308,15 @@ pub fn parse_key_value(s: &str) -> Result<(String, String), String> {
 }
 
 /// Convert a PhotoStack to a JSON-serializable value.
-fn stack_to_json(stack: &PhotoStack) -> serde_json::Value {
-    let metadata = stack.metadata().cached().map_or_else(
-        || serde_json::json!({"exif_tags": {}, "xmp_tags": {}, "custom_tags": {}}),
-        |m| {
-            serde_json::json!({
-                "exif_tags": m.exif_tags,
-                "xmp_tags": m.xmp_tags,
-                "custom_tags": m.custom_tags,
-            })
-        },
-    );
+async fn stack_to_json(stack: &PhotoStack) -> serde_json::Value {
+    let metadata = match stack.metadata().cached() {
+        Some(m) => serde_json::json!({
+            "exif_tags": m.exif_tags,
+            "xmp_tags": m.xmp_tags,
+            "custom_tags": m.custom_tags,
+        }),
+        None => serde_json::json!({"exif_tags": {}, "xmp_tags": {}, "custom_tags": {}}),
+    };
     serde_json::json!({
         "id": stack.id(),
         "name": stack.name(),
@@ -333,13 +331,17 @@ fn stack_to_json(stack: &PhotoStack) -> serde_json::Value {
 }
 
 /// Convert a slice of PhotoStacks to a JSON-serializable array.
-fn stacks_to_json(stacks: &[PhotoStack]) -> serde_json::Value {
-    serde_json::Value::Array(stacks.iter().map(stack_to_json).collect())
+async fn stacks_to_json(stacks: &[PhotoStack]) -> serde_json::Value {
+    let mut arr = Vec::with_capacity(stacks.len());
+    for s in stacks {
+        arr.push(stack_to_json(s).await);
+    }
+    serde_json::Value::Array(arr)
 }
 
 /// Run the CLI with parsed arguments, writing output to `out` and errors to `err`.
 /// Returns the exit code.
-pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub async fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match &cli.command {
         Commands::Scan {
             directory,
@@ -353,21 +355,24 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             limit,
             offset,
             profile,
-        } => cmd_scan(
-            out,
-            err,
-            directory,
-            *format,
-            *show_metadata,
-            *metadata,
-            *tiff_only,
-            *jpeg_only,
-            *with_back,
-            *recursive,
-            *limit,
-            *offset,
-            (*profile).into(),
-        ),
+        } => {
+            cmd_scan(
+                out,
+                err,
+                directory,
+                *format,
+                *show_metadata,
+                *metadata,
+                *tiff_only,
+                *jpeg_only,
+                *with_back,
+                *recursive,
+                *limit,
+                *offset,
+                (*profile).into(),
+            )
+            .await
+        }
 
         Commands::Search {
             directory,
@@ -380,47 +385,50 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             format,
             limit,
             offset,
-        } => cmd_search(
-            out,
-            err,
-            directory,
-            query,
-            exif_filters,
-            tag_filters,
-            *has_back,
-            *has_enhanced,
-            stack_ids,
-            *format,
-            *limit,
-            *offset,
-        ),
+        } => {
+            cmd_search(
+                out,
+                err,
+                directory,
+                query,
+                exif_filters,
+                tag_filters,
+                *has_back,
+                *has_enhanced,
+                stack_ids,
+                *format,
+                *limit,
+                *offset,
+            )
+            .await
+        }
 
         Commands::Info {
             directory,
             stack_id,
             format,
-        } => cmd_info(out, err, directory, stack_id, *format),
+        } => cmd_info(out, err, directory, stack_id, *format).await,
 
         Commands::Metadata(MetadataCommand::Read {
             directory,
             stack_id,
             format,
-        }) => cmd_metadata_read(out, err, directory, stack_id, *format),
+        }) => cmd_metadata_read(out, err, directory, stack_id, *format).await,
 
         Commands::Metadata(MetadataCommand::Write {
             directory,
             stack_id,
             tags,
-        }) => cmd_metadata_write(out, err, directory, stack_id, tags),
+        }) => cmd_metadata_write(out, err, directory, stack_id, tags).await,
 
         Commands::Metadata(MetadataCommand::Delete {
             directory,
             stack_id,
             tags,
-        }) => cmd_metadata_delete(out, err, directory, stack_id, tags),
+        }) => cmd_metadata_delete(out, err, directory, stack_id, tags).await,
 
         Commands::Export { directory, output } => {
-            cmd_export(out, err, directory, output.as_deref())
+            cmd_export(out, err, directory, output.as_deref()).await
         }
 
         Commands::Rotate {
@@ -429,21 +437,24 @@ pub fn run_cli(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             degrees,
             target,
             format,
-        } => cmd_rotate(
-            out,
-            err,
-            directory,
-            stack_id,
-            *degrees,
-            (*target).into(),
-            *format,
-        ),
+        } => {
+            cmd_rotate(
+                out,
+                err,
+                directory,
+                stack_id,
+                *degrees,
+                (*target).into(),
+                *format,
+            )
+            .await
+        }
     }
 }
 
 /// Scan command implementation
 #[allow(clippy::too_many_arguments)]
-pub fn cmd_scan(
+pub async fn cmd_scan(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -480,14 +491,14 @@ pub fn cmd_scan(
             photostax_core::photo_stack::ScanPhase::Classifying => "Classifying",
             photostax_core::photo_stack::ScanPhase::Complete => "Complete",
         };
-        let _ = write!(err, "\r{phase}: {}/{}", p.current, p.total);
+        let _ = write!(std::io::stderr(), "\r{phase}: {}/{}", p.current, p.total);
         if p.phase == photostax_core::photo_stack::ScanPhase::Complete {
-            let _ = writeln!(err);
+            let _ = writeln!(std::io::stderr());
         }
     };
 
     if load_metadata {
-        let result = match mgr.query(None, None, None) {
+        let result = match mgr.query(None, None, None, None) {
             Ok(r) => r,
             Err(e) => {
                 let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -497,12 +508,12 @@ pub fn cmd_scan(
         for stack in result.all_stacks() {
             let _ = stack.metadata().read();
         }
-    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb)) {
+    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb), None) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None, None)
+        .query(None, None, None, None)
         .expect("cache already populated")
         .all_stacks()
         .to_vec();
@@ -519,7 +530,7 @@ pub fn cmd_scan(
     // Apply pagination if limit > 0
     if limit > 0 {
         let paginated = paginate_stacks(&filtered, &PaginationParams { offset, limit });
-        output_stacks(out, &paginated.items, format, show_metadata, directory);
+        output_stacks(out, &paginated.items, format, show_metadata, directory).await;
         if format == OutputFormat::Json {
             let _ = writeln!(
                 out,
@@ -541,14 +552,14 @@ pub fn cmd_scan(
             );
         }
     } else {
-        output_stacks(out, &filtered, format, show_metadata, directory);
+        output_stacks(out, &filtered, format, show_metadata, directory).await;
     }
     EXIT_SUCCESS
 }
 
 /// Search command implementation
 #[allow(clippy::too_many_arguments)]
-pub fn cmd_search(
+pub async fn cmd_search(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -570,7 +581,7 @@ pub fn cmd_search(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None) {
+    let result = match mgr.query(None, None, None, None) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -602,7 +613,7 @@ pub fn cmd_search(
 
     // Apply pagination if limit > 0
     if limit > 0 {
-        let snapshot = match mgr.query(Some(&search), None, None) {
+        let snapshot = match mgr.query(Some(&search), None, None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
@@ -610,7 +621,7 @@ pub fn cmd_search(
             }
         };
         let paginated = snapshot.snapshot().get_page(offset, limit);
-        output_stacks(out, &paginated.items, format, false, directory);
+        output_stacks(out, &paginated.items, format, false, directory).await;
         if format == OutputFormat::Json {
             let _ = writeln!(
                 out,
@@ -632,14 +643,14 @@ pub fn cmd_search(
             );
         }
     } else {
-        let results = match mgr.query(Some(&search), None, None) {
+        let results = match mgr.query(Some(&search), None, None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
                 return EXIT_ERROR;
             }
         };
-        output_stacks(out, results.all_stacks(), format, false, directory);
+        output_stacks(out, results.all_stacks(), format, false, directory).await;
     }
     EXIT_SUCCESS
 }
@@ -647,31 +658,31 @@ pub fn cmd_search(
 /// Resolve a stack identifier — try as opaque ID first, then fall back to
 /// matching by display name. This lets users pass either the hash-based ID
 /// or the human-readable stem name on the command line.
-fn resolve_stack(
+async fn resolve_stack(
     mgr: &mut StackManager,
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
     if mgr.is_empty() {
-        mgr.query(None, None, None)
+        mgr.query(None, None, None, None)
             .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     }
     // Try by exact ID first
     let id_query = SearchQuery::new().with_ids(vec![id_or_name.to_string()]);
-    if let Ok(result) = mgr.query(Some(&id_query), None, None) {
+    if let Ok(result) = mgr.query(Some(&id_query), None, None, None) {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
     }
     // Fall back to name matching via text query
     let text_query = SearchQuery::new().with_text(id_or_name.to_string());
-    if let Ok(result) = mgr.query(Some(&text_query), None, None) {
+    if let Ok(result) = mgr.query(Some(&text_query), None, None, None) {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
     }
     // If still not found, query all and search manually
     let all = mgr
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     for stack in all.all_stacks() {
         if stack.name() == id_or_name {
@@ -684,7 +695,7 @@ fn resolve_stack(
 }
 
 /// Info command implementation
-pub fn cmd_info(
+pub async fn cmd_info(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -699,7 +710,7 @@ pub fn cmd_info(
             return EXIT_ERROR;
         }
     };
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let stack = match resolve_stack(&mut mgr, stack_id).await {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -721,14 +732,14 @@ pub fn cmd_info(
             let _ = writeln!(
                 out,
                 "{}",
-                serde_json::to_string_pretty(&stack_to_json(&stack)).unwrap()
+                serde_json::to_string_pretty(&stack_to_json(&stack).await).unwrap()
             );
         }
         OutputFormat::Csv => {
-            output_info_csv(out, &stack);
+            output_info_csv(out, &stack).await;
         }
         OutputFormat::Table => {
-            output_info_table(out, &stack);
+            output_info_table(out, &stack).await;
         }
     }
 
@@ -736,7 +747,7 @@ pub fn cmd_info(
 }
 
 /// Metadata read command
-pub fn cmd_metadata_read(
+pub async fn cmd_metadata_read(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -751,7 +762,7 @@ pub fn cmd_metadata_read(
             return EXIT_ERROR;
         }
     };
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let stack = match resolve_stack(&mut mgr, stack_id).await {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -787,7 +798,7 @@ pub fn cmd_metadata_read(
 }
 
 /// Metadata write command
-pub fn cmd_metadata_write(
+pub async fn cmd_metadata_write(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -802,7 +813,7 @@ pub fn cmd_metadata_write(
             return EXIT_ERROR;
         }
     };
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let stack = match resolve_stack(&mut mgr, stack_id).await {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -832,7 +843,7 @@ pub fn cmd_metadata_write(
 }
 
 /// Metadata delete command
-pub fn cmd_metadata_delete(
+pub async fn cmd_metadata_delete(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -850,7 +861,7 @@ pub fn cmd_metadata_delete(
 
     // Verify stack exists
     if let Err(photostax_core::repository::RepositoryError::NotFound(_)) =
-        resolve_stack(&mut mgr, stack_id)
+        resolve_stack(&mut mgr, stack_id).await
     {
         let _ = writeln!(err, "Stack not found: {stack_id}");
         return EXIT_NOT_FOUND;
@@ -871,7 +882,7 @@ pub fn cmd_metadata_delete(
 }
 
 /// Export command implementation
-pub fn cmd_export(
+pub async fn cmd_export(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -885,7 +896,7 @@ pub fn cmd_export(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None) {
+    let result = match mgr.query(None, None, None, None) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -896,12 +907,12 @@ pub fn cmd_export(
         let _ = stack.metadata().read();
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None, None)
+        .query(None, None, None, None)
         .expect("cache already populated")
         .all_stacks()
         .to_vec();
 
-    let json = serde_json::to_string_pretty(&stacks_to_json(&stacks)).unwrap();
+    let json = serde_json::to_string_pretty(&stacks_to_json(&stacks).await).unwrap();
 
     match output {
         Some(path) => {
@@ -925,7 +936,7 @@ pub fn cmd_export(
 }
 
 /// Rotate command implementation
-pub fn cmd_rotate(
+pub async fn cmd_rotate(
     out: &mut dyn Write,
     err: &mut dyn Write,
     directory: &PathBuf,
@@ -955,7 +966,7 @@ pub fn cmd_rotate(
     };
 
     // Resolve the stack ID (supports both opaque IDs and display names)
-    let stack = match resolve_stack(&mut mgr, stack_id) {
+    let stack = match resolve_stack(&mut mgr, stack_id).await {
         Ok(s) => s,
         Err(photostax_core::repository::RepositoryError::NotFound(_)) => {
             let _ = writeln!(err, "Stack not found: {stack_id}");
@@ -1004,7 +1015,7 @@ pub fn cmd_rotate(
         let _ = writeln!(
             out,
             "{}",
-            serde_json::to_string_pretty(&stack_to_json(&stack)).unwrap()
+            serde_json::to_string_pretty(&stack_to_json(&stack).await).unwrap()
         );
     }
 
@@ -1016,7 +1027,7 @@ pub fn cmd_rotate(
 // ============================================================================
 
 /// Output stacks in the requested format
-pub fn output_stacks(
+pub async fn output_stacks(
     out: &mut dyn Write,
     stacks: &[PhotoStack],
     format: OutputFormat,
@@ -1028,20 +1039,20 @@ pub fn output_stacks(
             let _ = writeln!(
                 out,
                 "{}",
-                serde_json::to_string_pretty(&stacks_to_json(stacks)).unwrap()
+                serde_json::to_string_pretty(&stacks_to_json(stacks).await).unwrap()
             );
         }
         OutputFormat::Csv => {
-            output_stacks_csv(out, stacks, show_metadata);
+            output_stacks_csv(out, stacks, show_metadata).await;
         }
         OutputFormat::Table => {
-            output_stacks_table(out, stacks, show_metadata, dir);
+            output_stacks_table(out, stacks, show_metadata, dir).await;
         }
     }
 }
 
 /// Output stacks as table with unicode box-drawing
-pub fn output_stacks_table(
+pub async fn output_stacks_table(
     out: &mut dyn Write,
     stacks: &[PhotoStack],
     show_metadata: bool,
@@ -1137,7 +1148,7 @@ pub fn output_stacks_table(
 }
 
 /// Output stacks as CSV
-pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metadata: bool) {
+pub async fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metadata: bool) {
     if show_metadata {
         let _ = writeln!(
             out,
@@ -1193,7 +1204,7 @@ pub fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_metada
 }
 
 /// Output stack info as table
-pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
+pub async fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
     let _ = writeln!(
         out,
         "┌──────────────────────────────────────────────────────────────────┐"
@@ -1307,7 +1318,7 @@ pub fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
 }
 
 /// Output stack info as CSV
-pub fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
+pub async fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
     let _ = writeln!(out, "type,key,value");
     let _ = writeln!(out, "id,,{}", stack.name());
 
@@ -1528,7 +1539,7 @@ mod tests {
         stack
     }
 
-    fn make_stack_with_metadata(id: &str) -> PhotoStack {
+    async fn make_stack_with_metadata(id: &str) -> PhotoStack {
         let mut exif_tags = HashMap::new();
         exif_tags.insert("Make".to_string(), "EPSON".to_string());
         exif_tags.insert("Model".to_string(), "FastFoto FF-680W".to_string());
@@ -1565,82 +1576,82 @@ mod tests {
 
     // ======================== Pure function tests ========================
 
-    #[test]
-    fn test_parse_key_value_valid() {
+    #[tokio::test]
+    async fn test_parse_key_value_valid() {
         let (k, v) = parse_key_value("Make=EPSON").unwrap();
         assert_eq!(k, "Make");
         assert_eq!(v, "EPSON");
     }
 
-    #[test]
-    fn test_parse_key_value_with_equals_in_value() {
+    #[tokio::test]
+    async fn test_parse_key_value_with_equals_in_value() {
         let (k, v) = parse_key_value("expr=a=b").unwrap();
         assert_eq!(k, "expr");
         assert_eq!(v, "a=b");
     }
 
-    #[test]
-    fn test_parse_key_value_missing_equals() {
+    #[tokio::test]
+    async fn test_parse_key_value_missing_equals() {
         let result = parse_key_value("noequals");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("KEY=VALUE"));
     }
 
-    #[test]
-    fn test_parse_key_value_empty_value() {
+    #[tokio::test]
+    async fn test_parse_key_value_empty_value() {
         let (k, v) = parse_key_value("key=").unwrap();
         assert_eq!(k, "key");
         assert_eq!(v, "");
     }
 
-    #[test]
-    fn test_format_size_bytes() {
+    #[tokio::test]
+    async fn test_format_size_bytes() {
         assert_eq!(format_size(0), "0 B");
         assert_eq!(format_size(512), "512 B");
         assert_eq!(format_size(1023), "1023 B");
     }
 
-    #[test]
-    fn test_format_size_kb() {
+    #[tokio::test]
+    async fn test_format_size_kb() {
         assert_eq!(format_size(1024), "1.0 KB");
         assert_eq!(format_size(1536), "1.5 KB");
     }
 
-    #[test]
-    fn test_format_size_mb() {
+    #[tokio::test]
+    async fn test_format_size_mb() {
         assert_eq!(format_size(1024 * 1024), "1.0 MB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
     }
 
-    #[test]
-    fn test_format_size_gb() {
+    #[tokio::test]
+    async fn test_format_size_gb() {
         assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
     }
 
-    #[test]
-    fn test_escape_csv_plain() {
+    #[tokio::test]
+    async fn test_escape_csv_plain() {
         assert_eq!(escape_csv("hello"), "hello");
     }
 
-    #[test]
-    fn test_escape_csv_with_comma() {
+    #[tokio::test]
+    async fn test_escape_csv_with_comma() {
         assert_eq!(escape_csv("hello,world"), "\"hello,world\"");
     }
 
-    #[test]
-    fn test_escape_csv_with_quotes() {
+    #[tokio::test]
+    async fn test_escape_csv_with_quotes() {
         assert_eq!(escape_csv("say \"hi\""), "\"say \"\"hi\"\"\"");
     }
 
-    #[test]
-    fn test_escape_csv_with_newline() {
+    #[tokio::test]
+    async fn test_escape_csv_with_newline() {
         assert_eq!(escape_csv("line1\nline2"), "\"line1\nline2\"");
     }
 
     // ======================== Output formatting tests ========================
 
-    #[test]
-    fn test_output_stacks_json() {
+    #[tokio::test]
+    async fn test_output_stacks_json() {
         let stacks = vec![make_stack("IMG_0001")];
         let mut buf = Vec::new();
         output_stacks(
@@ -1649,17 +1660,18 @@ mod tests {
             OutputFormat::Json,
             false,
             &PathBuf::from("/photos"),
-        );
+        )
+        .await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("IMG_0001"));
         assert!(output.contains("original"));
     }
 
-    #[test]
-    fn test_output_stacks_csv_no_metadata() {
+    #[tokio::test]
+    async fn test_output_stacks_csv_no_metadata() {
         let stacks = vec![make_stack("IMG_0001"), make_tiff_stack("IMG_0002")];
         let mut buf = Vec::new();
-        output_stacks_csv(&mut buf, &stacks, false);
+        output_stacks_csv(&mut buf, &stacks, false).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("id,format,has_original"));
         // Format is now "-" since format() was removed
@@ -1667,29 +1679,29 @@ mod tests {
         assert!(output.contains("IMG_0002,-,true,false,false"));
     }
 
-    #[test]
-    fn test_output_stacks_csv_with_metadata() {
+    #[tokio::test]
+    async fn test_output_stacks_csv_with_metadata() {
         let stacks = vec![make_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_csv(&mut buf, &stacks, true);
+        output_stacks_csv(&mut buf, &stacks, true).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("id,format,original,enhanced,back"));
     }
 
-    #[test]
-    fn test_output_stacks_table_empty() {
+    #[tokio::test]
+    async fn test_output_stacks_table_empty() {
         let stacks: Vec<PhotoStack> = vec![];
         let mut buf = Vec::new();
-        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos"));
+        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos")).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Found 0 photo stack(s)"));
     }
 
-    #[test]
-    fn test_output_stacks_table_with_stacks() {
+    #[tokio::test]
+    async fn test_output_stacks_table_with_stacks() {
         let stacks = vec![make_stack("IMG_0001"), make_empty_stack("IMG_0002")];
         let mut buf = Vec::new();
-        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos"));
+        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos")).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Found 2 photo stack(s)"));
         assert!(output.contains("IMG_0001"));
@@ -1697,11 +1709,11 @@ mod tests {
         assert!(output.contains("-"));
     }
 
-    #[test]
-    fn test_output_stacks_table_with_metadata_paths() {
+    #[tokio::test]
+    async fn test_output_stacks_table_with_metadata_paths() {
         let stacks = vec![make_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_table(&mut buf, &stacks, true, &PathBuf::from("/photos"));
+        output_stacks_table(&mut buf, &stacks, true, &PathBuf::from("/photos")).await;
         let output = String::from_utf8(buf).unwrap();
         // Paths are no longer exposed; show_metadata shows "(original)", "(enhanced)", "(back)"
         assert!(output.contains("(original)"));
@@ -1709,11 +1721,11 @@ mod tests {
         assert!(output.contains("(back)"));
     }
 
-    #[test]
-    fn test_output_info_table_jpeg() {
-        let stack = make_stack_with_metadata("IMG_0001");
+    #[tokio::test]
+    async fn test_output_info_table_jpeg() {
+        let stack = make_stack_with_metadata("IMG_0001").await;
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Stack: IMG_0001"));
         // Format is no longer shown; verify metadata is present
@@ -1725,21 +1737,21 @@ mod tests {
         assert!(output.contains("album"));
     }
 
-    #[test]
-    fn test_output_info_table_no_images() {
+    #[tokio::test]
+    async fn test_output_info_table_no_images() {
         let stack = make_empty_stack("EMPTY");
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Stack: EMPTY"));
         // No "Unknown" format — format column removed
     }
 
-    #[test]
-    fn test_output_info_csv() {
-        let stack = make_stack_with_metadata("IMG_0001");
+    #[tokio::test]
+    async fn test_output_info_csv() {
+        let stack = make_stack_with_metadata("IMG_0001").await;
         let mut buf = Vec::new();
-        output_info_csv(&mut buf, &stack);
+        output_info_csv(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("type,key,value"));
         assert!(output.contains("id,,IMG_0001"));
@@ -1749,19 +1761,19 @@ mod tests {
         assert!(output.contains("custom,album,"));
     }
 
-    #[test]
-    fn test_output_info_csv_no_files() {
+    #[tokio::test]
+    async fn test_output_info_csv_no_files() {
         let stack = make_empty_stack("EMPTY");
         let mut buf = Vec::new();
-        output_info_csv(&mut buf, &stack);
+        output_info_csv(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("id,,EMPTY"));
         // Should not contain file lines
         assert!(!output.contains("file,original"));
     }
 
-    #[test]
-    fn test_output_metadata_table_empty() {
+    #[tokio::test]
+    async fn test_output_metadata_table_empty() {
         let metadata = Metadata::default();
         let mut buf = Vec::new();
         output_metadata_table(&mut buf, &metadata);
@@ -1771,9 +1783,9 @@ mod tests {
         assert!(output.contains("Custom Tags: (none)"));
     }
 
-    #[test]
-    fn test_output_metadata_table_with_tags() {
-        let stack = make_stack_with_metadata("test");
+    #[tokio::test]
+    async fn test_output_metadata_table_with_tags() {
+        let stack = make_stack_with_metadata("test").await;
         let mut buf = Vec::new();
         output_metadata_table(&mut buf, &stack.metadata().cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
@@ -1784,8 +1796,8 @@ mod tests {
         assert!(output.contains("Custom Tags (1):"));
     }
 
-    #[test]
-    fn test_output_metadata_table_truncation() {
+    #[tokio::test]
+    async fn test_output_metadata_table_truncation() {
         let mut exif_tags = HashMap::new();
         exif_tags.insert("VeryLongTag".to_string(), "x".repeat(100));
         let metadata = Metadata {
@@ -1799,8 +1811,8 @@ mod tests {
         assert!(output.contains("..."));
     }
 
-    #[test]
-    fn test_output_metadata_csv_empty() {
+    #[tokio::test]
+    async fn test_output_metadata_csv_empty() {
         let metadata = Metadata::default();
         let mut buf = Vec::new();
         output_metadata_csv(&mut buf, &metadata);
@@ -1808,9 +1820,9 @@ mod tests {
         assert_eq!(output.trim(), "type,key,value");
     }
 
-    #[test]
-    fn test_output_metadata_csv_with_tags() {
-        let stack = make_stack_with_metadata("test");
+    #[tokio::test]
+    async fn test_output_metadata_csv_with_tags() {
+        let stack = make_stack_with_metadata("test").await;
         let mut buf = Vec::new();
         output_metadata_csv(&mut buf, &stack.metadata().cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
@@ -1821,8 +1833,8 @@ mod tests {
 
     // ======================== Command tests with testdata ========================
 
-    #[test]
-    fn test_cmd_scan_testdata() {
+    #[tokio::test]
+    async fn test_cmd_scan_testdata() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1839,15 +1851,16 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("photo stack(s)"));
         assert!(output.contains("FamilyPhotos"));
     }
 
-    #[test]
-    fn test_cmd_scan_json() {
+    #[tokio::test]
+    async fn test_cmd_scan_json() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1864,7 +1877,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos"));
@@ -1873,8 +1887,8 @@ mod tests {
         assert!(parsed.is_array());
     }
 
-    #[test]
-    fn test_cmd_scan_csv() {
+    #[tokio::test]
+    async fn test_cmd_scan_csv() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1891,14 +1905,15 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("id,format"));
     }
 
-    #[test]
-    fn test_cmd_scan_jpeg_only() {
+    #[tokio::test]
+    async fn test_cmd_scan_jpeg_only() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1915,7 +1930,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         // Should only contain JPEG stacks
@@ -1929,8 +1945,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_cmd_scan_tiff_only() {
+    #[tokio::test]
+    async fn test_cmd_scan_tiff_only() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1947,12 +1963,13 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_scan_with_back_filter() {
+    #[tokio::test]
+    async fn test_cmd_scan_with_back_filter() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1969,12 +1986,13 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_scan_show_metadata() {
+    #[tokio::test]
+    async fn test_cmd_scan_show_metadata() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -1991,7 +2009,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         // Paths no longer shown; show_metadata shows "(original)", "(enhanced)", or "(back)"
@@ -2003,8 +2022,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_cmd_scan_csv_with_metadata() {
+    #[tokio::test]
+    async fn test_cmd_scan_csv_with_metadata() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -2021,14 +2040,15 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("id,format,original,enhanced,back"));
     }
 
-    #[test]
-    fn test_cmd_scan_nonexistent_dir() {
+    #[tokio::test]
+    async fn test_cmd_scan_nonexistent_dir() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -2045,13 +2065,14 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         // LocalRepository::scan may return an error for nonexistent dirs
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
 
-    #[test]
-    fn test_cmd_search_testdata() {
+    #[tokio::test]
+    async fn test_cmd_search_testdata() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_search(
@@ -2067,14 +2088,15 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos"));
     }
 
-    #[test]
-    fn test_cmd_search_no_results() {
+    #[tokio::test]
+    async fn test_cmd_search_no_results() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_search(
@@ -2090,14 +2112,15 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
     }
 
-    #[test]
-    fn test_cmd_search_with_exif_filter() {
+    #[tokio::test]
+    async fn test_cmd_search_with_exif_filter() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let exif_filters = vec![("Make".to_string(), "EPSON".to_string())];
@@ -2114,12 +2137,13 @@ mod tests {
             OutputFormat::Json,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_search_with_has_back() {
+    #[tokio::test]
+    async fn test_cmd_search_with_has_back() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_search(
@@ -2135,12 +2159,13 @@ mod tests {
             OutputFormat::Csv,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_search_with_has_enhanced() {
+    #[tokio::test]
+    async fn test_cmd_search_with_has_enhanced() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_search(
@@ -2156,12 +2181,13 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_search_with_tag_filter() {
+    #[tokio::test]
+    async fn test_cmd_search_with_tag_filter() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let tag_filters = vec![("album".to_string(), "Family".to_string())];
@@ -2178,12 +2204,13 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_search_with_stack_ids() {
+    #[tokio::test]
+    async fn test_cmd_search_with_stack_ids() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let ids = vec!["FamilyPhotos_0001".to_string()];
@@ -2200,14 +2227,15 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos_0001"));
     }
 
-    #[test]
-    fn test_cmd_search_with_stack_ids_no_match() {
+    #[tokio::test]
+    async fn test_cmd_search_with_stack_ids_no_match() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let ids = vec!["NONEXISTENT_ID".to_string()];
@@ -2224,14 +2252,15 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
     }
 
-    #[test]
-    fn test_cmd_info_happy_path() {
+    #[tokio::test]
+    async fn test_cmd_info_happy_path() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_info(
@@ -2240,14 +2269,15 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("FamilyPhotos_0001"));
     }
 
-    #[test]
-    fn test_cmd_info_json() {
+    #[tokio::test]
+    async fn test_cmd_info_json() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_info(
@@ -2256,14 +2286,15 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Json,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         let _parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     }
 
-    #[test]
-    fn test_cmd_info_csv() {
+    #[tokio::test]
+    async fn test_cmd_info_csv() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_info(
@@ -2272,14 +2303,15 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Csv,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("type,key,value"));
     }
 
-    #[test]
-    fn test_cmd_info_not_found() {
+    #[tokio::test]
+    async fn test_cmd_info_not_found() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_info(
@@ -2288,14 +2320,15 @@ mod tests {
             &testdata_path(),
             "nonexistent_stack",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
         let error_output = String::from_utf8(err).unwrap();
         assert!(error_output.contains("not found"));
     }
 
-    #[test]
-    fn test_cmd_metadata_read_table() {
+    #[tokio::test]
+    async fn test_cmd_metadata_read_table() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_metadata_read(
@@ -2304,14 +2337,15 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Metadata"));
     }
 
-    #[test]
-    fn test_cmd_metadata_read_json() {
+    #[tokio::test]
+    async fn test_cmd_metadata_read_json() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_metadata_read(
@@ -2320,14 +2354,15 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Json,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         let _parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     }
 
-    #[test]
-    fn test_cmd_metadata_read_csv() {
+    #[tokio::test]
+    async fn test_cmd_metadata_read_csv() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_metadata_read(
@@ -2336,12 +2371,13 @@ mod tests {
             &testdata_path(),
             "FamilyPhotos_0001",
             OutputFormat::Csv,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_metadata_read_not_found() {
+    #[tokio::test]
+    async fn test_cmd_metadata_read_not_found() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_metadata_read(
@@ -2350,12 +2386,13 @@ mod tests {
             &testdata_path(),
             "nonexistent",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
-    #[test]
-    fn test_cmd_metadata_write_happy_path() {
+    #[tokio::test]
+    async fn test_cmd_metadata_write_happy_path() {
         let dir = copy_testdata_to_tempdir();
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2369,14 +2406,15 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Wrote 2 tag(s)"));
     }
 
-    #[test]
-    fn test_cmd_metadata_write_not_found() {
+    #[tokio::test]
+    async fn test_cmd_metadata_write_not_found() {
         let dir = copy_testdata_to_tempdir();
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2387,12 +2425,13 @@ mod tests {
             &dir.path().to_path_buf(),
             "nonexistent",
             &tags,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
-    #[test]
-    fn test_cmd_metadata_delete_not_found() {
+    #[tokio::test]
+    async fn test_cmd_metadata_delete_not_found() {
         let dir = copy_testdata_to_tempdir();
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2403,12 +2442,13 @@ mod tests {
             &dir.path().to_path_buf(),
             "nonexistent",
             &tags,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
-    #[test]
-    fn test_cmd_metadata_delete_happy_path() {
+    #[tokio::test]
+    async fn test_cmd_metadata_delete_happy_path() {
         let dir = copy_testdata_to_tempdir();
 
         // First write a tag
@@ -2421,7 +2461,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        );
+        )
+        .await;
 
         // Then delete it
         let mut out = Vec::new();
@@ -2433,30 +2474,31 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Deleted 1 tag(s)"));
     }
 
-    #[test]
-    fn test_cmd_export_stdout() {
+    #[tokio::test]
+    async fn test_cmd_export_stdout() {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = cmd_export(&mut out, &mut err, &testdata_path(), None);
+        let code = cmd_export(&mut out, &mut err, &testdata_path(), None).await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         assert!(parsed.is_array());
     }
 
-    #[test]
-    fn test_cmd_export_to_file() {
+    #[tokio::test]
+    async fn test_cmd_export_to_file() {
         let dir = tempfile::tempdir().unwrap();
         let output_file = dir.path().join("export.json");
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = cmd_export(&mut out, &mut err, &testdata_path(), Some(&output_file));
+        let code = cmd_export(&mut out, &mut err, &testdata_path(), Some(&output_file)).await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Exported"));
@@ -2465,8 +2507,8 @@ mod tests {
         let _: serde_json::Value = serde_json::from_str(&content).unwrap();
     }
 
-    #[test]
-    fn test_cmd_export_to_invalid_path() {
+    #[tokio::test]
+    async fn test_cmd_export_to_invalid_path() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_export(
@@ -2474,14 +2516,15 @@ mod tests {
             &mut err,
             &testdata_path(),
             Some(Path::new("/nonexistent/dir/out.json")),
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_ERROR);
         let error_output = String::from_utf8(err).unwrap();
         assert!(error_output.contains("Error writing"));
     }
 
-    #[test]
-    fn test_cmd_scan_empty_dir() {
+    #[tokio::test]
+    async fn test_cmd_scan_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2499,7 +2542,8 @@ mod tests {
             0,
             0,
             ScannerProfile::EnhancedAndBack,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Found 0"));
@@ -2507,48 +2551,48 @@ mod tests {
 
     // ======================== Output format for various stack types ========================
 
-    #[test]
-    fn test_output_stacks_table_tiff_format() {
+    #[tokio::test]
+    async fn test_output_stacks_table_tiff_format() {
         let stacks = vec![make_tiff_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos"));
+        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos")).await;
         let output = String::from_utf8(buf).unwrap();
         // Format is now "-" since format() was removed
         assert!(output.contains("IMG_0001"));
         assert!(output.contains("-"));
     }
 
-    #[test]
-    fn test_output_stacks_table_no_format() {
+    #[tokio::test]
+    async fn test_output_stacks_table_no_format() {
         let stacks = vec![make_empty_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos"));
+        output_stacks_table(&mut buf, &stacks, false, &PathBuf::from("/photos")).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("-"));
     }
 
-    #[test]
-    fn test_output_stacks_csv_tiff_format() {
+    #[tokio::test]
+    async fn test_output_stacks_csv_tiff_format() {
         let stacks = vec![make_tiff_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_csv(&mut buf, &stacks, false);
+        output_stacks_csv(&mut buf, &stacks, false).await;
         let output = String::from_utf8(buf).unwrap();
         // Format is now "-" since format() was removed
         assert!(output.contains("IMG_0001,-,true,false,false"));
     }
 
-    #[test]
-    fn test_output_stacks_csv_no_format() {
+    #[tokio::test]
+    async fn test_output_stacks_csv_no_format() {
         let stacks = vec![make_empty_stack("IMG_0001")];
         let mut buf = Vec::new();
-        output_stacks_csv(&mut buf, &stacks, false);
+        output_stacks_csv(&mut buf, &stacks, false).await;
         let output = String::from_utf8(buf).unwrap();
         // Format is now always "-"
         assert!(output.contains("IMG_0001,-,false,false,false"));
     }
 
-    #[test]
-    fn test_output_info_table_with_long_tag_truncation() {
+    #[tokio::test]
+    async fn test_output_info_table_with_long_tag_truncation() {
         let mut exif_tags = HashMap::new();
         exif_tags.insert("Description".to_string(), "A".repeat(100));
         let stack = PhotoStack::new("TRUNC");
@@ -2558,24 +2602,24 @@ mod tests {
             custom_tags: HashMap::new(),
         }));
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("..."));
     }
 
-    #[test]
-    fn test_output_info_table_tiff() {
+    #[tokio::test]
+    async fn test_output_info_table_tiff() {
         let stack = make_tiff_stack("TIFF_0001");
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Stack: TIFF_0001"));
     }
 
     // ======================== run_cli dispatch tests ========================
 
-    #[test]
-    fn test_run_cli_scan_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_scan_dispatch() {
         let cli = Cli {
             command: Commands::Scan {
                 directory: testdata_path(),
@@ -2593,12 +2637,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_search_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_search_dispatch() {
         let cli = Cli {
             command: Commands::Search {
                 directory: testdata_path(),
@@ -2615,12 +2659,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_info_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_info_dispatch() {
         let cli = Cli {
             command: Commands::Info {
                 directory: testdata_path(),
@@ -2630,12 +2674,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_metadata_read_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_metadata_read_dispatch() {
         let cli = Cli {
             command: Commands::Metadata(MetadataCommand::Read {
                 directory: testdata_path(),
@@ -2645,12 +2689,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_metadata_write_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_metadata_write_dispatch() {
         let dir = copy_testdata_to_tempdir();
         let cli = Cli {
             command: Commands::Metadata(MetadataCommand::Write {
@@ -2661,12 +2705,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_metadata_delete_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_metadata_delete_dispatch() {
         let dir = copy_testdata_to_tempdir();
         // Write first
         let tags_w = vec![("del_key".to_string(), "val".to_string())];
@@ -2676,7 +2720,8 @@ mod tests {
             &dir.path().to_path_buf(),
             "FamilyPhotos_0001",
             &tags_w,
-        );
+        )
+        .await;
 
         let cli = Cli {
             command: Commands::Metadata(MetadataCommand::Delete {
@@ -2687,12 +2732,12 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_run_cli_export_dispatch() {
+    #[tokio::test]
+    async fn test_run_cli_export_dispatch() {
         let cli = Cli {
             command: Commands::Export {
                 directory: testdata_path(),
@@ -2701,14 +2746,14 @@ mod tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run_cli(&cli, &mut out, &mut err);
+        let code = run_cli(&cli, &mut out, &mut err).await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
     // ======================== XMP and custom tag coverage ========================
 
-    #[test]
-    fn test_output_info_table_with_xmp_tags() {
+    #[tokio::test]
+    async fn test_output_info_table_with_xmp_tags() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Creator".to_string(), "John Doe".to_string());
         let stack = PhotoStack::new("XMP_TEST");
@@ -2719,14 +2764,14 @@ mod tests {
             custom_tags: HashMap::new(),
         }));
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("XMP Tags"));
         assert!(output.contains("Creator"));
     }
 
-    #[test]
-    fn test_output_info_table_with_custom_tags() {
+    #[tokio::test]
+    async fn test_output_info_table_with_custom_tags() {
         let mut custom_tags = HashMap::new();
         custom_tags.insert(
             "album".to_string(),
@@ -2739,14 +2784,14 @@ mod tests {
             custom_tags,
         }));
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Custom Tags"));
         assert!(output.contains("album"));
     }
 
-    #[test]
-    fn test_output_metadata_table_with_xmp_tags() {
+    #[tokio::test]
+    async fn test_output_metadata_table_with_xmp_tags() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Subject".to_string(), "Landscape".to_string());
         let meta = Metadata {
@@ -2761,8 +2806,8 @@ mod tests {
         assert!(output.contains("Subject"));
     }
 
-    #[test]
-    fn test_output_info_csv_with_xmp_and_custom_tags() {
+    #[tokio::test]
+    async fn test_output_info_csv_with_xmp_and_custom_tags() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Creator".to_string(), "Jane".to_string());
         let mut custom_tags = HashMap::new();
@@ -2777,7 +2822,7 @@ mod tests {
             custom_tags,
         }));
         let mut buf = Vec::new();
-        output_info_csv(&mut buf, &stack);
+        output_info_csv(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("xmp,Creator,Jane"));
         assert!(output.contains("custom,rating,5"));
@@ -2786,8 +2831,8 @@ mod tests {
         assert!(output.contains("file,back"));
     }
 
-    #[test]
-    fn test_output_metadata_csv_with_xmp() {
+    #[tokio::test]
+    async fn test_output_metadata_csv_with_xmp() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Title".to_string(), "My Photo".to_string());
         let meta = Metadata {
@@ -2801,8 +2846,8 @@ mod tests {
         assert!(output.contains("xmp,Title,My Photo"));
     }
 
-    #[test]
-    fn test_output_info_table_with_long_xmp_truncation() {
+    #[tokio::test]
+    async fn test_output_info_table_with_long_xmp_truncation() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("Description".to_string(), "X".repeat(100));
         let stack = PhotoStack::new("LONG_XMP");
@@ -2812,13 +2857,13 @@ mod tests {
             custom_tags: HashMap::new(),
         }));
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("..."));
     }
 
-    #[test]
-    fn test_output_info_table_with_long_custom_truncation() {
+    #[tokio::test]
+    async fn test_output_info_table_with_long_custom_truncation() {
         let mut custom_tags = HashMap::new();
         custom_tags.insert(
             "longval".to_string(),
@@ -2831,13 +2876,13 @@ mod tests {
             custom_tags,
         }));
         let mut buf = Vec::new();
-        output_info_table(&mut buf, &stack);
+        output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("..."));
     }
 
-    #[test]
-    fn test_output_metadata_table_with_long_xmp_truncation() {
+    #[tokio::test]
+    async fn test_output_metadata_table_with_long_xmp_truncation() {
         let mut xmp_tags = HashMap::new();
         xmp_tags.insert("LongKey".to_string(), "Z".repeat(100));
         let meta = Metadata {
@@ -2851,8 +2896,8 @@ mod tests {
         assert!(output.contains("..."));
     }
 
-    #[test]
-    fn test_output_metadata_table_with_long_custom_truncation() {
+    #[tokio::test]
+    async fn test_output_metadata_table_with_long_custom_truncation() {
         let mut custom_tags = HashMap::new();
         custom_tags.insert(
             "longkey".to_string(),
@@ -2871,8 +2916,8 @@ mod tests {
 
     // ======================== Error path coverage ========================
 
-    #[test]
-    fn test_cmd_search_scan_error() {
+    #[tokio::test]
+    async fn test_cmd_search_scan_error() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_search(
@@ -2888,13 +2933,14 @@ mod tests {
             OutputFormat::Table,
             0,
             0,
-        );
+        )
+        .await;
         // May succeed with 0 results or fail depending on OS
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
 
-    #[test]
-    fn test_cmd_export_scan_error() {
+    #[tokio::test]
+    async fn test_cmd_export_scan_error() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_export(
@@ -2902,12 +2948,13 @@ mod tests {
             &mut err,
             &PathBuf::from("/nonexistent/export/dir"),
             None,
-        );
+        )
+        .await;
         assert!(code == EXIT_SUCCESS || code == EXIT_ERROR);
     }
 
-    #[test]
-    fn test_cmd_info_generic_error() {
+    #[tokio::test]
+    async fn test_cmd_info_generic_error() {
         // Trigger a generic (non-NotFound) error by using a path that exists but isn't a valid repo
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2918,12 +2965,13 @@ mod tests {
             &PathBuf::from("/nonexistent/info/dir"),
             "NO_STACK",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
-    #[test]
-    fn test_cmd_metadata_read_generic_error() {
+    #[tokio::test]
+    async fn test_cmd_metadata_read_generic_error() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_metadata_read(
@@ -2932,12 +2980,13 @@ mod tests {
             &PathBuf::from("/nonexistent/meta/dir"),
             "NO_STACK",
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
-    #[test]
-    fn test_cmd_metadata_write_generic_error() {
+    #[tokio::test]
+    async fn test_cmd_metadata_write_generic_error() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let tags = vec![("k".to_string(), "v".to_string())];
@@ -2947,7 +2996,8 @@ mod tests {
             &PathBuf::from("/nonexistent/write/dir"),
             "NO_STACK",
             &tags,
-        );
+        )
+        .await;
         assert!(code == EXIT_NOT_FOUND || code == EXIT_ERROR);
     }
 
@@ -2959,8 +3009,8 @@ mod tests {
         img.save(path).unwrap();
     }
 
-    #[test]
-    fn test_cmd_rotate_success() {
+    #[tokio::test]
+    async fn test_cmd_rotate_success() {
         let dir = tempfile::tempdir().unwrap();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
         create_test_image_jpeg(&dir.path().join("IMG_001_a.jpg"), 4, 2);
@@ -2975,7 +3025,8 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Rotated"));
@@ -2983,8 +3034,8 @@ mod tests {
         assert!(output.contains("90°"));
     }
 
-    #[test]
-    fn test_cmd_rotate_negative_90() {
+    #[tokio::test]
+    async fn test_cmd_rotate_negative_90() {
         let dir = tempfile::tempdir().unwrap();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
@@ -2998,14 +3049,15 @@ mod tests {
             -90,
             RotationTarget::All,
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("270°"));
     }
 
-    #[test]
-    fn test_cmd_rotate_180() {
+    #[tokio::test]
+    async fn test_cmd_rotate_180() {
         let dir = tempfile::tempdir().unwrap();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
@@ -3019,12 +3071,13 @@ mod tests {
             180,
             RotationTarget::All,
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
     }
 
-    #[test]
-    fn test_cmd_rotate_invalid_degrees() {
+    #[tokio::test]
+    async fn test_cmd_rotate_invalid_degrees() {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_rotate(
@@ -3035,14 +3088,15 @@ mod tests {
             45,
             RotationTarget::All,
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_ERROR);
         let err_output = String::from_utf8(err).unwrap();
         assert!(err_output.contains("Invalid rotation"));
     }
 
-    #[test]
-    fn test_cmd_rotate_not_found() {
+    #[tokio::test]
+    async fn test_cmd_rotate_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -3054,12 +3108,13 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Table,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_NOT_FOUND);
     }
 
-    #[test]
-    fn test_cmd_rotate_json_output() {
+    #[tokio::test]
+    async fn test_cmd_rotate_json_output() {
         let dir = tempfile::tempdir().unwrap();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
@@ -3073,7 +3128,8 @@ mod tests {
             90,
             RotationTarget::All,
             OutputFormat::Json,
-        );
+        )
+        .await;
         assert_eq!(code, EXIT_SUCCESS);
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("\"name\": \"IMG_001\""));

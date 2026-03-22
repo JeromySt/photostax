@@ -97,24 +97,25 @@ pub unsafe extern "C" fn photostax_search(
         }
 
         // Get all stacks with metadata (search needs metadata to filter)
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return FfiStackHandleArray::empty(),
-        };
-        for stack in initial.all_stacks() {
-            let _ = stack.metadata().read();
-        }
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.invalidate_cache();
+            let initial = match mgr.query(None, None, None, None) {
+                Ok(r) => r,
+                Err(_) => return FfiStackHandleArray::empty(),
+            };
+            for stack in initial.all_stacks() {
+                let _ = stack.metadata().read();
+            }
 
-        // Apply the filter using query()
-        let filtered = match mgr.query(Some(&query), None, None) {
-            Ok(snap) => snap,
-            Err(_) => return FfiStackHandleArray::empty(),
-        };
-        drop(mgr);
+            // Apply the filter using query()
+            let filtered = match mgr.query(Some(&query), None, None, None) {
+                Ok(snap) => snap,
+                Err(_) => return FfiStackHandleArray::empty(),
+            };
 
-        stacks_to_handle_array(filtered.all_stacks())
+            stacks_to_handle_array(filtered.all_stacks(), repo_ref.runtime.handle())
+        })
     }));
 
     result.unwrap_or_else(|_| FfiStackHandleArray::empty())
@@ -194,30 +195,32 @@ pub unsafe extern "C" fn photostax_search_paginated(
             query = query.with_ids(ids);
         }
 
-        let mut mgr = repo_ref.inner.borrow_mut();
-        mgr.invalidate_cache();
-        let initial = match mgr.query(None, None, None) {
-            Ok(r) => r,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
-        for stack in initial.all_stacks() {
-            let _ = stack.metadata().read();
-        }
+        repo_ref.runtime.block_on(async {
+            let mut mgr = repo_ref.inner.lock().await;
+            mgr.invalidate_cache();
+            let initial = match mgr.query(None, None, None, None) {
+                Ok(r) => r,
+                Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
+            };
+            for stack in initial.all_stacks() {
+                let _ = stack.metadata().read();
+            }
 
-        let snapshot = match mgr.query(Some(&query), None, None) {
-            Ok(snap) => snap,
-            Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
-        };
-        drop(mgr);
+            let snapshot = match mgr.query(Some(&query), None, None, None) {
+                Ok(snap) => snap,
+                Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
+            };
 
-        let paginated = snapshot.snapshot().get_page(offset, limit);
-        stacks_to_paginated_handles(
-            &paginated.items,
-            paginated.total_count,
-            paginated.offset,
-            paginated.limit,
-            paginated.has_more,
-        )
+            let paginated = snapshot.snapshot().get_page(offset, limit);
+            stacks_to_paginated_handles(
+                &paginated.items,
+                paginated.total_count,
+                paginated.offset,
+                paginated.limit,
+                paginated.has_more,
+                repo_ref.runtime.handle(),
+            )
+        })
     }));
 
     result.unwrap_or_else(|_| FfiPaginatedHandleResult::empty(offset, limit))

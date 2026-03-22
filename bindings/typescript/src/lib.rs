@@ -307,6 +307,31 @@ impl JsMetadataRef {
     pub fn invalidate(&self) {
         self.stack.metadata().invalidate();
     }
+
+    /// Read the raw sidecar file bytes without parsing.
+    ///
+    /// Returns the unprocessed sidecar content (e.g., XMP XML), or null
+    /// if no sidecar exists. Unlike `read()`, this bypasses all metadata
+    /// parsing and merging.
+    #[napi]
+    pub fn read_raw(&self) -> napi::Result<Option<Buffer>> {
+        match self.stack.metadata().read_raw() {
+            Ok(Some(bytes)) => Ok(Some(bytes.into())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(napi::Error::from_reason(e.to_string())),
+        }
+    }
+
+    /// Read the raw sidecar file as a streaming reader.
+    ///
+    /// Returns the unprocessed sidecar content as a Buffer (for streaming
+    /// consumers), or null if no sidecar exists.
+    #[napi]
+    pub fn read_raw_stream(&self) -> napi::Result<Option<Buffer>> {
+        // In Node.js, Buffer IS the stream-friendly type.
+        // Callers can wrap in Readable.from(buf) for streaming.
+        self.read_raw()
+    }
 }
 
 /// A photo stack with sub-object accessors for images and metadata.
@@ -823,7 +848,7 @@ impl PhotostaxRepository {
     pub fn scan(&self) -> napi::Result<JsQueryResult> {
         let mut mgr = self.inner.borrow_mut();
         let snapshot = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(JsQueryResult::from_all_stacks(snapshot.all_stacks().to_vec()))
     }
@@ -844,7 +869,7 @@ impl PhotostaxRepository {
     /// @returns Array of photo stacks
     /// @throws Error if the directory cannot be accessed
     #[napi(
-        ts_args_type = "profile?: string, callback?: (phase: string, current: number, total: number) => void"
+        ts_args_type = "profile?: string, callback?: (repoId: string, phase: string, current: number, total: number) => void"
     )]
     pub fn scan_with_progress(
         &self,
@@ -881,7 +906,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.set_profile(scanner_profile);
         let snapshot = mgr
-            .query(None, None, progress)
+            .query(None, None, progress, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(JsQueryResult::from_all_stacks(snapshot.all_stacks().to_vec()))
     }
@@ -898,13 +923,13 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         for s in initial.all_stacks() {
             let _ = s.metadata().read();
         }
         let snapshot = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(JsQueryResult::from_all_stacks(snapshot.all_stacks().to_vec()))
     }
@@ -919,14 +944,14 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         for s in initial.all_stacks() {
             let _ = s.metadata().read();
         }
         let core_query: CoreSearchQuery = query.into();
         let snapshot = mgr
-            .query(Some(&core_query), None, None)
+            .query(Some(&core_query), None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         drop(mgr);
 
@@ -947,7 +972,7 @@ impl PhotostaxRepository {
     /// @param pageSize - Number of stacks per page (null/undefined = all on one page)
     /// @param callback - Optional progress callback invoked during auto-scan
     /// @returns QueryResult with page navigation methods
-    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (phase: string, current: number, total: number) => void")]
+    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (repoId: string, phase: string, current: number, total: number) => void")]
     pub fn query(
         &self,
         query: Option<JsSearchQuery>,
@@ -981,7 +1006,7 @@ impl PhotostaxRepository {
         };
         let ps = page_size.map(|p| p as usize);
         let snapshot = mgr
-            .query(Some(&core_query), ps, progress)
+            .query(Some(&core_query), ps, progress, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(JsQueryResult {
             stacks: snapshot.all_stacks().to_vec(),
@@ -1007,7 +1032,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         if load_metadata.unwrap_or(false) {
             for s in initial.all_stacks() {
@@ -1015,7 +1040,7 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let paginated = snapshot.snapshot().get_page(offset as usize, limit as usize);
         drop(mgr);
@@ -1046,7 +1071,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         for s in initial.all_stacks() {
             let _ = s.metadata().read();
@@ -1054,7 +1079,7 @@ impl PhotostaxRepository {
 
         let core_query: CoreSearchQuery = query.into();
         let snapshot = mgr
-            .query(Some(&core_query), None, None)
+            .query(Some(&core_query), None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let paginated = snapshot.snapshot().get_page(offset as usize, limit as usize);
         drop(mgr);
@@ -1082,7 +1107,7 @@ impl PhotostaxRepository {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         if load_metadata.unwrap_or(false) {
             for s in initial.all_stacks() {
@@ -1090,7 +1115,7 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?
             .into_snapshot();
         Ok(JsScanSnapshot {
@@ -1109,7 +1134,7 @@ impl PhotostaxRepository {
     /// @returns A frozen snapshot
     /// @throws Error if the scan fails
     #[napi(
-        ts_args_type = "profile?: string, loadMetadata?: boolean, callback?: (phase: string, current: number, total: number) => void"
+        ts_args_type = "profile?: string, loadMetadata?: boolean, callback?: (repoId: string, phase: string, current: number, total: number) => void"
     )]
     pub fn create_snapshot_with_progress(
         &self,
@@ -1148,7 +1173,7 @@ impl PhotostaxRepository {
         mgr.set_profile(scanner_profile);
         mgr.invalidate_cache();
         let initial = mgr
-            .query(None, None, progress)
+            .query(None, None, progress, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         if load_metadata.unwrap_or(false) {
             for s in initial.all_stacks() {
@@ -1156,7 +1181,7 @@ impl PhotostaxRepository {
             }
         }
         let snapshot = mgr
-            .query(None, None, None)
+            .query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?
             .into_snapshot();
         Ok(JsScanSnapshot {
@@ -1179,7 +1204,7 @@ impl PhotostaxRepository {
     ) -> napi::Result<JsSnapshotStatus> {
         let mut mgr = self.inner.borrow_mut();
         mgr.invalidate_cache();
-        mgr.query(None, None, None)
+        mgr.query(None, None, None, None)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let status = mgr.check_status(&snapshot.inner);
         Ok(JsSnapshotStatus {
@@ -1269,7 +1294,7 @@ impl JsScanSnapshot {
 fn mgr_scan(mgr: &Rc<std::cell::RefCell<StackManager>>) -> napi::Result<Vec<JsPhotoStack>> {
     let mut m = mgr.borrow_mut();
     let snapshot = m
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(snapshot
         .all_stacks()
@@ -1284,13 +1309,13 @@ fn mgr_scan_with_metadata(
     let mut m = mgr.borrow_mut();
     m.invalidate_cache();
     let initial = m
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     for s in initial.all_stacks() {
         let _ = s.metadata().read();
     }
     let snapshot = m
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(snapshot
         .all_stacks()
@@ -1332,7 +1357,7 @@ fn mgr_query(
     };
     let ps = page_size.map(|p| p as usize);
     let snapshot = m
-        .query(Some(&core_query), ps, progress)
+        .query(Some(&core_query), ps, progress, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(JsQueryResult {
         stacks: snapshot.all_stacks().to_vec(),
@@ -1348,7 +1373,7 @@ fn mgr_create_snapshot(
     let mut m = mgr.borrow_mut();
     m.invalidate_cache();
     let initial = m
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     if load_metadata.unwrap_or(false) {
         for s in initial.all_stacks() {
@@ -1356,7 +1381,7 @@ fn mgr_create_snapshot(
         }
     }
     let snapshot = m
-        .query(None, None, None)
+        .query(None, None, None, None)
         .map_err(|e| napi::Error::from_reason(e.to_string()))?
         .into_snapshot();
     Ok(JsScanSnapshot {
@@ -1751,7 +1776,7 @@ impl PhotostaxStackManager {
     }
 
     /// Unified query: search + paginate across all repos.
-    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (phase: string, current: number, total: number) => void")]
+    #[napi(ts_args_type = "query?: SearchQuery, pageSize?: number, callback?: (repoId: string, phase: string, current: number, total: number) => void")]
     pub fn query(
         &self,
         env: Env,

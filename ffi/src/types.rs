@@ -4,7 +4,6 @@
 //! across the FFI boundary. Pointers returned from FFI functions must be freed
 //! using the corresponding `*_free` functions.
 
-use std::cell::RefCell;
 use std::os::raw::c_char;
 
 use photostax_core::photo_stack::PhotoStack;
@@ -15,26 +14,31 @@ use photostax_core::photo_stack::PhotoStack;
 /// the FFI functions. Create with [`photostax_repo_open`] and free with
 /// [`photostax_repo_free`].
 ///
-/// Internally uses [`RefCell`] because `StackManager` mutation methods
-/// (`scan`, `load_metadata`, `rotate_stack`, etc.) require `&mut self`,
-/// while the FFI functions receive `*const PhotostaxRepo`.
+/// Internally uses a [`tokio::sync::Mutex`] because `StackManager` mutation
+/// methods (`query`, etc.) require `&mut self` and are async, while the FFI
+/// functions receive `*const PhotostaxRepo`. A [`tokio::runtime::Runtime`]
+/// bridges async core calls into synchronous `extern "C"` functions via
+/// `block_on`.
 ///
 /// [`StackManager`]: photostax_core::stack_manager::StackManager
 /// [`photostax_repo_open`]: crate::repository::photostax_repo_open
 /// [`photostax_repo_free`]: crate::repository::photostax_repo_free
 pub struct PhotostaxRepo {
-    pub(crate) inner: RefCell<photostax_core::stack_manager::StackManager>,
+    pub(crate) inner: tokio::sync::Mutex<photostax_core::stack_manager::StackManager>,
+    pub(crate) runtime: tokio::runtime::Runtime,
 }
 
 /// Opaque handle to a [`PhotoStack`].
 ///
-/// Uses [`RefCell`] because some `ImageRef`/`MetadataRef` methods need
-/// `&mut self` (hash caching, metadata lazy-load), while the FFI
-/// functions receive `*const PhotostaxStack`.
+/// Stores the [`PhotoStack`] directly — it is already thread-safe via
+/// internal `Arc<RwLock>`. A [`tokio::runtime::Handle`] is kept so that
+/// async I/O methods (`read`, `hash`, `rotate`, etc.) can be called from
+/// synchronous FFI functions via `block_on`.
 ///
 /// [`PhotoStack`]: photostax_core::photo_stack::PhotoStack
 pub struct PhotostaxStack {
-    pub(crate) inner: RefCell<PhotoStack>,
+    pub(crate) inner: PhotoStack,
+    pub(crate) runtime: tokio::runtime::Handle,
 }
 
 /// Array of opaque PhotoStack handles returned from scan/query/search.

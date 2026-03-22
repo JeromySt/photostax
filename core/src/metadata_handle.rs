@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use crate::file_access::ReadSeek;
 use crate::photo_stack::Metadata;
 use crate::repository::RepositoryError;
 
@@ -61,6 +62,25 @@ pub trait MetadataHandle: Send + Sync {
 
     /// Whether this handle still points to valid backing storage.
     fn is_valid(&self) -> bool;
+
+    /// Read the raw sidecar file bytes, if a sidecar exists.
+    ///
+    /// Returns the unprocessed file content (e.g., XMP XML for local repos).
+    /// Returns `Ok(None)` if no sidecar file exists or the backend doesn't
+    /// support sidecars. This is distinct from [`load`](Self::load) which
+    /// parses and merges metadata from multiple sources (EXIF, XMP, sidecar).
+    fn read_raw(&self) -> Result<Option<Vec<u8>>, RepositoryError> {
+        Ok(None)
+    }
+
+    /// Open a stream to the raw sidecar file, if a sidecar exists.
+    ///
+    /// Like [`read_raw`](Self::read_raw) but returns a streaming reader
+    /// instead of loading the entire file into memory. Returns `Ok(None)`
+    /// if no sidecar file exists.
+    fn read_raw_stream(&self) -> Result<Option<Box<dyn ReadSeek>>, RepositoryError> {
+        Ok(None)
+    }
 }
 
 /// User-facing accessor for stack-level metadata.
@@ -133,6 +153,31 @@ impl MetadataRef {
             return Err(RepositoryError::StackDeleted);
         }
         self.handle.write(tags)
+    }
+
+    /// Read the raw sidecar file bytes without parsing.
+    ///
+    /// Returns the unprocessed sidecar content (e.g., XMP XML), or `None`
+    /// if no sidecar exists. Unlike [`read`](Self::read), this bypasses
+    /// all metadata parsing and merging — useful when the raw file content
+    /// is needed (e.g., for AI ingestion or external tooling).
+    pub fn read_raw(&self) -> Result<Option<Vec<u8>>, RepositoryError> {
+        if !self.handle.is_valid() {
+            return Err(RepositoryError::StackDeleted);
+        }
+        self.handle.read_raw()
+    }
+
+    /// Open a stream to the raw sidecar file without parsing.
+    ///
+    /// Like [`read_raw`](Self::read_raw) but returns a streaming reader
+    /// instead of loading the entire file into memory. Returns `None` if
+    /// no sidecar exists.
+    pub fn read_raw_stream(&self) -> Result<Option<Box<dyn ReadSeek>>, RepositoryError> {
+        if !self.handle.is_valid() {
+            return Err(RepositoryError::StackDeleted);
+        }
+        self.handle.read_raw_stream()
     }
 
     /// Invalidate the cached metadata, forcing a re-read on next access.

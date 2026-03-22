@@ -48,7 +48,7 @@ let repo = LocalRepository::new("/path/to/photos");
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
 
 // Query all stacks — query() auto-scans on first call
-let mut result = mgr.query(None, Some(20), None).unwrap();
+let mut result = mgr.query(None, Some(20), None, None).unwrap();
 for stack in result.current_page() {
     println!("Photo: {} ({})", stack.name(), stack.id());
     if stack.has_original() {
@@ -298,7 +298,7 @@ photostax/
 
 ## Documentation
 
-- [Migration Guide (v0.4.x → v0.5.0)](docs/MIGRATION.md) — Breaking changes and upgrade instructions
+- [Migration Guide (v0.5.x → v0.6.0)](docs/MIGRATION.md) — Breaking changes and upgrade instructions
 - [Architecture Overview](docs/architecture.md) — System design and component responsibilities
 - [FastFoto Naming Convention](docs/fastfoto-convention.md) — How scanner files are named and grouped
 - [Metadata Strategy](docs/metadata-strategy.md) — EXIF, XMP, and sidecar database handling
