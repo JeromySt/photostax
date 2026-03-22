@@ -4,9 +4,25 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      tag:
+        description: 'The tag to build the release for (e.g. v0.6.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to build the release for (e.g. v0.6.0)'
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
+  # Resolve the release tag regardless of trigger type:
+  #   push (tag):                github.ref_name = "v0.6.0", inputs.tag is empty
+  #   workflow_call / dispatch:  inputs.tag = "v0.6.0", github.ref_name = "main"
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build-release:
@@ -28,6 +44,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
@@ -64,6 +82,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Download all artifacts
       uses: actions/download-artifact@v8
@@ -80,17 +100,14 @@ jobs:
         cd ..
         ls -la *.tar.gz
 
-    - name: Get version from tag
-      id: version
-      run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ env.RELEASE_TAG }}
         files: "*.tar.gz"
         generate_release_notes: true
         draft: false
-        prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') || contains(github.ref, '-preview') || contains(github.ref, '-pre.') }}
+        prerelease: ${{ contains(env.RELEASE_TAG, '-beta') || contains(env.RELEASE_TAG, '-alpha') || contains(env.RELEASE_TAG, '-preview') || contains(env.RELEASE_TAG, '-pre.') }}
 
   publish-crates:
     needs: release
@@ -98,10 +115,16 @@ jobs:
     environment: crates-io
     permissions:
       contents: read
-    if: ${{ !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') && !contains(github.ref, '-preview') && !contains(github.ref, '-pre.') }}
+    if: >-
+      !contains(inputs.tag || github.ref_name, '-beta') &&
+      !contains(inputs.tag || github.ref_name, '-alpha') &&
+      !contains(inputs.tag || github.ref_name, '-preview') &&
+      !contains(inputs.tag || github.ref_name, '-pre.')
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
@@ -135,10 +158,16 @@ jobs:
     environment: nuget
     permissions:
       contents: read
-    if: ${{ !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') && !contains(github.ref, '-preview') && !contains(github.ref, '-pre.') }}
+    if: >-
+      !contains(inputs.tag || github.ref_name, '-beta') &&
+      !contains(inputs.tag || github.ref_name, '-alpha') &&
+      !contains(inputs.tag || github.ref_name, '-preview') &&
+      !contains(inputs.tag || github.ref_name, '-pre.')
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Download FFI artifacts
       uses: actions/download-artifact@v8
@@ -165,7 +194,7 @@ jobs:
 
     - name: Get version from tag
       id: version
-      run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      run: echo "version=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
 
     - name: Build .NET package
       run: dotnet pack bindings/dotnet/Photostax.sln --configuration Release -p:Version=${{ steps.version.outputs.version }} -p:RustTargetDir=${{ github.workspace }}/staged-native
@@ -180,10 +209,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: ${{ !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') && !contains(github.ref, '-preview') && !contains(github.ref, '-pre.') }}
+    if: >-
+      !contains(inputs.tag || github.ref_name, '-beta') &&
+      !contains(inputs.tag || github.ref_name, '-alpha') &&
+      !contains(inputs.tag || github.ref_name, '-preview') &&
+      !contains(inputs.tag || github.ref_name, '-pre.')
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.tag || github.ref }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
@@ -203,7 +238,7 @@ jobs:
 
     - name: Get version from tag
       id: version
-      run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      run: echo "version=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
 
     - name: Install dependencies
       working-directory: bindings/typescript
