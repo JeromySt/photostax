@@ -1,5 +1,141 @@
 # Migration Guide
 
+## v0.4.x → v0.5.0
+
+### ⚠️ Breaking: query() is the sole entry point
+
+v0.5.0 removes `get_stack()`, `get_stack_mut()`, `scan()`, and other direct-access methods. `query()` is now the only way to retrieve stacks.
+
+### Retrieving stacks
+
+**Before (v0.4.x):**
+```rust
+// Rust — get a single stack by ID
+let stack = mgr.get_stack("abc123")?;
+
+// C# — get a stack
+var stack = mgr.GetStack("abc123");
+
+// TypeScript — get a stack
+const stack = mgr.getStack("abc123");
+```
+
+**After (v0.5.0):**
+```rust
+// Rust — query with ID filter
+let result = mgr.query(
+    Some(&SearchQuery::new().with_ids(vec!["abc123".into()])),
+    None, None,
+)?;
+let stack = result.current_page().first().unwrap();
+
+// C# — query with ID filter
+var result = mgr.Query(new SearchQuery().WithIds("abc123"));
+var stack = result.CurrentPage.First();
+
+// TypeScript — query with ID filter
+const result = mgr.query({ stackIds: ["abc123"] });
+const stack = result.currentPage()[0];
+```
+
+### Scanning
+
+**Before (v0.4.x):**
+```rust
+// Rust
+mgr.scan()?;
+let stacks = mgr.all_stacks();
+
+// C#
+repo.Scan();
+repo.ScanWithProgress((phase, cur, total) => { });
+```
+
+**After (v0.5.0):**
+```rust
+// Rust — query() auto-scans on first call
+let result = mgr.query(None, None, None)?;
+
+// With progress callback
+let result = mgr.query(None, None, Some(&mut |p| {
+    println!("{:?}: {}/{}", p.phase, p.current, p.total);
+}))?;
+
+// C# — Query() auto-scans on first call
+var result = repo.Query(onProgress: (phase, cur, total) => {
+    Console.WriteLine($"{phase}: {cur}/{total}");
+});
+```
+
+### Pagination (QueryResult replaces ScanSnapshot)
+
+**Before (v0.4.x):**
+```rust
+// Rust — ScanSnapshot with get_page()
+let snap = mgr.query(Some(&query), None)?;
+let page = snap.get_page(0, 20);
+if page.has_more {
+    let page2 = snap.get_page(20, 20);
+}
+```
+
+**After (v0.5.0):**
+```rust
+// Rust — QueryResult with page navigation
+let mut result = mgr.query(Some(&query), Some(20), None)?;
+let page1 = result.current_page();         // first page
+let page2 = result.next_page();            // Option<&[PhotoStack]>
+let page3 = result.next_page();            // next page or None
+result.set_page(0);                        // jump to specific page
+
+// C#
+var result = mgr.Query(query, pageSize: 20);
+var page1 = result.CurrentPage;
+var page2 = result.NextPage();             // IReadOnlyList<PhotoStack>?
+result.SetPage(0);                         // jump back
+
+// TypeScript
+const result = mgr.query(query, 20);
+const page1 = result.currentPage();
+const page2 = result.nextPage();           // array or null
+result.setPage(0);                         // jump back
+```
+
+### PhotoStack accessor changes
+
+**Before (v0.4.x):**
+```rust
+// Direct field access
+println!("{}", stack.name);
+println!("{}", stack.id);
+if stack.original.is_present() { }
+```
+
+**After (v0.5.0):**
+```rust
+// Method accessors (fields are behind Arc<RwLock>)
+println!("{}", stack.name());
+println!("{}", stack.id());
+if stack.has_original() { }
+```
+
+### Removed methods summary
+
+| Removed | Replacement |
+|---------|-------------|
+| `mgr.get_stack(id)` | `mgr.query(SearchQuery::new().with_ids(...))` |
+| `mgr.get_stack_mut(id)` | Removed — PhotoStack uses `Arc<RwLock>` for shared mutation |
+| `mgr.scan()` | `mgr.query()` auto-scans |
+| `mgr.all_stacks()` | `mgr.query(None, None, None)` |
+| `mgr.stacks()` | `mgr.query(None, None, None)` |
+| `mgr.snapshot()` | `mgr.query()` returns QueryResult |
+| `mgr.rescan()` | `mgr.invalidate_cache()` then `mgr.query()` |
+| `snap.get_page(offset, limit)` | `result.current_page()` / `result.next_page()` |
+| C#: `repo.Scan()`, `Search()` | `repo.Query()` |
+| TS: `mgr.getStack(id)` | `mgr.query({ stackIds: [id] })` |
+
+---
+
 ## v0.3.x → v0.4.0
 
 ### ⚠️ Breaking: PhotoStack-Centric API

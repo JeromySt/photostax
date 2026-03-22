@@ -46,24 +46,24 @@ use photostax_core::search::SearchQuery;
 
 let repo = LocalRepository::new("/path/to/photos");
 let mut mgr = StackManager::single(Box::new(repo), ScannerProfile::Auto).unwrap();
+
 // Query all stacks — query() auto-scans on first call
-let snap = mgr.query(None, None).unwrap();
-for stack in snap.stacks() {
-    println!("Photo: {} ({})", stack.name, stack.id);
-    if stack.original.is_present() {
-        println!("  Original: {}", stack.original.path());
+let mut result = mgr.query(None, Some(20), None).unwrap();
+for stack in result.current_page() {
+    println!("Photo: {} ({})", stack.name(), stack.id());
+    if stack.has_original() {
+        println!("  Has original image");
     }
 }
 
 // Search with pagination
 let query = SearchQuery::new().with_has_back(true);
-let snap = mgr.query(Some(&query), None).unwrap();
-let page = snap.get_page(0, 20);
-println!("Showing {} of {} total stacks", page.items.len(), page.total_count);
+let mut result = mgr.query(Some(&query), Some(20), None).unwrap();
+println!("Page 1: {} stacks of {} total", result.current_page().len(), result.total_count());
 
-// Iterate to next page
-if let Some(next) = page.next_page() {
-    let page2 = mgr.query(&query, Some(&next));
+// Navigate pages
+while let Some(page) = result.next_page() {
+    println!("Next page: {} stacks", page.len());
 }
 ```
 
@@ -73,22 +73,24 @@ if let Some(next) = page.next_page() {
 using Photostax;
 
 using var repo = new PhotostaxRepository("/path/to/photos");
+
 // Query all stacks — Query() auto-scans on first call
-var snap = repo.Query();
-foreach (var stack in snap.Stacks)
+var result = repo.Query(pageSize: 20);
+foreach (var stack in result.CurrentPage)
 {
     Console.WriteLine($"Photo: {stack.Name} ({stack.Id})");
-    Console.WriteLine($"  Original: {stack.Original.Path}");
+    if (stack.HasOriginal)
+        Console.WriteLine($"  Has original image");
 }
 
-// Search with pagination
-var page = repo.Query("birthday", offset: 0, limit: 20);
-Console.WriteLine($"Showing {page.Items.Count} of {page.TotalCount} total");
+// Search with page navigation
+var filtered = repo.Query(new SearchQuery().WithHasBack(true), pageSize: 20);
+Console.WriteLine($"Page 1: {filtered.CurrentPage.Count} of {filtered.TotalCount} total");
 
-// Next page
-if (page.HasMore)
+// Navigate pages
+while (filtered.NextPage() is { } page)
 {
-    var page2 = repo.Query("birthday", offset: 20, limit: 20);
+    Console.WriteLine($"Next page: {page.Count} stacks");
 }
 ```
 
@@ -98,20 +100,24 @@ if (page.HasMore)
 import { PhotostaxRepository } from '@photostax/core';
 
 const repo = new PhotostaxRepository('/path/to/photos');
+
 // Query all stacks — query() auto-scans on first call
-const snap = repo.query();
-for (const stack of snap.stacks) {
+const result = repo.query(undefined, 20);
+for (const stack of result.currentPage()) {
   console.log(`Photo: ${stack.name} (${stack.id})`);
-  console.log(`  Original: ${stack.original.path}`);
+  if (stack.hasOriginal) {
+    console.log(`  Has original image`);
+  }
 }
 
-// Search with pagination
-const page = repo.query({ text: 'birthday' }, 0, 20);
-console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
+// Search with page navigation
+const filtered = repo.query({ text: 'birthday', hasBack: true }, 20);
+console.log(`Page 1: ${filtered.currentPage().length} of ${filtered.totalCount} total`);
 
-// Next page
-if (page.hasMore) {
-  const page2 = repo.query({ text: 'birthday' }, 20, 20);
+// Navigate pages
+let page;
+while ((page = filtered.nextPage()) !== null) {
+  console.log(`Next page: ${page.length} stacks`);
 }
 ```
 
@@ -157,7 +163,8 @@ See [cli/README.md](cli/README.md) for complete CLI documentation.
 │  ┌─────────────┐  ┌────────────┐  ┌──────────────────────────┐ │
 │  │StackManager │  │ FileAccess │  │ Content Hashing          │ │
 │  │(multi-repo  │  │ (I/O trait)│  │ (SHA-256, Merkle, lazy)  │ │
-│  │ cache, O(1))│  │            │  │                          │ │
+│  │ cache,      │  │            │  │                          │ │
+│  │ query())    │  │            │  │                          │ │
 │  └─────────────┘  └────────────┘  └──────────────────────────┘ │
 │  ┌─────────────┐  ┌────────────┐  ┌──────────────────────────┐ │
 │  │ FS Watching │  │ Opaque IDs │  │ Scanner & Metadata       │ │
@@ -174,7 +181,7 @@ See [cli/README.md](cli/README.md) for complete CLI documentation.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **StackManager** — primary API; unified multi-repository cache with O(1) stack lookups, overlap detection, and filesystem watch integration
+- **StackManager** — primary API; unified multi-repository cache with `query()` as the sole entry point, overlap detection, and filesystem watch integration
 - **FileAccess trait** — backend-polymorphic file I/O with `open_read()`/`open_write()` and `HashingReader` for zero-overhead content hashing
 - **Opaque stack IDs** — deterministic SHA-256 hashes (16 hex chars) that are globally unique across subfolders; `stack.name` and `stack.folder` for display
 - **Content hashing** — lazy per-file SHA-256 via `ImageFile::content_hash()` and Merkle-style `PhotoStack::content_hash()` for duplicate detection
@@ -291,7 +298,7 @@ photostax/
 
 ## Documentation
 
-- [Migration Guide (v0.1.x → v0.2.0)](docs/MIGRATION.md) — Breaking changes and upgrade instructions
+- [Migration Guide (v0.4.x → v0.5.0)](docs/MIGRATION.md) — Breaking changes and upgrade instructions
 - [Architecture Overview](docs/architecture.md) — System design and component responsibilities
 - [FastFoto Naming Convention](docs/fastfoto-convention.md) — How scanner files are named and grouped
 - [Metadata Strategy](docs/metadata-strategy.md) — EXIF, XMP, and sidecar database handling

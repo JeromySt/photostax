@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! ```text
-//! User → stack.metadata.read()
+//! User → stack.metadata().read()
 //!      → MetadataRef.read()
 //!      → Arc<dyn MetadataHandle>.load()
 //!      → LocalMetadataHandle (EXIF + XMP + sidecar)

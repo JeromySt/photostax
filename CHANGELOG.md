@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-22
+
+### ⚠️ BREAKING CHANGES
+
+This release redesigns the query and state management APIs across all layers. See [MIGRATION.md](docs/MIGRATION.md) for upgrade guidance.
+
+#### PhotoStack shared state
+- **PhotoStack wraps `Arc<RwLock<PhotoStackInner>>`** — cloning a stack is now `Arc::clone()` (near-zero cost, same data). All clones share the same mutable state.
+- Accessor methods (`id()`, `name()`, `folder()`, `image_count()`, etc.) now return owned values
+- Sub-object access via `ImageProxy` and `MetadataProxy` — each method acquires/releases lock independently
+
+#### query() is the sole entry point
+- **Removed:** `get_stack()`, `get_stack_mut()`, `scan()`, `all_stacks()`, `stacks()`, `snapshot()`, `rescan()` from `StackManager`
+- **Added:** `invalidate_cache()` — clears internal cache; next `query()` auto-scans
+- `query()` is now the only way to retrieve stacks — it auto-scans on first call
+
+#### QueryResult replaces ScanSnapshot
+- `query()` now returns `QueryResult` with built-in page navigation
+- `next_page()`, `prev_page()`, `set_page()` return `Option<&[PhotoStack]>` (Rust) / `IReadOnlyList<PhotoStack>?` (C#) / array or null (TS)
+- `QueryResult::query()` enables sub-queries on the internal snapshot
+- `current_page()`, `total_count()`, `page_count()`, `current_page_index()` for navigation state
+
+#### Progress callback on query()
+- `query()` now accepts an optional progress callback across all layers for first-scan notifications
+- Rust: `query(query?, page_size?, progress?)`
+- FFI: `photostax_query(repo, query_json, offset, limit, callback, user_data)`
+- C#: `Query(query?, pageSize, onProgress?)`
+- TypeScript: `query(query?, pageSize?, callback?)`
+
+#### Handle-based FFI
+- Metadata FFI functions now take `*const PhotostaxStack` instead of `(repo, stack_id)` pairs
+- `photostax_get_metadata(stack)`, `photostax_get_exif_tag(stack, tag)`, `photostax_get_custom_tag(stack, tag)`, `photostax_set_custom_tag(stack, tag)`
+
+### Removed
+- `StackManager::get_stack()` and `get_stack_mut()` — use `query()` with `SearchQuery::new().with_ids()` instead
+- `StackManager::scan()`, `all_stacks()`, `stacks()`, `snapshot()`, `rescan()` — use `query()` and `invalidate_cache()`
+- C#: `PhotostaxRepository.Scan()`, `ScanWithProgress()`, `ScanWithMetadata()`, `Search()`, `ScanPaginated()`, `SearchPaginated()`
+- C#/TS: `GetStack(id)` / `getStack(id)` — use `Query()` / `query()` with ID filter
+- `ScanSnapshot` type in bindings — replaced by `QueryResult`
+
+### Added
+- `StackManager::invalidate_cache()` — clear cache for manual refresh
+- `QueryResult::query()` — sub-query on existing result set
+- Progress callback parameter on `query()` / `Query()` across FFI, C#, and TypeScript
+- `QueryResult` type in C# and TypeScript with page-based navigation
+
 ## [0.4.3] - 2026-03-21
 
 ### Added
@@ -332,6 +378,7 @@ This is a major architecture redesign. See [MIGRATION.md](docs/MIGRATION.md) for
   - Repository creation and scanning
   - Version information
 
+[0.5.0]: https://github.com/JeromySt/photostax/compare/v0.4.3...v0.5.0
 [0.4.0]: https://github.com/JeromySt/photostax/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/JeromySt/photostax/compare/v0.1.13...v0.2.0
 [0.1.10]: https://github.com/JeromySt/photostax/compare/v0.1.9...v0.1.10

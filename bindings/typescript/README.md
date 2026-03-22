@@ -38,10 +38,9 @@ mgr.addRepo('/photos/2024', { recursive: true });
 mgr.addRepo('/photos/2023', { recursive: true });
 console.log(`Managing ${mgr.repoCount} repos`);
 
-// Query across all repos — returns a ScanSnapshot
-const snap = mgr.query({ text: 'birthday' });
-const page = snap.getPage(0, 20);
-for (const stack of page.items) {
+// Query across all repos — returns a QueryResult
+const result = mgr.query({ text: 'birthday' }, 20);
+for (const stack of result.currentPage()) {
   console.log(`${stack.name} (${stack.id})`);
 
   // Per-stack image I/O (no manager methods needed)
@@ -93,39 +92,34 @@ npm install @photostax/core
 ```typescript
 import { PhotostaxRepository } from '@photostax/core';
 
-// Open a directory containing FastFoto scans
 const repo = new PhotostaxRepository('/path/to/photos');
 
 // Query all stacks — query() auto-scans on first call
-const snap = repo.query();
-
-for (const stack of snap.stacks) {
+const result = repo.query(undefined, 20);
+for (const stack of result.currentPage()) {
   console.log(`Photo: ${stack.name} (id=${stack.id})`);
-  console.log(`  Folder: ${stack.folder ?? '(root)'}`);
-
-  // Read images via ImageRef (lazy, cached)
   if (stack.original.isPresent) {
     const buf = stack.original.read();
     console.log(`  Original: ${stack.original.size} bytes`);
-    console.log(`  Hash: ${stack.original.hash()}`);
   }
-
-  // Read metadata via MetadataRef (lazy-loaded)
-  const meta = stack.metadata.read();
-  console.log(`  Camera: ${meta.exifTags['Make'] ?? 'unknown'}`);
 }
 
-// Search with pagination via ScanSnapshot
-const snap2 = repo.query({ text: 'birthday', hasBack: true });
-const page = snap2.getPage(0, 20);
-console.log(`Showing ${page.items.length} of ${page.totalCount} total`);
+// Search with page navigation
+const filtered = repo.query({ text: 'birthday', hasBack: true }, 20);
+console.log(`Page 1: ${filtered.currentPage().length} of ${filtered.totalCount} total`);
 
-if (page.hasMore) {
-  const page2 = snap2.getPage(20, 20);
+// Navigate remaining pages
+let page;
+while ((page = filtered.nextPage()) !== null) {
+  for (const stack of page) {
+    console.log(`${stack.name} (${stack.id})`);
+  }
 }
 
-// Write metadata directly on the stack
-snap.stacks[0].metadata.write({ customTags: { album: 'Family Photos' } });
+// With progress callback (for initial scan)
+const withProgress = repo.query(undefined, 20, (phase, current, total) => {
+  console.log(`${phase}: ${current}/${total}`);
+});
 ```
 
 ## API Overview
@@ -136,8 +130,7 @@ The main class for accessing photo stacks.
 
 | Method | Description |
 |--------|-------------|
-| `query(filter?)` | **(v0.4.0)** Returns a `ScanSnapshot` for search + pagination. Auto-scans on first call. |
-| `getStack(id)` | Get a specific stack by its opaque hash ID |
+| `query(filter?, pageSize?, callback?)` | Returns a `QueryResult` for search + pagination. Auto-scans on first call. |
 
 ### StackManager
 
@@ -149,9 +142,7 @@ Multi-repository manager for unified access across directories and custom backen
 | `addRepo(path, options?)` | Register a local directory |
 | `addForeignRepo(provider, options?)` | Register a custom repository provider |
 | `repoCount` | Number of registered repositories |
-| `getStack(id)` | Retrieve a single stack by opaque ID |
-| `query(filter?)` | Search across all repos, returns `ScanSnapshot` |
-| `createSnapshot()` | Create a point-in-time snapshot |
+| `query(filter?, pageSize?, callback?)` | Search across all repos, returns `QueryResult`. Auto-scans on first call. |
 
 ### RepositoryProvider
 
@@ -238,28 +229,20 @@ interface SearchQuery {
 }
 ```
 
-### ScanSnapshot
+### QueryResult
 
-Point-in-time snapshot for consistent pagination:
-
-```typescript
-interface ScanSnapshot {
-  stacks: PhotoStack[];        // All stacks in the snapshot
-  totalCount: number;          // Total number of stacks
-  getPage(offset: number, limit: number): PaginatedResult;
-  isStale(): boolean;          // O(1) staleness check (v0.4.0)
-}
-```
-
-### PaginatedResult
+Page-based query result with navigation:
 
 ```typescript
-interface PaginatedResult {
-  items: PhotoStack[];          // Items in this page
-  totalCount: number;           // Total items across all pages
-  offset: number;               // Offset used for this page
-  limit: number;                // Limit used for this page
-  hasMore: boolean;             // Whether more items exist beyond this page
+interface QueryResult {
+  currentPage(): PhotoStack[];       // Stacks on the current page
+  totalCount: number;                // Total matching stacks
+  pageCount: number;                 // Total number of pages
+  currentPageIndex: number;          // Zero-based current page index
+  nextPage(): PhotoStack[] | null;   // Advance and return next page
+  previousPage(): PhotoStack[] | null; // Go back and return previous page
+  setPage(index: number): PhotoStack[] | null; // Jump to specific page
+  query(filter: SearchQuery, pageSize?: number): QueryResult; // Sub-query
 }
 ```
 

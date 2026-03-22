@@ -137,7 +137,7 @@ impl<T> PaginatedResult<T> {
 /// // Get first page of 2
 /// let page = paginate_stacks(&stacks, &PaginationParams { offset: 0, limit: 2 });
 /// assert_eq!(page.items.len(), 2);
-/// assert_eq!(page.items[0].id, "IMG_000");
+/// assert_eq!(page.items[0].id(), "IMG_000");
 /// assert_eq!(page.total_count, 5);
 /// assert!(page.has_more);
 ///
@@ -388,7 +388,7 @@ impl SearchQuery {
 /// let query = SearchQuery::new().with_text("001");
 /// let results = filter_stacks(&stacks, &query);
 /// assert_eq!(results.len(), 1);
-/// assert_eq!(results[0].id, "IMG_001");
+/// assert_eq!(results[0].id(), "IMG_001");
 /// ```
 pub fn filter_stacks(stacks: &[PhotoStack], query: &SearchQuery) -> Vec<PhotoStack> {
     stacks
@@ -405,9 +405,11 @@ pub(crate) fn matches_query_ref(stack: &PhotoStack, query: &SearchQuery) -> bool
 
 /// Check if a single stack matches all query criteria.
 fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
+    let inner = stack.inner.read().unwrap();
+
     // Check repo_id filter
     if let Some(ref repo_id) = query.repo_id {
-        match &stack.repo_id {
+        match &inner.repo_id {
             Some(stack_repo) if stack_repo == repo_id => {}
             _ => return false,
         }
@@ -415,27 +417,27 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
 
     // Check stack ID/name allowlist
     if let Some(ref ids) = query.stack_ids {
-        if !ids.iter().any(|id| id == &stack.id || id == &stack.name) {
+        if !ids.iter().any(|id| id == &inner.id || id == &inner.name) {
             return false;
         }
     }
 
     // Check structural filters
     if let Some(has_back) = query.has_back {
-        if stack.back.is_present() != has_back {
+        if inner.back.is_present() != has_back {
             return false;
         }
     }
 
     if let Some(has_enhanced) = query.has_enhanced {
-        if stack.enhanced.is_present() != has_enhanced {
+        if inner.enhanced.is_present() != has_enhanced {
             return false;
         }
     }
 
     // Get cached metadata (search only works on loaded metadata)
     let empty_metadata = crate::photo_stack::Metadata::default();
-    let meta = stack.metadata.cached().unwrap_or(&empty_metadata);
+    let meta = inner.metadata.cached().unwrap_or(&empty_metadata);
 
     // Check EXIF tag filters
     for (key, contains) in &query.exif_filters {
@@ -464,8 +466,8 @@ fn matches_query(stack: &PhotoStack, query: &SearchQuery) -> bool {
     // Check free-text search (matches name, folder, and metadata — NOT opaque ID)
     if let Some(ref text) = query.text_query {
         let text_lower = text.to_lowercase();
-        let found_in_name = stack.name.to_lowercase().contains(&text_lower);
-        let found_in_folder = stack
+        let found_in_name = inner.name.to_lowercase().contains(&text_lower);
+        let found_in_folder = inner
             .folder
             .as_deref()
             .unwrap_or("")
@@ -553,6 +555,9 @@ mod tests {
                 true
             }
             fn invalidate(&self) {}
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
         }
 
         let mut metadata = Metadata::default();
@@ -564,19 +569,22 @@ mod tests {
                 .custom_tags
                 .insert(k.to_string(), serde_json::json!(v));
         }
-        let mut stack = PhotoStack::new(id);
-        stack.original = ImageRef::new(Arc::new(MockImg));
-        stack.enhanced = ImageRef::new(Arc::new(MockImg));
-        stack.back = if has_back {
-            ImageRef::new(Arc::new(MockImg))
-        } else {
-            ImageRef::absent()
-        };
-        // Pre-load metadata into the MetadataRef
-        let handle = Arc::new(InlineMetadataHandle { data: metadata });
-        let mut mref = MetadataRef::new(handle);
-        let _ = mref.read(); // trigger load to cache it
-        stack.metadata = mref;
+        let stack = PhotoStack::new(id);
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = ImageRef::new(Arc::new(MockImg));
+            inner.enhanced = ImageRef::new(Arc::new(MockImg));
+            inner.back = if has_back {
+                ImageRef::new(Arc::new(MockImg))
+            } else {
+                ImageRef::absent()
+            };
+            // Pre-load metadata into the MetadataRef
+            let handle = Arc::new(InlineMetadataHandle { data: metadata });
+            let mut mref = MetadataRef::new(handle);
+            let _ = mref.read(); // trigger load to cache it
+            inner.metadata = mref;
+        }
         stack
     }
 
@@ -600,7 +608,7 @@ mod tests {
         let q = SearchQuery::new().with_text("birthday");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -613,7 +621,7 @@ mod tests {
         let q = SearchQuery::new().with_has_back(true);
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -626,7 +634,7 @@ mod tests {
         let q = SearchQuery::new().with_exif_filter("Make", "epson");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -658,35 +666,35 @@ mod tests {
             .with_text("hello");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
     fn test_filter_by_has_enhanced_true() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
-            let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = crate::image_handle::ImageRef::absent();
+            let s = make_stack("IMG_002", false, vec![], vec![]);
+            s.inner.write().unwrap().enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
         let q = SearchQuery::new().with_has_enhanced(true);
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
     fn test_filter_by_has_enhanced_false() {
         let stacks = vec![make_stack("IMG_001", false, vec![], vec![]), {
-            let mut s = make_stack("IMG_002", false, vec![], vec![]);
-            s.enhanced = crate::image_handle::ImageRef::absent();
+            let s = make_stack("IMG_002", false, vec![], vec![]);
+            s.inner.write().unwrap().enhanced = crate::image_handle::ImageRef::absent();
             s
         }];
 
         let q = SearchQuery::new().with_has_enhanced(false);
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_002");
+        assert_eq!(results[0].id(), "IMG_002");
     }
 
     #[test]
@@ -738,7 +746,7 @@ mod tests {
             .with_exif_filter("Model", "FF-680W");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -769,7 +777,7 @@ mod tests {
             .with_custom_filter("tag2", "value2");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -782,15 +790,15 @@ mod tests {
         let q = SearchQuery::new().with_text("Family");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "FamilyPhotos_001");
+        assert_eq!(results[0].name(), "FamilyPhotos_001");
     }
 
     #[test]
     fn test_text_query_does_not_match_opaque_id() {
         // Opaque hex IDs should not be searchable by text
-        let mut stack = make_stack("IMG_001", false, vec![], vec![]);
-        stack.id = "abc123def456".to_string();
-        stack.name = "IMG_001".to_string();
+        let stack = make_stack("IMG_001", false, vec![], vec![]);
+        stack.inner.write().unwrap().id = "abc123def456".to_string();
+        stack.inner.write().unwrap().name = "IMG_001".to_string();
 
         let q = SearchQuery::new().with_text("abc123");
         let results = filter_stacks(&[stack], &q);
@@ -839,7 +847,7 @@ mod tests {
         let q = SearchQuery::new().with_exif_filter("Make", "EPSON");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -852,7 +860,7 @@ mod tests {
         let q = SearchQuery::new().with_custom_filter("ocr", "text");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
@@ -865,7 +873,7 @@ mod tests {
         let q = SearchQuery::new().with_has_back(false);
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_002");
+        assert_eq!(results[0].id(), "IMG_002");
     }
 
     #[test]
@@ -888,7 +896,7 @@ mod tests {
         let q = SearchQuery::new().with_text("FastFoto");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     // ── Pagination tests ──────────────────────────────────────────
@@ -911,8 +919,8 @@ mod tests {
         );
 
         assert_eq!(page.items.len(), 3);
-        assert_eq!(page.items[0].id, "IMG_000");
-        assert_eq!(page.items[2].id, "IMG_002");
+        assert_eq!(page.items[0].id(), "IMG_000");
+        assert_eq!(page.items[2].id(), "IMG_002");
         assert_eq!(page.total_count, 10);
         assert_eq!(page.offset, 0);
         assert_eq!(page.limit, 3);
@@ -931,8 +939,8 @@ mod tests {
         );
 
         assert_eq!(page.items.len(), 3);
-        assert_eq!(page.items[0].id, "IMG_003");
-        assert_eq!(page.items[2].id, "IMG_005");
+        assert_eq!(page.items[0].id(), "IMG_003");
+        assert_eq!(page.items[2].id(), "IMG_005");
         assert!(page.has_more);
     }
 
@@ -948,7 +956,7 @@ mod tests {
         );
 
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].id, "IMG_009");
+        assert_eq!(page.items[0].id(), "IMG_009");
         assert_eq!(page.total_count, 10);
         assert!(!page.has_more);
     }
@@ -1012,7 +1020,7 @@ mod tests {
         );
 
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].id, "IMG_002");
+        assert_eq!(page.items[0].id(), "IMG_002");
         assert!(page.has_more);
     }
 
@@ -1054,8 +1062,8 @@ mod tests {
             },
         );
         assert_eq!(page.items.len(), 2);
-        assert_eq!(page.items[0].id, "IMG_001");
-        assert_eq!(page.items[1].id, "IMG_003");
+        assert_eq!(page.items[0].id(), "IMG_001");
+        assert_eq!(page.items[1].id(), "IMG_003");
         assert_eq!(page.total_count, 3);
         assert!(page.has_more);
     }
@@ -1073,8 +1081,8 @@ mod tests {
         let q = SearchQuery::new().with_ids(vec!["IMG_001".to_string(), "IMG_003".to_string()]);
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].id, "IMG_001");
-        assert_eq!(results[1].id, "IMG_003");
+        assert_eq!(results[0].id(), "IMG_001");
+        assert_eq!(results[1].id(), "IMG_003");
     }
 
     #[test]
@@ -1116,7 +1124,7 @@ mod tests {
             .with_exif_filter("Make", "EPSON");
         let results = filter_stacks(&stacks, &q);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "IMG_001");
+        assert_eq!(results[0].id(), "IMG_001");
     }
 
     #[test]
