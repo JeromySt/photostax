@@ -10,9 +10,11 @@
  * the FFI functions. Create with [`photostax_repo_open`] and free with
  * [`photostax_repo_free`].
  *
- * Internally uses [`RefCell`] because `StackManager` mutation methods
- * (`scan`, `load_metadata`, `rotate_stack`, etc.) require `&mut self`,
- * while the FFI functions receive `*const PhotostaxRepo`.
+ * Internally uses a [`tokio::sync::Mutex`] because `StackManager` mutation
+ * methods (`query`, etc.) require `&mut self` and are async, while the FFI
+ * functions receive `*const PhotostaxRepo`. A [`tokio::runtime::Runtime`]
+ * bridges async core calls into synchronous `extern "C"` functions via
+ * `block_on`.
  *
  * [`StackManager`]: photostax_core::stack_manager::StackManager
  * [`photostax_repo_open`]: crate::repository::photostax_repo_open
@@ -28,9 +30,10 @@ typedef struct PhotostaxSnapshot PhotostaxSnapshot;
 /**
  * Opaque handle to a [`PhotoStack`].
  *
- * Uses [`RefCell`] because some `ImageRef`/`MetadataRef` methods need
- * `&mut self` (hash caching, metadata lazy-load), while the FFI
- * functions receive `*const PhotostaxStack`.
+ * Stores the [`PhotoStack`] directly — it is already thread-safe via
+ * internal `Arc<RwLock>`. A [`tokio::runtime::Handle`] is kept so that
+ * async I/O methods (`read`, `hash`, `rotate`, etc.) can be called from
+ * synchronous FFI functions via `block_on`.
  *
  * [`PhotoStack`]: photostax_core::photo_stack::PhotoStack
  */

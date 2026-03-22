@@ -31,7 +31,7 @@ pub unsafe extern "C" fn photostax_get_metadata(stack: *const PhotostaxStack) ->
         let stack_ref = unsafe { &*stack };
 
         stack_ref.runtime.block_on(async {
-            let metadata = match stack_ref.inner.metadata().read().await {
+            let metadata = match stack_ref.inner.metadata().read() {
                 Ok(m) => m,
                 Err(_) => return ptr::null_mut(),
             };
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn photostax_get_exif_tag(
         let stack_ref = unsafe { &*stack };
 
         stack_ref.runtime.block_on(async {
-            let metadata = match stack_ref.inner.metadata().read().await {
+            let metadata = match stack_ref.inner.metadata().read() {
                 Ok(m) => m,
                 Err(_) => return ptr::null_mut(),
             };
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn photostax_get_custom_tag(
         let stack_ref = unsafe { &*stack };
 
         stack_ref.runtime.block_on(async {
-            let metadata = match stack_ref.inner.metadata().read().await {
+            let metadata = match stack_ref.inner.metadata().read() {
                 Ok(m) => m,
                 Err(_) => return ptr::null_mut(),
             };
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn photostax_set_custom_tag(
         let stack_ref = unsafe { &*stack };
 
         stack_ref.runtime.block_on(async {
-            match stack_ref.inner.metadata().write(&metadata).await {
+            match stack_ref.inner.metadata().write(&metadata) {
                 Ok(()) => FfiResult::success(),
                 Err(e) => FfiResult::error(&e.to_string()),
             }

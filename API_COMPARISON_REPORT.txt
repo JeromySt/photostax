@@ -1,0 +1,443 @@
+# PHOTOSTAX API SURFACE ANALYSIS: 4-LAYER COMPARISON
+
+## 1. CORE RUST PUBLIC API
+
+### StackManager (core/src/stack_manager.rs)
+- new() → Self
+- single(repo) → Self  
+- add_repo(id, repo)
+- query(query, page_size, progress) → QueryResult
+- check_status(snapshot) → SnapshotStatus
+- invalidate_cache()
+- len() → usize
+- is_empty() → bool
+- repo_count() → usize
+- set_profile(profile)
+- subscribe_cache_events() → Receiver<CacheEvent>
+- watch() → Result<Receiver<CacheEvent>>
+- apply_event(event) → Option<CacheEvent>
+
+### PhotoStack (core/src/photo_stack.rs)
+- new(id) → Self
+- id() → String
+- name() → String
+- folder() → Option<String>
+- repo_id() → Option<String>
+- location() → Option<String>
+- original() → ImageProxy
+- enhanced() → ImageProxy
+- back() → ImageProxy
+- metadata() → MetadataProxy
+- set_original(ref), set_enhanced(ref), set_back(ref), set_metadata(ref)
+- has_any_image() → bool
+- images_present() → ImageVariants
+- image_count() → usize
+- swap_front_back() → Result<>
+- content_hash() → Result<Option<String>>
+
+### ImageRef (core/src/image_handle.rs)
+- new(handle) → Self
+- absent() → Self
+- is_present() → bool
+- is_valid() → bool
+- size() → Option<u64>
+- read() → Result<Box<dyn ReadSeek>>
+- stream() → Result<HashingReader<...>>
+- hash() → Result<String>
+- cached_hash() → Option<String>
+- dimensions() → Result<(u32, u32)>
+- rotate(rotation) → Result<>
+- path() → Option<&Path>
+- delete() → Result<>
+- clear_handle_caches()
+- swap_with(other) → Result<>
+- invalidate_caches()
+
+### MetadataRef (core/src/metadata_handle.rs)
+- new(handle) → Self
+- is_loaded() → bool
+- is_valid() → bool
+- read() → Result<Metadata>
+- cached() → Option<Metadata>
+- write(tags) → Result<>
+- invalidate()
+
+### ScanSnapshot (core/src/snapshot.rs)
+- from_scan(repo) → Result<Self>
+- from_scan_with_metadata(repo) → Result<Self>
+- from_scan_with_progress(repo, profile, load_metadata, progress) → Result<Self>
+- from_stacks(vec) → Self
+- total_count() → usize
+- get_page(offset, limit) → PaginatedResult<PhotoStack>
+- filter(query) → Self
+- stacks() → &[PhotoStack]
+- ids() → &HashSet<String>
+- is_stale(gens) → bool
+- set_repo_generations(gens)
+- check_status(repo) → Result<SnapshotStatus>
+
+### QueryResult (core/src/query_result.rs)
+- new(snapshot, page_size) → Self
+- total_count() → usize
+- page_count() → usize
+- page_size() → usize
+- current_page_index() → usize
+- current_page() → &[PhotoStack]
+- get_page(index) → Option<&[PhotoStack]>
+- next_page() → Option<&[PhotoStack]>
+- prev_page() → Option<&[PhotoStack]>
+- set_page(index) → Option<&[PhotoStack]>
+- has_more() → bool
+- next_stack() → Option<&PhotoStack>
+- reset_cursor()
+- snapshot() → &ScanSnapshot
+- into_snapshot() → ScanSnapshot
+- all_stacks() → &[PhotoStack]
+- query(query, page_size) → QueryResult
+
+### SearchQuery (core/src/search.rs)
+- new() → Self
+- with_exif_filter(key, contains) → Self
+- with_custom_filter(key, contains) → Self
+- with_text(query) → Self
+- with_has_back(bool) → Self
+- with_has_enhanced(bool) → Self
+- with_ids(vec) → Self
+- with_repo_id(repo) → Self
+
+---
+
+## 2. FFI C API (~50 functions)
+
+### Repository Management
+photostax_repository_new(path) → *mut LocalRepository
+photostax_repository_free(repo)
+photostax_repository_scan_count(repo) → i32
+photostax_version() → *const c_char
+photostax_repo_open(path) → *mut PhotostaxRepo
+photostax_repo_open_recursive(path, recursive) → *mut PhotostaxRepo
+photostax_repo_free(repo)
+photostax_repo_scan(repo) → FfiStackHandleArray
+photostax_repo_scan_with_progress(repo, callback, user_data) → FfiStackHandleArray
+photostax_repo_get_stack(repo, stack_id) → *mut PhotostaxStack
+
+### Pagination & Search
+photostax_repo_scan_paginated(repo, offset, limit) → FfiPaginatedHandleResult
+photostax_query(repo, query_json, offset, limit, callback, user_data) → FfiPaginatedHandleResult
+photostax_search(repo, query_json) → FfiStackHandleArray
+photostax_search_paginated(repo, query_json, offset, limit) → FfiPaginatedHandleResult
+
+### Stack Operations
+photostax_stack_id(stack) → *mut c_char
+photostax_stack_name(stack) → *mut c_char
+photostax_stack_folder(stack) → *mut c_char
+photostax_stack_image_is_present(stack, variant) → bool
+photostax_stack_image_is_valid(stack, variant) → bool
+photostax_stack_image_size(stack, variant) → i64
+photostax_stack_image_read(stack, variant, data, len) → FfiResult
+photostax_stack_image_hash(stack, variant) → *mut c_char
+photostax_stack_image_dimensions(stack, variant) → FfiDimensions
+photostax_stack_image_rotate(stack, variant, degrees) → FfiResult
+photostax_stack_image_invalidate(stack, variant)
+photostax_stack_swap_front_back(stack) → FfiResult
+photostax_stack_images_present(stack) → u8
+photostax_stack_metadata_is_loaded(stack) → bool
+photostax_stack_metadata_read(stack) → *mut c_char
+photostax_stack_metadata_cached(stack) → *mut c_char
+photostax_stack_metadata_write(stack, metadata_json) → FfiResult
+photostax_stack_metadata_invalidate(stack)
+photostax_stack_free(stack)
+
+### Manager Operations
+photostax_manager_new() → *mut PhotostaxRepo
+photostax_manager_add_repo(mgr, path, recursive, profile) → FfiResult
+photostax_manager_add_foreign_repo(mgr, callbacks, recursive, profile) → FfiResult
+photostax_manager_repo_count(mgr) → usize
+
+### Snapshot Operations
+photostax_create_snapshot(repo, load_metadata) → *mut PhotostaxSnapshot
+photostax_create_snapshot_with_progress(repo, profile, load_metadata, callback, user_data) → *mut PhotostaxSnapshot
+photostax_snapshot_total_count(snapshot) → usize
+photostax_snapshot_get_page(snapshot, offset, limit) → FfiPaginatedHandleResult
+photostax_snapshot_check_status(repo, snapshot) → FfiSnapshotStatus
+photostax_snapshot_filter(snapshot, query_json) → *mut PhotostaxSnapshot
+photostax_snapshot_free(snapshot)
+
+### Metadata Operations
+photostax_get_metadata(stack) → *mut c_char
+photostax_get_exif_tag(stack, key) → *mut c_char
+photostax_get_custom_tag(stack, key) → *mut c_char
+photostax_set_custom_tag(stack, key, value) → FfiResult
+
+### Cleanup
+photostax_stack_handle_array_free(array)
+photostax_paginated_handle_result_free(result)
+photostax_string_free(s)
+photostax_bytes_free(data, len)
+
+---
+
+## 3. TYPESCRIPT/NAPI API
+
+### JsImageRef
+- is_present() → bool
+- is_valid() → bool
+- size() → Option<f64>
+- read(env) → napi::Result<Buffer>
+- hash(env) → napi::Result<String>
+- dimensions(env) → napi::Result<JsDimensions>
+- rotate(env, degrees) → napi::Result<()>
+- invalidate_caches()
+
+### JsMetadataRef
+- is_loaded() → bool
+- read(env) → napi::Result<JsMetadata>
+- cached() → Option<JsMetadata>
+- write(env, metadata) → napi::Result<()>
+- invalidate()
+
+### JsPhotoStack
+- id() → String
+- name() → String
+- folder() → Option<String>
+- location() → Option<String>
+- images_present() → JsImagesPresent
+- has_any_image() → bool
+- original() → JsImageRef
+- enhanced() → JsImageRef
+- back() → JsImageRef
+- metadata() → JsMetadataRef
+- swap_front_back(env) → napi::Result<()>
+- rotate(env, degrees, target) → napi::Result<()>
+
+### JsPaginatedResult
+- items() → Vec<JsPhotoStack>
+- total_count() → u32
+- offset() → u32
+- limit() → u32
+- has_more() → bool
+
+### JsQueryResult
+- total_count() → u32
+- page_count() → u32
+- page_size() → u32
+- current_page_index() → u32
+- has_more() → bool
+- current_page() → Vec<JsPhotoStack>
+- next_page() → Option<Vec<JsPhotoStack>>
+- previous_page() → Option<Vec<JsPhotoStack>>
+- set_page(index) → Option<Vec<JsPhotoStack>>
+- get_page(index) → Option<Vec<JsPhotoStack>>
+- all_stacks() → Vec<JsPhotoStack>
+- query(query, page_size) → Promise<JsQueryResult>
+
+### JsPhotoRepository
+- new(path, options) → Result<Self>
+- scan() → Result<JsQueryResult>
+- scan_with_progress(callback) → Result<JsQueryResult>
+- scan_with_metadata() → Result<JsQueryResult>
+- search(query) → Result<Vec<JsPhotoStack>>
+- query(query, page_size, progress) → Result<JsQueryResult>
+- scan_paginated(offset, limit) → Result<JsPaginatedResult>
+- search_paginated(query, offset, limit) → Result<JsPaginatedResult>
+- create_snapshot(load_metadata) → Result<JsScanSnapshot>
+- create_snapshot_with_progress(profile, load_metadata, callback) → Result<JsScanSnapshot>
+- check_snapshot_status(snapshot) → Result<JsSnapshotStatus>
+
+### JsScanSnapshot
+- total_count() → u32
+- get_page(offset, limit) → JsPaginatedResult
+- filter(query) → JsScanSnapshot
+
+### JsStackManager
+- new() → Self
+- add_repo(path, recursive, profile) → Result<()>
+- add_foreign_repo(provider, recursive, profile) → Result<()>
+- repo_count() → u32
+- stack_count() → u32
+- scan(env) → Result<Vec<JsPhotoStack>>
+- scan_with_metadata(env) → Result<Vec<JsPhotoStack>>
+- query(query, page_size, progress) → Result<JsQueryResult>
+- create_snapshot(load_metadata) → Result<JsScanSnapshot>
+
+---
+
+## 4. .NET API
+
+### StackManager
+- StackManager() constructor
+- RepoCount { get; } → int
+- AddRepo(path, recursive, profile)
+- AddRepo(provider, recursive, profile)
+- Query(query, pageSize, progress) → QueryResult
+- CreateSnapshot(loadMetadata) → ScanSnapshot
+- CheckSnapshotStatus(snapshot) → SnapshotStatus
+- Dispose()
+
+### PhotoStack
+- Handle { get; internal set; }
+- Original, Enhanced, Back { get; } → ImageRef
+- Metadata { get; } → MetadataRef
+- Id, Name { get; } → string
+- Folder { get; } → string?
+- ImagesPresent { get; } → ImageVariants
+- HasAnyImage { get; } → bool
+- SwapFrontBack()
+- Rotate(degrees, target)
+- Dispose()
+
+### ImageRef
+- IsPresent { get; } → bool
+- IsValid { get; } → bool
+- Size { get; } → long?
+- Read() → byte[]
+- Hash() → string
+- Dimensions() → (uint Width, uint Height)
+- Rotate(degrees)
+- InvalidateCaches()
+
+### MetadataRef
+- IsLoaded { get; } → bool
+- Read() → Metadata
+- Cached { get; } → Metadata?
+- Write(metadata)
+- Invalidate()
+
+### ScanSnapshot
+- Handle { get; internal }
+- IsStale { get; } → bool
+- TotalCount { get; } → int
+- GetPage(offset, limit) → PaginatedResult<PhotoStack>
+- Filter(query) → ScanSnapshot
+- Dispose()
+
+### QueryResult
+- TotalCount, PageSize, PageCount { get; } → int
+- CurrentPageIndex { get; } → int
+- HasMore { get; } → bool
+- CurrentPage { get; } → IReadOnlyList<PhotoStack>
+- AllStacks { get; } → IReadOnlyList<PhotoStack>
+- GetPage(index) → IReadOnlyList<PhotoStack>?
+- NextPage(), PreviousPage() → IReadOnlyList<PhotoStack>?
+- SetPage(index) → IReadOnlyList<PhotoStack>?
+- Query(query, pageSize) → QueryResult
+
+### PhotostaxRepository
+- PhotostaxRepository(path, recursive) constructor
+- Query(query, pageSize, progress) → QueryResult
+- CreateSnapshot(loadMetadata) → ScanSnapshot
+- CreateSnapshot(profile, loadMetadata, progress) → ScanSnapshot
+- CheckSnapshotStatus(snapshot) → SnapshotStatus
+- Dispose()
+
+### SearchQuery
+- SearchQuery() constructor
+- WithExifFilter(key, value) → SearchQuery
+- WithCustomFilter(key, value) → SearchQuery
+- WithText(text) → SearchQuery
+- WithHasBack(bool) → SearchQuery
+- WithHasEnhanced(bool) → SearchQuery
+- WithIds(ids) → SearchQuery
+- WithRepoId(id) → SearchQuery
+- ToJson() → string
+
+---
+
+## COMPARISON MATRIX
+
+| API | Core | FFI | TypeScript | .NET | Status |
+|-----|------|-----|-----------|------|--------|
+| **StackManager** |
+| new() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| add_repo() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| add_foreign_repo() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| query() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| check_status() | ✓ | ✗ | ✗ | ✗ | Not in FFI |
+| invalidate_cache() | ✓ | ✗ | ✗ | ✗ | Internal only |
+| len() / repo_count() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| set_profile() | ✓ | ✓ | ✓ | ✓ | Via param |
+| subscribe_cache_events() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| watch() / apply_event() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| **PhotoStack** |
+| id/name/folder() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| repo_id/location() | ✓ | ✗ | ○ | ✗ | TypeScript only location() |
+| original/enhanced/back() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| metadata() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| has_any_image() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| images_present() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| swap_front_back() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| set_*() methods | ✓ | ✗ | ✗ | ✗ | Internal only |
+| image_count() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| content_hash() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| **ImageRef** |
+| is_present/is_valid/size() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| read() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| hash() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| dimensions() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| rotate() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| clear_handle_caches() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| stream() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| cached_hash() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| path/delete() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| swap_with() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| **MetadataRef** |
+| is_loaded() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| read/cached/write() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| invalidate() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| is_valid() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| **ScanSnapshot** |
+| from_scan() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| from_scan_with_metadata() | ✓ | ○ | ○ | ○ | Via param |
+| from_scan_with_progress() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| total_count/get_page() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| filter() | ✓ | ✓ | ✓ | ✓ | Fully exposed |
+| check_status() | ✓ | ✓ | ✗ | ✓ | Missing TypeScript |
+| is_stale() | ✓ | ✗ | ✗ | ○ | Dynamic in .NET |
+| stacks/ids() | ✓ | ✗ | ✗ | ✗ | Not exposed |
+| from_stacks() | ✓ | ✗ | ✗ | ✗ | Internal only |
+| **QueryResult** |
+| Navigation methods | ✓ | ✗ | ✓ | ✓ | Not in core FFI |
+| query() (sub-query) | ✓ | ✗ | ✓ | ✓ | Not in core FFI |
+| **SearchQuery** |
+| with_*() builders | ✓ | ○ | ✓ | ✓ | JSON in FFI |
+| **Extra: .NET Only** |
+| PhotostaxRepository | - | - | - | ✓⚠ | Convenience wrapper |
+| CreateSnapshot overload | - | - | - | ✓⚠ | Profile per snapshot |
+| ProviderBridge | - | - | - | ✓⚠ | Callback bridge |
+
+---
+
+## KEY FINDINGS
+
+### High Coverage (>90%)
+✓ Most PhotoStack, ImageRef, MetadataRef core APIs exposed
+✓ StackManager essentials all exposed
+✓ ScanSnapshot pagination fully exposed
+
+### Good Coverage (70-90%)
+✓ SearchQuery via JSON serialization
+✓ QueryResult in bindings (not in FFI)
+✓ Snapshot filtering and status checking
+
+### Low Coverage (<70%)
+✗ ImageRef streaming and path access
+✗ StackManager event subscriptions
+✗ PhotoStack internal setters
+✗ QueryResult cursor iteration (core only)
+
+### Extra Features in Bindings
+⚠ PhotostaxRepository (.NET only) - single-repo convenience
+⚠ CreateSnapshot(ScannerProfile) overload (.NET)
+⚠ Promise-based async (TypeScript)
+⚠ location() field (TypeScript only)
+
+### Critical Gaps
+✗ No snapshot status in TypeScript - photostax_snapshot_check_status exists but not exposed
+✗ No ImageRef file path access - cannot determine source file location
+✗ No ImageRef deletion - cannot delete image files
+✗ No QueryResult status in core FFI - pagination only
+
+### Naming Inconsistencies
+- prev_page (core) vs previous_page (bindings)
+- clear_handle_caches vs invalidate_caches (different names, same function)
+- repo_id not exposed (core has it, no access in bindings)

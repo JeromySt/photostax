@@ -100,16 +100,16 @@ pub unsafe extern "C" fn photostax_search(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, None, None).await {
+            let initial = match mgr.query(None, None, None, None) {
                 Ok(r) => r,
                 Err(_) => return FfiStackHandleArray::empty(),
             };
             for stack in initial.all_stacks() {
-                let _ = stack.metadata().read().await;
+                let _ = stack.metadata().read();
             }
 
             // Apply the filter using query()
-            let filtered = match mgr.query(Some(&query), None, None, None).await {
+            let filtered = match mgr.query(Some(&query), None, None, None) {
                 Ok(snap) => snap,
                 Err(_) => return FfiStackHandleArray::empty(),
             };
@@ -198,15 +198,15 @@ pub unsafe extern "C" fn photostax_search_paginated(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, None, None).await {
+            let initial = match mgr.query(None, None, None, None) {
                 Ok(r) => r,
                 Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
             };
             for stack in initial.all_stacks() {
-                let _ = stack.metadata().read().await;
+                let _ = stack.metadata().read();
             }
 
-            let snapshot = match mgr.query(Some(&query), None, None, None).await {
+            let snapshot = match mgr.query(Some(&query), None, None, None) {
                 Ok(snap) => snap,
                 Err(_) => return FfiPaginatedHandleResult::empty(offset, limit),
             };

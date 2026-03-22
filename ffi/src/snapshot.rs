@@ -62,16 +62,16 @@ pub unsafe extern "C" fn photostax_create_snapshot(
         repo_ref.runtime.block_on(async {
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, None, None).await {
+            let initial = match mgr.query(None, None, None, None) {
                 Ok(r) => r,
                 Err(_) => return ptr::null_mut(),
             };
             if load_metadata {
                 for stack in initial.all_stacks() {
-                    let _ = stack.metadata().read().await;
+                    let _ = stack.metadata().read();
                 }
             }
-            let snap = match mgr.query(None, None, None, None).await {
+            let snap = match mgr.query(None, None, None, None) {
                 Ok(r) => r.into_snapshot(),
                 Err(_) => return ptr::null_mut(),
             };
@@ -122,9 +122,9 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
 
         let mut cb_wrapper;
         let ud = SendPtr(user_data);
-        let progress: Option<&mut (dyn FnMut(photostax_core::photo_stack::ScanProgress) + Send)> =
+        let progress: Option<&mut dyn FnMut(&photostax_core::photo_stack::ScanProgress)> =
             if let Some(cb_fn) = callback {
-                cb_wrapper = move |p: photostax_core::photo_stack::ScanProgress| unsafe {
+                cb_wrapper = move |p: &photostax_core::photo_stack::ScanProgress| unsafe {
                     cb_fn(p.phase as i32, p.current, p.total, ud.as_ptr());
                 };
                 Some(&mut cb_wrapper)
@@ -136,16 +136,16 @@ pub unsafe extern "C" fn photostax_create_snapshot_with_progress(
             let mut mgr = repo_ref.inner.lock().await;
             mgr.set_profile(scanner_profile);
             mgr.invalidate_cache();
-            let initial = match mgr.query(None, None, progress, None).await {
+            let initial = match mgr.query(None, None, progress, None) {
                 Ok(r) => r,
                 Err(_) => return ptr::null_mut(),
             };
             if load_metadata {
                 for stack in initial.all_stacks() {
-                    let _ = stack.metadata().read().await;
+                    let _ = stack.metadata().read();
                 }
             }
-            let snap = match mgr.query(None, None, None, None).await {
+            let snap = match mgr.query(None, None, None, None) {
                 Ok(r) => r.into_snapshot(),
                 Err(_) => return ptr::null_mut(),
             };
@@ -253,7 +253,7 @@ pub unsafe extern "C" fn photostax_snapshot_check_status(
             // Re-scan to get the current state for comparison
             let mut mgr = repo_ref.inner.lock().await;
             mgr.invalidate_cache();
-            if mgr.query(None, None, None, None).await.is_err() {
+            if mgr.query(None, None, None, None).is_err() {
                 return error_status;
             }
             let status = mgr.check_status(&snap.inner);
@@ -341,7 +341,7 @@ pub unsafe extern "C" fn photostax_snapshot_filter(
             query = query.with_ids(ids);
         }
 
-        let filtered = snap.runtime.block_on(snap.inner.filter(&query));
+        let filtered = snap.inner.filter(&query);
         Box::into_raw(Box::new(PhotostaxSnapshot {
             inner: filtered,
             runtime: snap.runtime.clone(),

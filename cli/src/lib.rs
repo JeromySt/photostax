@@ -309,7 +309,7 @@ pub fn parse_key_value(s: &str) -> Result<(String, String), String> {
 
 /// Convert a PhotoStack to a JSON-serializable value.
 async fn stack_to_json(stack: &PhotoStack) -> serde_json::Value {
-    let metadata = match stack.metadata().cached().await {
+    let metadata = match stack.metadata().cached() {
         Some(m) => serde_json::json!({
             "exif_tags": m.exif_tags,
             "xmp_tags": m.xmp_tags,
@@ -476,7 +476,7 @@ pub async fn cmd_scan(
     // Auto-enable metadata loading when show_metadata is requested
     let load_metadata = metadata || show_metadata;
 
-    let mut progress_cb = |p: photostax_core::photo_stack::ScanProgress| {
+    let mut progress_cb = |p: &photostax_core::photo_stack::ScanProgress| {
         let phase = match p.phase {
             photostax_core::photo_stack::ScanPhase::Scanning => "Scanning",
             photostax_core::photo_stack::ScanPhase::Classifying => "Classifying",
@@ -489,7 +489,7 @@ pub async fn cmd_scan(
     };
 
     if load_metadata {
-        let result = match mgr.query(None, None, None, None).await {
+        let result = match mgr.query(None, None, None, None) {
             Ok(r) => r,
             Err(e) => {
                 let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -497,14 +497,14 @@ pub async fn cmd_scan(
             }
         };
         for stack in result.all_stacks() {
-            let _ = stack.metadata().read().await;
+            let _ = stack.metadata().read();
         }
-    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb), None).await {
+    } else if let Err(e) = mgr.query(None, None, Some(&mut progress_cb), None) {
         let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
         return EXIT_ERROR;
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None, None).await
+        .query(None, None, None, None)
         .expect("cache already populated")
         .all_stacks()
         .to_vec();
@@ -572,7 +572,7 @@ pub async fn cmd_search(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None, None).await {
+    let result = match mgr.query(None, None, None, None) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -580,7 +580,7 @@ pub async fn cmd_search(
         }
     };
     for stack in result.all_stacks() {
-        let _ = stack.metadata().read().await;
+        let _ = stack.metadata().read();
     }
 
     // Build search query
@@ -604,7 +604,7 @@ pub async fn cmd_search(
 
     // Apply pagination if limit > 0
     if limit > 0 {
-        let snapshot = match mgr.query(Some(&search), None, None, None).await {
+        let snapshot = match mgr.query(Some(&search), None, None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
@@ -634,7 +634,7 @@ pub async fn cmd_search(
             );
         }
     } else {
-        let results = match mgr.query(Some(&search), None, None, None).await {
+        let results = match mgr.query(Some(&search), None, None, None) {
             Ok(snap) => snap,
             Err(e) => {
                 let _ = writeln!(err, "Error querying: {e}");
@@ -654,26 +654,26 @@ async fn resolve_stack(
     id_or_name: &str,
 ) -> Result<PhotoStack, photostax_core::repository::RepositoryError> {
     if mgr.is_empty() {
-        mgr.query(None, None, None, None).await
+        mgr.query(None, None, None, None)
             .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     }
     // Try by exact ID first
     let id_query = SearchQuery::new().with_ids(vec![id_or_name.to_string()]);
-    if let Ok(result) = mgr.query(Some(&id_query), None, None, None).await {
+    if let Ok(result) = mgr.query(Some(&id_query), None, None, None) {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
     }
     // Fall back to name matching via text query
     let text_query = SearchQuery::new().with_text(id_or_name.to_string());
-    if let Ok(result) = mgr.query(Some(&text_query), None, None, None).await {
+    if let Ok(result) = mgr.query(Some(&text_query), None, None, None) {
         if let Some(stack) = result.all_stacks().first() {
             return Ok(stack.clone());
         }
     }
     // If still not found, query all and search manually
     let all = mgr
-        .query(None, None, None).await
+        .query(None, None, None, None)
         .map_err(|e| photostax_core::repository::RepositoryError::Other(e.to_string()))?;
     for stack in all.all_stacks() {
         if stack.name() == id_or_name {
@@ -713,7 +713,7 @@ pub async fn cmd_info(
         }
     };
 
-    if let Err(e) = stack.metadata().read().await {
+    if let Err(e) = stack.metadata().read() {
         let _ = writeln!(err, "Error loading metadata: {e}");
         return EXIT_ERROR;
     }
@@ -765,7 +765,7 @@ pub async fn cmd_metadata_read(
         }
     };
 
-    let metadata = match stack.metadata().read().await {
+    let metadata = match stack.metadata().read() {
         Ok(m) => m,
         Err(e) => {
             let _ = writeln!(err, "Error loading metadata: {e}");
@@ -824,7 +824,7 @@ pub async fn cmd_metadata_write(
     }
 
     // Use the stack's MetadataRef to write
-    if let Err(e) = stack.metadata().write(&new_tags).await {
+    if let Err(e) = stack.metadata().write(&new_tags) {
         let _ = writeln!(err, "Error writing metadata: {e}");
         return EXIT_ERROR;
     }
@@ -887,7 +887,7 @@ pub async fn cmd_export(
             return EXIT_ERROR;
         }
     };
-    let result = match mgr.query(None, None, None, None).await {
+    let result = match mgr.query(None, None, None, None) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(err, "Error scanning {}: {e}", directory.display());
@@ -895,10 +895,10 @@ pub async fn cmd_export(
         }
     };
     for stack in result.all_stacks() {
-        let _ = stack.metadata().read().await;
+        let _ = stack.metadata().read();
     }
     let stacks: Vec<PhotoStack> = mgr
-        .query(None, None, None).await
+        .query(None, None, None, None)
         .expect("cache already populated")
         .all_stacks()
         .to_vec();
@@ -975,20 +975,20 @@ pub async fn cmd_rotate(
 
     if rotate_front {
         if stack.original().is_present() {
-            if let Err(e) = stack.original().rotate(rotation).await {
+            if let Err(e) = stack.original().rotate(rotation) {
                 let _ = writeln!(err, "Error rotating original: {e}");
                 return EXIT_ERROR;
             }
         }
         if stack.enhanced().is_present() {
-            if let Err(e) = stack.enhanced().rotate(rotation).await {
+            if let Err(e) = stack.enhanced().rotate(rotation) {
                 let _ = writeln!(err, "Error rotating enhanced: {e}");
                 return EXIT_ERROR;
             }
         }
     }
     if rotate_back && stack.back().is_present() {
-        if let Err(e) = stack.back().rotate(rotation).await {
+        if let Err(e) = stack.back().rotate(rotation) {
             let _ = writeln!(err, "Error rotating back: {e}");
             return EXIT_ERROR;
         }
@@ -1104,7 +1104,7 @@ pub async fn output_stacks_table(
         };
         let tags = stack
             .metadata()
-            .cached().await
+            .cached()
             .map_or(0, |m| m.exif_tags.len() + m.custom_tags.len());
 
         let _ = writeln!(
@@ -1173,13 +1173,13 @@ pub async fn output_stacks_csv(out: &mut dyn Write, stacks: &[PhotoStack], show_
                 } else {
                     ""
                 },
-                stack.metadata().cached().await.map_or(0, |m| m.exif_tags.len()),
-                stack.metadata().cached().await.map_or(0, |m| m.custom_tags.len())
+                stack.metadata().cached().map_or(0, |m| m.exif_tags.len()),
+                stack.metadata().cached().map_or(0, |m| m.custom_tags.len())
             );
         } else {
             let tags = stack
                 .metadata()
-                .cached().await
+                .cached()
                 .map_or(0, |m| m.exif_tags.len() + m.custom_tags.len());
             let _ = writeln!(
                 out,
@@ -1243,7 +1243,7 @@ pub async fn output_info_table(out: &mut dyn Write, stack: &PhotoStack) {
         );
     }
 
-    if let Some(m) = stack.metadata().cached().await {
+    if let Some(m) = stack.metadata().cached() {
         // EXIF tags
         if !m.exif_tags.is_empty() {
             let _ = writeln!(
@@ -1323,7 +1323,7 @@ pub async fn output_info_csv(out: &mut dyn Write, stack: &PhotoStack) {
         let _ = writeln!(out, "file,back,present");
     }
 
-    if let Some(m) = stack.metadata().cached().await {
+    if let Some(m) = stack.metadata().cached() {
         for (key, value) in &m.exif_tags {
             let _ = writeln!(out, "exif,{},{}", key, escape_csv(value));
         }
@@ -1467,7 +1467,6 @@ pub fn escape_csv(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use photostax_core::backends::local_handles::LocalImageHandle;
     use photostax_core::image_handle::ImageRef;
     use photostax_core::metadata_handle::{MetadataHandle, MetadataRef};
@@ -1479,12 +1478,11 @@ mod tests {
     struct InlineMetadataHandle {
         data: Metadata,
     }
-    #[async_trait]
     impl MetadataHandle for InlineMetadataHandle {
-        async fn load(&self) -> Result<Metadata, photostax_core::repository::RepositoryError> {
+        fn load(&self) -> Result<Metadata, photostax_core::repository::RepositoryError> {
             Ok(self.data.clone())
         }
-        async fn write(&self, _: &Metadata) -> Result<(), photostax_core::repository::RepositoryError> {
+        fn write(&self, _: &Metadata) -> Result<(), photostax_core::repository::RepositoryError> {
             Ok(())
         }
         fn is_valid(&self) -> bool {
@@ -1496,10 +1494,10 @@ mod tests {
         ImageRef::new(Arc::new(LocalImageHandle::new(path, 0)))
     }
 
-    async fn make_metadata_ref(metadata: Metadata) -> MetadataRef {
+    fn make_metadata_ref(metadata: Metadata) -> MetadataRef {
         let handle = Arc::new(InlineMetadataHandle { data: metadata });
-        let mr = MetadataRef::new(handle);
-        let _ = mr.read().await; // trigger load so cached() returns Some
+        let mut mr = MetadataRef::new(handle);
+        let _ = mr.read(); // trigger load so cached() returns Some
         mr
     }
 
@@ -1553,7 +1551,7 @@ mod tests {
             exif_tags,
             xmp_tags,
             custom_tags,
-        }).await);
+        }));
         stack
     }
 
@@ -1779,7 +1777,7 @@ mod tests {
     async fn test_output_metadata_table_with_tags() {
         let stack = make_stack_with_metadata("test").await;
         let mut buf = Vec::new();
-        output_metadata_table(&mut buf, &stack.metadata().cached().await.unwrap());
+        output_metadata_table(&mut buf, &stack.metadata().cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("EXIF Tags (2):"));
         assert!(output.contains("EPSON"));
@@ -1816,7 +1814,7 @@ mod tests {
     async fn test_output_metadata_csv_with_tags() {
         let stack = make_stack_with_metadata("test").await;
         let mut buf = Vec::new();
-        output_metadata_csv(&mut buf, &stack.metadata().cached().await.unwrap());
+        output_metadata_csv(&mut buf, &stack.metadata().cached().unwrap());
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("exif,Make,EPSON"));
         assert!(output.contains("xmp,Creator,Test User"));
@@ -2560,7 +2558,7 @@ mod tests {
             exif_tags,
             xmp_tags: HashMap::new(),
             custom_tags: HashMap::new(),
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
@@ -2721,7 +2719,7 @@ mod tests {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags: HashMap::new(),
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
@@ -2741,7 +2739,7 @@ mod tests {
             exif_tags: HashMap::new(),
             xmp_tags: HashMap::new(),
             custom_tags,
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
@@ -2779,7 +2777,7 @@ mod tests {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags,
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_csv(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
@@ -2814,7 +2812,7 @@ mod tests {
             exif_tags: HashMap::new(),
             xmp_tags,
             custom_tags: HashMap::new(),
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();
@@ -2833,7 +2831,7 @@ mod tests {
             exif_tags: HashMap::new(),
             xmp_tags: HashMap::new(),
             custom_tags,
-        }).await);
+        }));
         let mut buf = Vec::new();
         output_info_table(&mut buf, &stack).await;
         let output = String::from_utf8(buf).unwrap();

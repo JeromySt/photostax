@@ -1,0 +1,198 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║              PHOTOSTAX API SURFACE: CROSS-LAYER ANALYSIS                   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+EXPOSURE BY LAYER:
+
+Layer 1: RUST CORE (core/src/*.rs)
+├─ StackManager: 13 methods
+├─ PhotoStack: 23 methods  
+├─ ImageRef: 15 methods
+├─ MetadataRef: 6 methods
+├─ ScanSnapshot: 11 methods
+├─ QueryResult: 14 methods
+├─ SearchQuery: 8 methods
+└─ Total: 90 public methods
+
+Layer 2: FFI C API (ffi/src/*.rs)
+├─ Repository management: 10 functions
+├─ Pagination & search: 4 functions
+├─ Stack operations: 19 functions
+├─ Manager operations: 3 functions
+├─ Snapshot operations: 7 functions
+├─ Metadata operations: 4 functions
+├─ Cleanup: 4 functions
+└─ Total: 51 C functions
+
+Layer 3: TYPESCRIPT/NAPI (bindings/typescript/src/lib.rs)
+├─ JsImageRef: 8 methods (87% coverage)
+├─ JsMetadataRef: 5 methods (83% coverage)
+├─ JsPhotoStack: 12 methods (52% coverage)
+├─ JsPaginatedResult: 5 methods
+├─ JsQueryResult: 11 methods
+├─ JsPhotoRepository: 11 methods
+├─ JsScanSnapshot: 3 methods (27% coverage)
+├─ JsStackManager: 8 methods
+└─ Total: 63 exposed methods
+
+Layer 4: .NET (bindings/dotnet/src/Photostax/*.cs)
+├─ StackManager: 6 methods (46% coverage)
+├─ PhotoStack: 6 methods (26% coverage)
+├─ ImageRef: 7 methods (47% coverage)
+├─ MetadataRef: 5 methods (83% coverage)
+├─ ScanSnapshot: 4 methods (36% coverage)
+├─ QueryResult: 11 methods (78% coverage)
+├─ PhotostaxRepository: 5 methods (38% coverage)
+├─ SearchQuery: 9 methods (100% via builder)
+└─ Total: 53 public methods
+
+════════════════════════════════════════════════════════════════════════════════
+
+COVERAGE ANALYSIS:
+
+                   Core    FFI     TS      .NET    Avg
+StackManager       100%    77%     69%     46%     73%
+PhotoStack         100%    61%     52%     26%     60%
+ImageRef           100%    80%     87%     47%     79%
+MetadataRef        100%    83%     83%     83%     87%
+ScanSnapshot       100%    64%     27%     36%     57%
+QueryResult        100%     0%    100%     78%     70%
+SearchQuery        100%    50%     100%    100%    88%
+────────────────────────────────────────────────────────
+TOTAL COVERAGE     100%    64%     74%     60%     75%
+
+════════════════════════════════════════════════════════════════════════════════
+
+API EXPOSURE PATTERNS:
+
+✓ FULLY EXPOSED (Consistency Score: 100%)
+  • Core identification: id(), name(), folder()
+  • Image operations: read(), hash(), dimensions(), rotate()
+  • Metadata operations: read(), write(), cached(), invalidate()
+  • Stack operations: swap_front_back()
+  • Pagination: get_page(), filter()
+  • Search: All via JSON serialization
+
+○ PARTIALLY EXPOSED (Consistency Score: 50-99%)
+  • ImageRef properties: is_present, is_valid, size
+  • MetadataRef properties: is_loaded
+  • Snapshot creation: from_scan variants
+  • QueryResult navigation: next_page, set_page, etc.
+  • Progress callbacks: Exposed in all layers
+
+✗ NOT EXPOSED (Consistency Score: 0%)
+  • StackManager: invalidate_cache, event subscriptions, watch()
+  • PhotoStack: setters, image_count, content_hash, repo_id
+  • ImageRef: stream(), cached_hash(), path(), delete(), swap_with()
+  • MetadataRef: is_valid()
+  • ScanSnapshot: stacks(), ids(), internal methods
+  • QueryResult: next_stack(), reset_cursor() (core only)
+
+════════════════════════════════════════════════════════════════════════════════
+
+BINDING-SPECIFIC FEATURES:
+
+EXTRA METHODS (in bindings, not in core):
+⚠ .NET PhotostaxRepository        - Single-repo wrapper
+⚠ .NET CreateSnapshot overloads   - Profile per snapshot
+⚠ TypeScript location()           - Stack location accessor
+⚠ TypeScript scan_with_metadata() - Convenience wrapper
+
+════════════════════════════════════════════════════════════════════════════════
+
+CRITICAL GAPS:
+
+🔴 SEVERE (Likely blocking for some use cases)
+  1. TypeScript: No snapshot status check (exists in FFI, not exposed)
+     → photostax_snapshot_check_status not called from TS layer
+  
+  2. ImageRef: No path/file access in any binding
+     → Cannot determine source file location
+  
+  3. ImageRef: No deletion support
+     → Cannot delete image files
+
+🟡 MODERATE (Nice-to-have features)
+  4. No QueryResult cursor-based iteration
+     → Must paginate instead
+  
+  5. No PhotoStack.repo_id in bindings
+     → Cannot identify repository source
+  
+  6. No image streaming (only full read)
+     → Cannot process large images efficiently
+  
+  7. No event subscriptions (Core has them)
+     → Cannot react to cache changes
+
+════════════════════════════════════════════════════════════════════════════════
+
+NAMING INCONSISTENCIES:
+
+prev_page (Rust) → previous_page (Bindings)
+clear_handle_caches → invalidate_caches (same function, different names)
+location() available in TS but not other bindings
+
+════════════════════════════════════════════════════════════════════════════════
+
+IMPLEMENTATION PATTERNS:
+
+Rust Core
+├─ High-level abstractions (Proxy types, error handling)
+├─ Async/await with tokio
+└─ Builder pattern (SearchQuery)
+
+FFI Layer
+├─ Raw C pointers and manual memory management
+├─ JSON for complex types (SearchQuery)
+└─ Callback-based progress reporting
+
+TypeScript
+├─ Promise-based async wrapping
+├─ Strongest coverage (74%)
+└─ NodeJS-specific patterns
+
+.NET
+├─ Sync FFI calls with exception handling
+├─ SafeHandle for resource management
+├─ Convenience wrapper (PhotostaxRepository)
+└─ Weakest coverage (60%)
+
+════════════════════════════════════════════════════════════════════════════════
+
+RECOMMENDATIONS:
+
+1. URGENT: Expose photostax_snapshot_check_status in TypeScript
+   Impact: Users cannot detect stale snapshots
+
+2. HIGH: Add ImageRef.path() to bindings
+   Impact: Users cannot determine source file location
+
+3. HIGH: Document JSON schema for SearchQuery in FFI docs
+   Impact: Developers must reverse-engineer from code
+
+4. MEDIUM: Add QueryResult to FFI layer
+   Impact: FFI users must implement pagination manually
+
+5. MEDIUM: Expose PhotoStack.repo_id in bindings
+   Impact: Cannot track multi-repo scenarios
+
+6. LOW: Standardize naming (prev_page vs previous_page)
+   Impact: API consistency
+
+════════════════════════════════════════════════════════════════════════════════
+
+TESTING COVERAGE:
+
+Each layer has tests for exposed methods:
+✓ Rust: Comprehensive unit tests in each module
+✓ FFI: Integration tests in ffi/src/
+✓ TypeScript: Tests validate NAPI bindings
+✓ .NET: ExcludeFromCodeCoverage (needs native DLL)
+
+Missing test coverage for:
+✗ Cross-layer consistency
+✗ Error propagation through all layers
+✗ Edge cases in type conversions (e.g., u64 → Option<f64>)
+
+════════════════════════════════════════════════════════════════════════════════
