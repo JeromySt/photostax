@@ -18,11 +18,11 @@ public class RepositoryTests
     public void Constructor_InvalidPath_SucceedsLazily()
     {
         // The FFI layer lazily opens repositories — the constructor always
-        // succeeds.  Scanning a nonexistent directory returns an empty list
+        // succeeds.  Querying a nonexistent directory returns an empty result
         // because the FFI swallows the underlying I/O error.
         using var repo = new PhotostaxRepository("/nonexistent/path/that/does/not/exist");
-        var stacks = repo.Scan();
-        Assert.Empty(stacks);
+        var result = repo.Query();
+        Assert.Empty(result.AllStacks);
     }
 
     [Fact]

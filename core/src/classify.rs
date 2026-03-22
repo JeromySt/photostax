@@ -103,12 +103,13 @@ fn classify_image(img: image::DynamicImage) -> Result<bool, RepositoryError> {
 /// are left unchanged. If the image cannot be decoded the stack is left
 /// unchanged (classification is best-effort).
 pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryError> {
-    if !stack.enhanced.is_present() || stack.back.is_present() {
+    let mut inner = stack.inner.write().unwrap();
+    if !inner.enhanced.is_present() || inner.back.is_present() {
         return Ok(false);
     }
 
     // Read image data through the handle
-    let mut reader = match stack.enhanced.read() {
+    let mut reader = match inner.enhanced.read() {
         Ok(r) => r,
         Err(_) => return Ok(false),
     };
@@ -119,8 +120,8 @@ pub fn classify_ambiguous(stack: &mut PhotoStack) -> Result<bool, RepositoryErro
 
     match is_likely_back_from_bytes(&buf) {
         Ok(true) => {
-            let enhanced = std::mem::replace(&mut stack.enhanced, ImageRef::absent());
-            stack.back = enhanced;
+            let enhanced = std::mem::replace(&mut inner.enhanced, ImageRef::absent());
+            inner.back = enhanced;
             Ok(true)
         }
         Ok(false) => Ok(false),
@@ -181,12 +182,16 @@ mod tests {
         let orig_path = create_colourful_jpeg(tmp.path(), "IMG_001.jpg");
 
         let mut stack = PhotoStack::new("IMG_001");
-        stack.original = local_ref(&orig_path);
-        stack.enhanced = local_ref(&back_path);
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = local_ref(&orig_path);
+            inner.enhanced = local_ref(&back_path);
+        }
 
         assert!(classify_ambiguous(&mut stack).unwrap());
-        assert!(!stack.enhanced.is_present());
-        assert!(stack.back.is_present());
+        let inner = stack.inner.read().unwrap();
+        assert!(!inner.enhanced.is_present());
+        assert!(inner.back.is_present());
     }
 
     #[test]
@@ -196,12 +201,16 @@ mod tests {
         let orig_path = create_colourful_jpeg(tmp.path(), "IMG_002.jpg");
 
         let mut stack = PhotoStack::new("IMG_002");
-        stack.original = local_ref(&orig_path);
-        stack.enhanced = local_ref(&front_path);
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = local_ref(&orig_path);
+            inner.enhanced = local_ref(&front_path);
+        }
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert!(stack.enhanced.is_present());
-        assert!(!stack.back.is_present());
+        let inner = stack.inner.read().unwrap();
+        assert!(inner.enhanced.is_present());
+        assert!(!inner.back.is_present());
     }
 
     #[test]
@@ -211,11 +220,15 @@ mod tests {
         let back = create_colourful_jpeg(tmp.path(), "IMG_003_b.jpg");
 
         let mut stack = PhotoStack::new("IMG_003");
-        stack.enhanced = local_ref(&enhanced);
-        stack.back = local_ref(&back);
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.enhanced = local_ref(&enhanced);
+            inner.back = local_ref(&back);
+        }
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
-        assert!(stack.enhanced.is_present());
+        let inner = stack.inner.read().unwrap();
+        assert!(inner.enhanced.is_present());
     }
 
     #[test]
@@ -224,7 +237,10 @@ mod tests {
         let orig = create_colourful_jpeg(tmp.path(), "IMG_004.jpg");
 
         let mut stack = PhotoStack::new("IMG_004");
-        stack.original = local_ref(&orig);
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = local_ref(&orig);
+        }
 
         assert!(!classify_ambiguous(&mut stack).unwrap());
     }

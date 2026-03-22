@@ -3,7 +3,7 @@
 //! [`StackManager`] sits above the [`Repository`] trait and provides:
 //! - A flat `HashMap<String, PhotoStack>` cache keyed by opaque stack ID
 //! - Multi-repo support with URI-based overlap detection
-//! - O(1) `get_stack(id)` lookups
+//! - `query()` as the sole entry point for cache lookup and filtering
 //! - Snapshot creation (frozen cache clones)
 //! - Classifier injection into repositories at registration time
 
@@ -138,41 +138,9 @@ impl StackManager {
             }
         }
         for stack in all_stacks {
-            self.cache.insert(stack.id.clone(), stack);
+            self.cache.insert(stack.id(), stack);
         }
         Ok(self.cache.len())
-    }
-
-    /// O(1) stack lookup by opaque ID.
-    pub fn get_stack(&self, id: &str) -> Option<&PhotoStack> {
-        self.cache.get(id)
-    }
-
-    /// O(1) mutable stack lookup by opaque ID.
-    pub fn get_stack_mut(&mut self, id: &str) -> Option<&mut PhotoStack> {
-        self.cache.get_mut(id)
-    }
-
-    /// Get all stacks in the cache.
-    pub fn all_stacks(&self) -> Vec<&PhotoStack> {
-        self.cache.values().collect()
-    }
-
-    /// Create a snapshot of the entire cache (all repos).
-    pub fn snapshot(&self) -> ScanSnapshot {
-        let stacks: Vec<PhotoStack> = self.cache.values().cloned().collect();
-        ScanSnapshot::from_stacks(stacks)
-    }
-
-    /// Create a snapshot of stacks from a specific repo.
-    pub fn snapshot_repo(&self, repo_id: &str) -> ScanSnapshot {
-        let stacks: Vec<PhotoStack> = self
-            .cache
-            .values()
-            .filter(|s| s.repo_id.as_deref() == Some(repo_id))
-            .cloned()
-            .collect();
-        ScanSnapshot::from_stacks(stacks)
     }
 
     /// Compare a snapshot against the live cache to detect staleness.
@@ -192,11 +160,6 @@ impl StackManager {
             added,
             removed,
         }
-    }
-
-    /// Get all stacks in the cache (delegates to `all_stacks()`).
-    pub fn stacks(&self) -> Vec<&PhotoStack> {
-        self.all_stacks()
     }
 
     /// Query the cache with optional filtering, returning a [`QueryResult`].
@@ -226,7 +189,7 @@ impl StackManager {
     ///     println!("Phase {:?}: {}/{}", p.phase, p.current, p.total);
     /// })).unwrap();
     /// for stack in result.current_page() {
-    ///     println!("{}", stack.name);
+    ///     println!("{}", stack.name());
     /// }
     /// ```
     pub fn query(
@@ -257,16 +220,22 @@ impl StackManager {
         ))
     }
 
-    /// Force a rescan of all repositories, replacing the cache.
+    /// Clear the cache, forcing the next [`query()`](Self::query) call to
+    /// re-scan all registered repositories.
     ///
-    /// Unlike [`query`](Self::query) which auto-scans only when the cache
-    /// is empty, this always performs a fresh scan. Use when you know the
-    /// underlying files have changed.
-    pub fn rescan(
-        &mut self,
-        progress: Option<&mut dyn FnMut(&ScanProgress)>,
-    ) -> Result<usize, StackManagerError> {
-        self.scan_repos(progress)
+    /// Use this when you know the underlying files have changed and want
+    /// fresh data on the next query.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use photostax_core::stack_manager::StackManager;
+    /// # let mut mgr = StackManager::new();
+    /// mgr.invalidate_cache();
+    /// let result = mgr.query(None, None, None).unwrap(); // re-scans
+    /// ```
+    pub fn invalidate_cache(&mut self) {
+        self.cache.clear();
     }
 
     /// Total number of stacks in the cache.
@@ -349,10 +318,13 @@ impl StackManager {
 
                 let handle = Arc::new(LocalImageHandle::new(path, *size));
                 let image_ref = ImageRef::new(handle);
-                match variant {
-                    FileVariant::Original => stack.original = image_ref,
-                    FileVariant::Enhanced => stack.enhanced = image_ref,
-                    FileVariant::Back => stack.back = image_ref,
+                {
+                    let mut inner = stack.inner.write().unwrap();
+                    match variant {
+                        FileVariant::Original => inner.original = image_ref,
+                        FileVariant::Enhanced => inner.enhanced = image_ref,
+                        FileVariant::Back => inner.back = image_ref,
+                    }
                 }
 
                 if is_new {
@@ -363,10 +335,13 @@ impl StackManager {
             }
             StackEvent::FileRemoved { stack_id, variant } => {
                 if let Some(stack) = self.cache.get_mut(stack_id) {
-                    match variant {
-                        FileVariant::Original => stack.original = ImageRef::absent(),
-                        FileVariant::Enhanced => stack.enhanced = ImageRef::absent(),
-                        FileVariant::Back => stack.back = ImageRef::absent(),
+                    {
+                        let mut inner = stack.inner.write().unwrap();
+                        match variant {
+                            FileVariant::Original => inner.original = ImageRef::absent(),
+                            FileVariant::Enhanced => inner.enhanced = ImageRef::absent(),
+                            FileVariant::Back => inner.back = ImageRef::absent(),
+                        }
                     }
 
                     if !stack.has_any_image() {
@@ -401,6 +376,7 @@ mod tests {
     use super::*;
     use crate::backends::local::LocalRepository;
     use crate::repository::Repository;
+    use crate::search::SearchQuery;
     use std::fs;
     use tempfile::TempDir;
 
@@ -440,7 +416,7 @@ mod tests {
     // ── a) Single repo ──────────────────────────────────────────────────
 
     #[test]
-    fn single_repo_scan_and_get_stack() {
+    fn single_repo_scan_and_query() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_001_a.jpg", "IMG_001_b.jpg"]);
 
@@ -448,23 +424,18 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.rescan(None).unwrap();
-        assert_eq!(count, 1);
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 1);
         assert_eq!(mgr.len(), 1);
         assert!(!mgr.is_empty());
         assert_eq!(mgr.repo_count(), 1);
 
-        let stacks = mgr.stacks();
+        let stacks = result.all_stacks();
         assert_eq!(stacks.len(), 1);
-        assert_eq!(stacks[0].name, "IMG_001");
-
-        // O(1) lookup by ID
-        let id = stacks[0].id.clone();
-        let found = mgr.get_stack(&id).unwrap();
-        assert_eq!(found.name, "IMG_001");
-        assert!(found.original.is_present());
-        assert!(found.enhanced.is_present());
-        assert!(found.back.is_present());
+        assert_eq!(stacks[0].name(), "IMG_001");
+        assert!(stacks[0].original().is_present());
+        assert!(stacks[0].enhanced().is_present());
+        assert!(stacks[0].back().is_present());
     }
 
     // ── b) Multi repo ───────────────────────────────────────────────────
@@ -487,16 +458,16 @@ mod tests {
         mgr.add_repo(Box::new(repo2), ScannerProfile::EnhancedAndBack)
             .unwrap();
 
-        let count = mgr.rescan(None).unwrap();
-        assert_eq!(count, 2);
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 2);
         assert_eq!(mgr.repo_count(), 2);
 
         // Each stack should have a repo_id matching its source location
-        let stacks = mgr.stacks();
-        let s1 = stacks.iter().find(|s| s.name == "IMG_001").unwrap();
-        let s2 = stacks.iter().find(|s| s.name == "IMG_002").unwrap();
-        assert_eq!(s1.repo_id.as_deref(), Some(repo1_loc.as_str()));
-        assert_eq!(s2.repo_id.as_deref(), Some(repo2_loc.as_str()));
+        let stacks = result.all_stacks();
+        let s1 = stacks.iter().find(|s| s.name() == "IMG_001").unwrap();
+        let s2 = stacks.iter().find(|s| s.name() == "IMG_002").unwrap();
+        assert_eq!(s1.repo_id().as_deref(), Some(repo1_loc.as_str()));
+        assert_eq!(s2.repo_id().as_deref(), Some(repo2_loc.as_str()));
     }
 
     // ── c) Overlap rejection ────────────────────────────────────────────
@@ -542,9 +513,9 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
-        let snapshot = mgr.snapshot();
+        let result = mgr.query(None, None, None).unwrap();
+        let snapshot = result.into_snapshot();
         assert_eq!(snapshot.total_count(), 1);
 
         // Status should be fresh
@@ -563,7 +534,7 @@ mod tests {
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr2.rescan(None).unwrap();
+        let _ = mgr2.query(None, None, None).unwrap();
 
         // Old snapshot vs new cache should be stale
         let status = mgr2.check_status(&snapshot);
@@ -573,10 +544,10 @@ mod tests {
         assert_eq!(status.added, 1);
     }
 
-    // ── f) get_stack O(1) ───────────────────────────────────────────────
+    // ── f) Query by ID ────────────────────────────────────────────────
 
     #[test]
-    fn get_stack_returns_correct_stack() {
+    fn query_by_id_returns_correct_stack() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(
             &tmp,
@@ -592,18 +563,23 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
+
+        let result = mgr.query(None, None, None).unwrap();
         assert_eq!(mgr.len(), 2);
 
-        // Look up each by ID
-        for stack in mgr.stacks() {
-            let found = mgr.get_stack(&stack.id).unwrap();
-            assert_eq!(found.id, stack.id);
-            assert_eq!(found.name, stack.name);
+        // Look up each by ID via query
+        for stack in result.all_stacks() {
+            let id_query = SearchQuery::new().with_ids(vec![stack.id()]);
+            let found = mgr.query(Some(&id_query), None, None).unwrap();
+            assert_eq!(found.total_count(), 1);
+            assert_eq!(found.all_stacks()[0].id(), stack.id());
+            assert_eq!(found.all_stacks()[0].name(), stack.name());
         }
 
-        // Non-existent ID returns None
-        assert!(mgr.get_stack("nonexistent").is_none());
+        // Non-existent ID returns empty
+        let missing = SearchQuery::new().with_ids(vec!["nonexistent".to_string()]);
+        let result = mgr.query(Some(&missing), None, None).unwrap();
+        assert_eq!(result.total_count(), 0);
     }
 
     // ── g) Metadata loading via handles ──────────────────────────────────
@@ -616,16 +592,15 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
-        let id = mgr.stacks()[0].id.clone();
+        let result = mgr.query(None, None, None).unwrap();
+        let stack = &result.all_stacks()[0];
 
-        // Metadata is loaded via the handle
-        let stack = mgr.get_stack_mut(&id).unwrap();
-        let _meta = stack.metadata.read().unwrap();
+        // Metadata is loaded via the handle (Arc<RwLock> — no mutable manager access needed)
+        let _meta = stack.metadata().read().unwrap();
 
         // After metadata load, the stack should still be accessible
-        assert_eq!(stack.name, "IMG_001");
+        assert_eq!(stack.name(), "IMG_001");
     }
 
     // ── h) Rotation via handles ─────────────────────────────────────────
@@ -645,28 +620,28 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
-        let id = mgr.stacks()[0].id.clone();
+        let result = mgr.query(None, None, None).unwrap();
 
-        // Rotation via ImageRef handle
-        let stack = mgr.get_stack(&id).unwrap();
+        // Rotation via ImageRef handle — use stack from query result directly
+        let stack = &result.all_stacks()[0];
         stack
-            .original
+            .original()
             .rotate(crate::photo_stack::Rotation::Cw90)
             .unwrap();
-        assert_eq!(stack.name, "IMG_001");
+        assert_eq!(stack.name(), "IMG_001");
     }
 
     // ── Additional edge-case tests ──────────────────────────────────────
 
     #[test]
     fn empty_manager() {
-        let mgr = StackManager::new();
+        let mut mgr = StackManager::new();
         assert!(mgr.is_empty());
         assert_eq!(mgr.len(), 0);
         assert_eq!(mgr.repo_count(), 0);
-        assert!(mgr.get_stack("any").is_none());
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 0);
     }
 
     #[test]
@@ -693,15 +668,17 @@ mod tests {
             .unwrap();
         mgr.add_repo(Box::new(repo2), ScannerProfile::EnhancedAndBack)
             .unwrap();
-        mgr.rescan(None).unwrap();
 
-        let snap1 = mgr.snapshot_repo(&repo1_loc);
-        let snap2 = mgr.snapshot_repo(&repo2_loc);
+        // Query with repo_id filter for each repo
+        let query1 = SearchQuery::new().with_repo_id(&repo1_loc);
+        let snap1 = mgr.query(Some(&query1), None, None).unwrap();
+        let query2 = SearchQuery::new().with_repo_id(&repo2_loc);
+        let snap2 = mgr.query(Some(&query2), None, None).unwrap();
         assert_eq!(snap1.total_count(), 1);
         assert_eq!(snap2.total_count(), 1);
 
-        // Full snapshot has both
-        let snap_all = mgr.snapshot();
+        // Full query has both
+        let snap_all = mgr.query(None, None, None).unwrap();
         assert_eq!(snap_all.total_count(), 2);
     }
 
@@ -715,31 +692,37 @@ mod tests {
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
         let mut progress_called = false;
-        let count = mgr
-            .rescan(Some(&mut |_progress: &ScanProgress| {
-                progress_called = true;
-            }))
+        let result = mgr
+            .query(
+                None,
+                None,
+                Some(&mut |_progress: &ScanProgress| {
+                    progress_called = true;
+                }),
+            )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(result.total_count(), 1);
         assert!(progress_called);
     }
 
     #[test]
-    fn get_stack_mut_allows_mutation() {
+    fn arc_shared_mutation_visible_across_clones() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg"]);
 
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
-        let id = mgr.stacks()[0].id.clone();
-        let stack = mgr.get_stack_mut(&id).unwrap();
-        stack.name = "RENAMED".to_string();
+        let result = mgr.query(None, None, None).unwrap();
+        let stack = result.all_stacks()[0].clone(); // Arc clone — same underlying data
 
-        let stack = mgr.get_stack(&id).unwrap();
-        assert_eq!(stack.name, "RENAMED");
+        // Mutate through the Arc<RwLock> inner
+        stack.inner.write().unwrap().name = "RENAMED".to_string();
+
+        // Visible through a fresh query (same Arc in cache)
+        let result2 = mgr.query(None, None, None).unwrap();
+        assert_eq!(result2.all_stacks()[0].name(), "RENAMED");
     }
 
     // ── apply_event tests ───────────────────────────────────────────────
@@ -755,7 +738,14 @@ mod tests {
         };
         let result = mgr.apply_event(&event);
         assert_eq!(result, Some(CacheEvent::StackAdded("abc123".to_string())));
-        assert!(mgr.get_stack("abc123").is_some());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(found.total_count(), 1);
     }
 
     #[test]
@@ -774,9 +764,16 @@ mod tests {
             size: 2000,
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
-        let stack = mgr.get_stack("abc123").unwrap();
-        assert!(stack.original.is_present());
-        assert!(stack.enhanced.is_present());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        let stack = &found.all_stacks()[0];
+        assert!(stack.original().is_present());
+        assert!(stack.enhanced().is_present());
     }
 
     #[test]
@@ -799,9 +796,16 @@ mod tests {
             variant: FileVariant::Original,
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("abc123".to_string())));
-        let stack = mgr.get_stack("abc123").unwrap();
-        assert!(!stack.original.is_present());
-        assert!(stack.enhanced.is_present());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        let stack = &found.all_stacks()[0];
+        assert!(!stack.original().is_present());
+        assert!(stack.enhanced().is_present());
     }
 
     #[test]
@@ -818,7 +822,14 @@ mod tests {
             variant: FileVariant::Original,
         });
         assert_eq!(result, Some(CacheEvent::StackRemoved("abc123".to_string())));
-        assert!(mgr.get_stack("abc123").is_none());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["abc123".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(found.total_count(), 0);
     }
 
     #[test]
@@ -849,8 +860,8 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.rescan(None).unwrap();
-        assert_eq!(count, 1);
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 1);
     }
 
     #[test]
@@ -861,9 +872,10 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
+        mgr.query(None, None, None).unwrap();
 
-        let snap = mgr.snapshot_repo("file:///nonexistent");
+        let query = SearchQuery::new().with_repo_id("file:///nonexistent");
+        let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 0);
     }
 
@@ -875,17 +887,17 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
-        assert_eq!(mgr.len(), 2);
 
-        let snapshot = mgr.snapshot();
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(mgr.len(), 2);
+        let snapshot = result.into_snapshot();
 
         // Remove a file and rescan
         fs::remove_file(tmp.path().join("IMG_002.jpg")).unwrap();
         let repo2 = LocalRepository::new(tmp.path());
         let mut mgr2 =
             StackManager::single(Box::new(repo2), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr2.rescan(None).unwrap();
+        let _ = mgr2.query(None, None, None).unwrap();
 
         let status = mgr2.check_status(&snapshot);
         assert!(status.is_stale);
@@ -904,21 +916,17 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.rescan(None).unwrap();
-        assert_eq!(count, 2);
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 2);
 
-        // Load metadata for all stacks
-        let ids: Vec<String> = mgr.stacks().iter().map(|s| s.id.clone()).collect();
-        for id in &ids {
-            if let Some(s) = mgr.get_stack_mut(id) {
-                let _ = s.metadata.read();
-            }
+        // Load metadata directly through Arc stacks (no manager mutation needed)
+        for stack in result.all_stacks() {
+            let _ = stack.metadata().read();
         }
 
-        // All stacks should be in the cache
-        for stack in mgr.stacks() {
-            assert!(mgr.get_stack(&stack.id).is_some());
-        }
+        // All stacks should still be accessible via a new query
+        let result2 = mgr.query(None, None, None).unwrap();
+        assert_eq!(result2.total_count(), 2);
     }
 
     #[test]
@@ -963,10 +971,17 @@ mod tests {
             result,
             Some(CacheEvent::StackAdded("test_stack".to_string()))
         );
-        let stack = mgr.get_stack("test_stack").unwrap();
-        assert!(stack.back.is_present());
-        assert!(!stack.original.is_present());
-        assert!(!stack.enhanced.is_present());
+        let stack = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["test_stack".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        let s = &stack.all_stacks()[0];
+        assert!(s.back().is_present());
+        assert!(!s.original().is_present());
+        assert!(!s.enhanced().is_present());
     }
 
     #[test]
@@ -997,10 +1012,17 @@ mod tests {
             variant: FileVariant::Enhanced,
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
-        let stack = mgr.get_stack("s1").unwrap();
-        assert!(!stack.enhanced.is_present());
-        assert!(stack.original.is_present());
-        assert!(stack.back.is_present());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["s1".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        let stack = &found.all_stacks()[0];
+        assert!(!stack.enhanced().is_present());
+        assert!(stack.original().is_present());
+        assert!(stack.back().is_present());
 
         // Remove back
         let result = mgr.apply_event(&StackEvent::FileRemoved {
@@ -1008,8 +1030,15 @@ mod tests {
             variant: FileVariant::Back,
         });
         assert_eq!(result, Some(CacheEvent::StackUpdated("s1".to_string())));
-        let stack = mgr.get_stack("s1").unwrap();
-        assert!(!stack.back.is_present());
+        let found = mgr
+            .query(
+                Some(&SearchQuery::new().with_ids(vec!["s1".to_string()])),
+                None,
+                None,
+            )
+            .unwrap();
+        let stack = &found.all_stacks()[0];
+        assert!(!stack.back().is_present());
     }
 
     #[test]
@@ -1047,7 +1076,6 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
         let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
         assert_eq!(snap.total_count(), 3);
@@ -1071,7 +1099,6 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
         let snap = mgr.query(Some(&SearchQuery::new()), None, None).unwrap();
         assert_eq!(snap.total_count(), 5);
@@ -1098,12 +1125,11 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
         let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
-        assert_eq!(snap.all_stacks()[0].name, "IMG_001");
+        assert_eq!(snap.all_stacks()[0].name(), "IMG_001");
     }
 
     #[test]
@@ -1125,7 +1151,6 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_has_back(true);
         let snap = mgr.query(Some(&query), None, None).unwrap();
@@ -1168,12 +1193,11 @@ mod tests {
         let repo = LocalRepository::new(tmp.path());
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
-        mgr.rescan(None).unwrap();
 
         let query = SearchQuery::new().with_text("IMG_001");
         let snap = mgr.query(Some(&query), None, None).unwrap();
         assert_eq!(snap.total_count(), 1);
-        assert_eq!(snap.all_stacks()[0].name, "IMG_001");
+        assert_eq!(snap.all_stacks()[0].name(), "IMG_001");
     }
 
     #[test]
@@ -1200,7 +1224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rescan_replaces_cache() {
+    fn test_invalidate_and_requery() {
         let tmp = TempDir::new().unwrap();
         setup_test_dir(&tmp, &["IMG_001.jpg", "IMG_002.jpg"]);
 
@@ -1208,8 +1232,14 @@ mod tests {
         let mut mgr =
             StackManager::single(Box::new(repo), ScannerProfile::EnhancedAndBack).unwrap();
 
-        let count = mgr.rescan(None).unwrap();
-        assert_eq!(count, 2);
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 2);
+        assert_eq!(mgr.len(), 2);
+
+        // Invalidate and re-query to repopulate
+        mgr.invalidate_cache();
+        let result = mgr.query(None, None, None).unwrap();
+        assert_eq!(result.total_count(), 2);
         assert_eq!(mgr.len(), 2);
     }
 
@@ -1226,8 +1256,8 @@ mod tests {
         assert!(mgr.is_empty());
         assert_eq!(mgr.len(), 0);
 
-        // After scan
-        mgr.rescan(None).unwrap();
+        // After scan (query auto-scans)
+        mgr.query(None, None, None).unwrap();
         assert!(!mgr.is_empty());
         assert_eq!(mgr.len(), 1);
     }

@@ -1,6 +1,7 @@
 //! Paginated query result with cursor navigation.
 
 use crate::photo_stack::PhotoStack;
+use crate::search::SearchQuery;
 use crate::snapshot::ScanSnapshot;
 
 /// Paginated query result wrapping a [`ScanSnapshot`].
@@ -16,13 +17,13 @@ use crate::snapshot::ScanSnapshot;
 /// // Iterate current page
 /// let result = /* from query */;
 /// for stack in result.current_page() {
-///     println!("{}", stack.name);
+///     println!("{}", stack.name());
 /// }
 ///
 /// // Navigate pages
-/// while result.next_page() {
-///     for stack in result.current_page() {
-///         println!("{}", stack.name);
+/// while let Some(page) = result.next_page() {
+///     for stack in page {
+///         println!("{}", stack.name());
 ///     }
 /// }
 /// ```
@@ -93,33 +94,33 @@ impl QueryResult {
         Some(&self.snapshot.stacks()[start..end])
     }
 
-    /// Advance to the next page. Returns `true` if a next page existed.
-    pub fn next_page(&mut self) -> bool {
+    /// Advance to the next page. Returns the page, or `None` if already on the last page.
+    pub fn next_page(&mut self) -> Option<&[PhotoStack]> {
         if self.current_page_index + 1 < self.page_count() {
             self.current_page_index += 1;
-            true
+            Some(self.current_page())
         } else {
-            false
+            None
         }
     }
 
-    /// Go back to the previous page. Returns `true` if a previous page existed.
-    pub fn prev_page(&mut self) -> bool {
+    /// Go back to the previous page. Returns the page, or `None` if already on the first page.
+    pub fn prev_page(&mut self) -> Option<&[PhotoStack]> {
         if self.current_page_index > 0 {
             self.current_page_index -= 1;
-            true
+            Some(self.current_page())
         } else {
-            false
+            None
         }
     }
 
-    /// Jump to a specific page. Returns `true` if the page exists.
-    pub fn set_page(&mut self, page_index: usize) -> bool {
+    /// Jump to a specific page. Returns the page, or `None` if the index is out of range.
+    pub fn set_page(&mut self, page_index: usize) -> Option<&[PhotoStack]> {
         if page_index < self.page_count() {
             self.current_page_index = page_index;
-            true
+            Some(self.current_page())
         } else {
-            false
+            None
         }
     }
 
@@ -163,6 +164,35 @@ impl QueryResult {
     pub fn all_stacks(&self) -> &[PhotoStack] {
         self.snapshot.stacks()
     }
+
+    /// Sub-query this result, producing a new [`QueryResult`] filtered
+    /// from the internal snapshot.
+    ///
+    /// This enables composable queries: start with a broad query from
+    /// [`StackManager::query()`](crate::stack_manager::StackManager::query),
+    /// then narrow down with additional filters.
+    ///
+    /// # Arguments
+    ///
+    /// - `query` — filter criteria (None matches all stacks in this result)
+    /// - `page_size` — page size for the new result (None inherits parent's)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Get all stacks, then sub-query for those with back scans
+    /// let all = mgr.query(None, Some(20), None)?;
+    /// let with_backs = all.query(
+    ///     Some(&SearchQuery::new().with_has_back(true)),
+    ///     None,
+    /// );
+    /// ```
+    pub fn query(&self, query: Option<&SearchQuery>, page_size: Option<usize>) -> QueryResult {
+        let default_query = SearchQuery::new();
+        let q = query.unwrap_or(&default_query);
+        let filtered = self.snapshot.filter(q);
+        QueryResult::new(filtered, page_size.unwrap_or(self.page_size))
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +222,7 @@ mod tests {
     #[test]
     fn test_empty_result_next_page() {
         let mut result = make_result(0, 10);
-        assert!(!result.next_page());
+        assert!(result.next_page().is_none());
     }
 
     #[test]
@@ -224,27 +254,28 @@ mod tests {
         let mut result = make_result(25, 10);
 
         assert_eq!(result.current_page_index(), 0);
-        assert!(result.next_page());
-        assert_eq!(result.current_page_index(), 1);
-        assert_eq!(result.current_page().len(), 10);
 
-        assert!(result.next_page());
+        // Advance to page 1
+        assert_eq!(result.next_page().unwrap().len(), 10);
+        assert_eq!(result.current_page_index(), 1);
+
+        // Advance to page 2 (last, partial)
+        assert_eq!(result.next_page().unwrap().len(), 5);
         assert_eq!(result.current_page_index(), 2);
-        assert_eq!(result.current_page().len(), 5);
 
         // Can't go further
-        assert!(!result.next_page());
+        assert!(result.next_page().is_none());
         assert_eq!(result.current_page_index(), 2);
 
         // Go back
-        assert!(result.prev_page());
+        assert_eq!(result.prev_page().unwrap().len(), 10);
         assert_eq!(result.current_page_index(), 1);
 
-        assert!(result.prev_page());
+        assert!(result.prev_page().is_some());
         assert_eq!(result.current_page_index(), 0);
 
         // Can't go before 0
-        assert!(!result.prev_page());
+        assert!(result.prev_page().is_none());
         assert_eq!(result.current_page_index(), 0);
     }
 
@@ -252,18 +283,17 @@ mod tests {
     fn test_set_page() {
         let mut result = make_result(25, 10);
 
-        assert!(result.set_page(2));
+        assert_eq!(result.set_page(2).unwrap().len(), 5);
         assert_eq!(result.current_page_index(), 2);
-        assert_eq!(result.current_page().len(), 5);
 
-        assert!(result.set_page(0));
+        assert!(result.set_page(0).is_some());
         assert_eq!(result.current_page_index(), 0);
 
         // Invalid page
-        assert!(!result.set_page(3));
+        assert!(result.set_page(3).is_none());
         assert_eq!(result.current_page_index(), 0); // unchanged
 
-        assert!(!result.set_page(100));
+        assert!(result.set_page(100).is_none());
     }
 
     #[test]
@@ -272,15 +302,15 @@ mod tests {
 
         let page0 = result.get_page(0).unwrap();
         assert_eq!(page0.len(), 10);
-        assert_eq!(page0[0].name, "stack_0");
+        assert_eq!(page0[0].name(), "stack_0");
 
         let page1 = result.get_page(1).unwrap();
         assert_eq!(page1.len(), 10);
-        assert_eq!(page1[0].name, "stack_10");
+        assert_eq!(page1[0].name(), "stack_10");
 
         let page2 = result.get_page(2).unwrap();
         assert_eq!(page2.len(), 5);
-        assert_eq!(page2[0].name, "stack_20");
+        assert_eq!(page2[0].name(), "stack_20");
 
         // Out of range
         assert!(result.get_page(3).is_none());
@@ -293,25 +323,25 @@ mod tests {
 
         // Page 0: stack_0, stack_1
         let s0 = result.next_stack().unwrap();
-        assert_eq!(s0.name, "stack_0");
+        assert_eq!(s0.name(), "stack_0");
         assert_eq!(result.current_page_index(), 0);
 
         let s1 = result.next_stack().unwrap();
-        assert_eq!(s1.name, "stack_1");
+        assert_eq!(s1.name(), "stack_1");
         assert_eq!(result.current_page_index(), 0);
 
         // Page 1: stack_2, stack_3
         let s2 = result.next_stack().unwrap();
-        assert_eq!(s2.name, "stack_2");
+        assert_eq!(s2.name(), "stack_2");
         assert_eq!(result.current_page_index(), 1);
 
         let s3 = result.next_stack().unwrap();
-        assert_eq!(s3.name, "stack_3");
+        assert_eq!(s3.name(), "stack_3");
         assert_eq!(result.current_page_index(), 1);
 
         // Page 2: stack_4
         let s4 = result.next_stack().unwrap();
-        assert_eq!(s4.name, "stack_4");
+        assert_eq!(s4.name(), "stack_4");
         assert_eq!(result.current_page_index(), 2);
 
         // No more
@@ -331,7 +361,7 @@ mod tests {
         assert_eq!(result.current_page_index(), 0);
 
         let s0 = result.next_stack().unwrap();
-        assert_eq!(s0.name, "stack_0");
+        assert_eq!(s0.name(), "stack_0");
 
         // Can iterate all again
         let mut count = 1;
@@ -361,8 +391,8 @@ mod tests {
     fn test_all_stacks() {
         let result = make_result(5, 2);
         assert_eq!(result.all_stacks().len(), 5);
-        assert_eq!(result.all_stacks()[0].name, "stack_0");
-        assert_eq!(result.all_stacks()[4].name, "stack_4");
+        assert_eq!(result.all_stacks()[0].name(), "stack_0");
+        assert_eq!(result.all_stacks()[4].name(), "stack_4");
     }
 
     #[test]
@@ -371,5 +401,92 @@ mod tests {
         let snap = result.snapshot();
         assert_eq!(snap.total_count(), 3);
         assert_eq!(snap.stacks().len(), 3);
+    }
+
+    // ── sub-query tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_sub_query_no_filter() {
+        let result = make_result(5, 10);
+        let sub = result.query(None, None);
+        assert_eq!(sub.total_count(), 5);
+        assert_eq!(sub.page_size(), 10); // inherits parent's page_size
+    }
+
+    #[test]
+    fn test_sub_query_inherits_page_size() {
+        let result = make_result(10, 3);
+        let sub = result.query(None, None);
+        assert_eq!(sub.page_size(), 3);
+    }
+
+    #[test]
+    fn test_sub_query_overrides_page_size() {
+        let result = make_result(10, 3);
+        let sub = result.query(None, Some(5));
+        assert_eq!(sub.page_size(), 5);
+    }
+
+    #[test]
+    fn test_sub_query_filter_by_ids() {
+        let result = make_result(5, 10);
+        let sub = result.query(
+            Some(&SearchQuery::new().with_ids(vec!["stack_1".into(), "stack_3".into()])),
+            None,
+        );
+        assert_eq!(sub.total_count(), 2);
+        assert_eq!(sub.all_stacks()[0].name(), "stack_1");
+        assert_eq!(sub.all_stacks()[1].name(), "stack_3");
+    }
+
+    #[test]
+    fn test_sub_query_with_text() {
+        let result = make_result(10, 5);
+        let sub = result.query(Some(&SearchQuery::new().with_text("stack_7")), None);
+        assert_eq!(sub.total_count(), 1);
+        assert_eq!(sub.all_stacks()[0].name(), "stack_7");
+    }
+
+    #[test]
+    fn test_sub_query_empty_result() {
+        let result = make_result(5, 10);
+        let sub = result.query(Some(&SearchQuery::new().with_text("nonexistent")), None);
+        assert_eq!(sub.total_count(), 0);
+        assert!(sub.all_stacks().is_empty());
+    }
+
+    #[test]
+    fn test_chained_sub_queries() {
+        // Start with 10 stacks
+        let result = make_result(10, 5);
+        assert_eq!(result.total_count(), 10);
+
+        // First sub-query: stacks 0-4
+        let sub1 = result.query(
+            Some(&SearchQuery::new().with_ids((0..5).map(|i| format!("stack_{i}")).collect())),
+            None,
+        );
+        assert_eq!(sub1.total_count(), 5);
+
+        // Second sub-query on sub1: just stack_2
+        let sub2 = sub1.query(
+            Some(&SearchQuery::new().with_ids(vec!["stack_2".into()])),
+            None,
+        );
+        assert_eq!(sub2.total_count(), 1);
+        assert_eq!(sub2.all_stacks()[0].name(), "stack_2");
+    }
+
+    #[test]
+    fn test_sub_query_with_pagination() {
+        let result = make_result(10, 100);
+        let sub = result.query(
+            Some(&SearchQuery::new().with_ids((0..6).map(|i| format!("stack_{i}")).collect())),
+            Some(2),
+        );
+        assert_eq!(sub.total_count(), 6);
+        assert_eq!(sub.page_count(), 3);
+        assert_eq!(sub.current_page().len(), 2);
+        assert!(sub.has_more());
     }
 }

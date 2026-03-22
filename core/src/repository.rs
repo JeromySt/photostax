@@ -147,9 +147,9 @@ pub enum RepositoryError {
 /// println!("Found {} stacks", stacks.len());
 ///
 /// // Metadata is loaded lazily via the handle
-/// let mut stack = stacks.into_iter().next().unwrap();
-/// let meta = stack.metadata.read()?;
-/// println!("{} (id={}): {} EXIF tags", stack.name, stack.id, meta.exif_tags.len());
+/// let stack = stacks.into_iter().next().unwrap();
+/// let meta = stack.metadata().read()?;
+/// println!("{} (id={}): {} EXIF tags", stack.name(), stack.id(), meta.exif_tags.len());
 /// # Ok::<(), photostax_core::repository::RepositoryError>(())
 /// ```
 ///
