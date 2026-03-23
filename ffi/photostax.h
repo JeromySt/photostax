@@ -333,6 +333,13 @@ typedef struct FfiProviderCallbacks {
    * Close a write stream.
    */
   void (*close_write)(void *ctx, uint64_t handle);
+  /**
+   * Whether the repository supports write operations.
+   *
+   * Return `true` for read-write repos, `false` for read-only.
+   * When null, defaults to `true` (writable).
+   */
+  bool (*is_writable)(void *ctx);
 } FfiProviderCallbacks;
 
 /**
@@ -635,6 +642,18 @@ char *photostax_stack_name(const struct PhotostaxStack *stack);
  * - Caller owns the returned string and must call [`photostax_string_free`]
  */
 char *photostax_stack_folder(const struct PhotostaxStack *stack);
+
+/**
+ * Return whether the stack is writable (supports rotate, delete, metadata write).
+ *
+ * Returns false if the stack pointer is null or the stack comes from a
+ * read-only repository.
+ *
+ * # Safety
+ *
+ * - `stack` must be a valid pointer or null
+ */
+bool photostax_stack_is_writable(const struct PhotostaxStack *stack);
 
 /**
  * Check whether an image variant is present in the stack.

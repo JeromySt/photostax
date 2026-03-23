@@ -28,6 +28,12 @@ public interface IRepositoryProvider
     /// Open a file for writing.
     /// </summary>
     Stream OpenWrite(string path);
+
+    /// <summary>
+    /// Whether this repository supports write operations (rotate, delete, metadata write).
+    /// Defaults to true when not explicitly implemented.
+    /// </summary>
+    bool IsWritable => true;
 }
 
 /// <summary>

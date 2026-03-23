@@ -49,6 +49,19 @@ public sealed class PhotoStack : IDisposable
     /// <summary>Gets whether this stack has any image variant present.</summary>
     public bool HasAnyImage => ImagesPresent != ImageVariants.None;
 
+    /// <summary>
+    /// Gets whether this stack supports write operations (rotate, delete, metadata write, swap).
+    /// Returns false when the stack comes from a read-only repository.
+    /// </summary>
+    public bool IsWritable
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return NativeMethods.photostax_stack_is_writable(Handle);
+        }
+    }
+
     internal PhotoStack(IntPtr handle)
     {
         Handle = handle != IntPtr.Zero ? handle

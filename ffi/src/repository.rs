@@ -620,6 +620,26 @@ pub unsafe extern "C" fn photostax_stack_folder(stack: *const PhotostaxStack) ->
     result.unwrap_or(ptr::null_mut())
 }
 
+/// Return whether the stack is writable (supports rotate, delete, metadata write).
+///
+/// Returns false if the stack pointer is null or the stack comes from a
+/// read-only repository.
+///
+/// # Safety
+///
+/// - `stack` must be a valid pointer or null
+#[no_mangle]
+pub unsafe extern "C" fn photostax_stack_is_writable(stack: *const PhotostaxStack) -> bool {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if stack.is_null() {
+            return false;
+        }
+        let inner = unsafe { &*stack };
+        inner.inner.is_writable()
+    }));
+    result.unwrap_or(false)
+}
+
 // ── ImageRef FFI ─────────────────────────────────────────────────────────────
 
 /// Check whether an image variant is present in the stack.

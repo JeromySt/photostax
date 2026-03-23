@@ -221,6 +221,13 @@ internal static partial class NativeMethods
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr photostax_stack_folder(IntPtr stack);
 
+    /// <summary>
+    /// Check whether the stack supports write operations (rotate, delete, metadata write).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool photostax_stack_is_writable(IntPtr stack);
+
     // ── Image variant functions ───────────────────────────────────
 
     /// <summary>

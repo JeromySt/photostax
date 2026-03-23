@@ -99,6 +99,14 @@ pub trait RepositoryProvider: Send + Sync {
     ///
     /// Returns a writer. Only one writer should be active for a given path.
     fn open_write(&self, path: &str) -> io::Result<Box<dyn Write + Send>>;
+
+    /// Whether this repository supports write operations.
+    ///
+    /// Defaults to `true`. Host-language backends that are read-only should
+    /// return `false`.
+    fn is_writable(&self) -> bool {
+        true
+    }
 }
 
 /// A repository backed by a host-language-provided [`RepositoryProvider`].
@@ -172,10 +180,12 @@ impl Repository for ForeignRepository {
         let mut stacks = scanner::scan_entries(&entries, &self.config, self.provider.location());
 
         let stack_count = stacks.len();
+        let writable = self.is_writable();
         for (i, stack) in stacks.iter_mut().enumerate() {
             {
                 let mut inner = stack.inner.write().unwrap();
                 inner.location = inner.folder.clone();
+                inner.writable = writable;
             }
 
             if let Some(ref mut cb) = progress {
@@ -244,6 +254,10 @@ impl Repository for ForeignRepository {
         // Host languages can implement their own polling/notification mechanism.
         let (_tx, rx) = std::sync::mpsc::channel();
         Ok(rx)
+    }
+
+    fn is_writable(&self) -> bool {
+        self.provider.is_writable()
     }
 }
 

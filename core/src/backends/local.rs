@@ -302,10 +302,11 @@ impl Repository for LocalRepository {
         let stack_count = stacks.len();
 
         for (i, stack) in stacks.iter_mut().enumerate() {
-            // Set location for sidecar resolution
+            // Set location for sidecar resolution and writability
             {
                 let mut inner = stack.inner.write().unwrap();
                 inner.location = inner.folder.clone();
+                inner.writable = self.is_writable();
             }
 
             // Attach a metadata handle that knows how to lazily load
@@ -372,6 +373,20 @@ impl Repository for LocalRepository {
     fn subscribe(&self) -> Result<std::sync::mpsc::Receiver<RepoEvent>, RepositoryError> {
         let (_tx, rx) = std::sync::mpsc::channel();
         Ok(rx)
+    }
+
+    fn is_writable(&self) -> bool {
+        // Probe actual write access by attempting to create a temp file.
+        // This is the most reliable cross-platform check — metadata/ACL
+        // queries can be misleading, especially on Windows and network mounts.
+        let probe = self.root.join(".photostax_write_probe");
+        match std::fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
