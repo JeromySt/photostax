@@ -387,6 +387,13 @@ impl JsPhotoStack {
         self.stack.has_any_image()
     }
 
+    /// Whether this stack supports write operations (rotate, delete, metadata write, swap).
+    /// Returns false when the stack comes from a read-only repository.
+    #[napi(getter)]
+    pub fn is_writable(&self) -> bool {
+        self.stack.is_writable()
+    }
+
     /// Accessor for the original (raw scan) image.
     #[napi(getter)]
     pub fn original(&self) -> JsImageRef {

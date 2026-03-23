@@ -1519,13 +1519,34 @@ mod tests {
             .join("testdata")
     }
 
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> tempfile::TempDir {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
+
     /// Copy testdata to a temp dir for write operations
     fn copy_testdata_to_tempdir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         for entry in std::fs::read_dir(testdata_path()).unwrap() {
             let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_file() {
-                std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                // Ignore NotFound — file may vanish between read_dir and copy
+                // (e.g., probe files from concurrent is_writable() checks).
+                match std::fs::copy(entry.path(), dir.path().join(entry.file_name())) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => panic!("failed to copy testdata file: {e}"),
+                }
             }
         }
         dir
@@ -2494,7 +2515,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_export_to_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         let output_file = dir.path().join("export.json");
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -2525,7 +2546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_scan_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_scan(
@@ -3011,7 +3032,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_rotate_success() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
         create_test_image_jpeg(&dir.path().join("IMG_001_a.jpg"), 4, 2);
 
@@ -3036,7 +3057,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_rotate_negative_90() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
         let mut out = Vec::new();
@@ -3058,7 +3079,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_rotate_180() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
         let mut out = Vec::new();
@@ -3097,7 +3118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_rotate_not_found() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         let mut out = Vec::new();
         let mut err = Vec::new();
         let code = cmd_rotate(
@@ -3115,7 +3136,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_rotate_json_output() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
         let mut out = Vec::new();

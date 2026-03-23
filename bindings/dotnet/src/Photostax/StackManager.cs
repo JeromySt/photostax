@@ -25,6 +25,7 @@ internal sealed class ProviderBridge
     internal readonly OpenWriteDelegate OpenWriteDelegate;
     internal readonly WriteDelegate WriteDelegate;
     internal readonly CloseWriteDelegate CloseWriteDelegate;
+    internal readonly IsWritableDelegate IsWritableDelegate;
 
     public ProviderBridge(IRepositoryProvider provider)
     {
@@ -38,6 +39,7 @@ internal sealed class ProviderBridge
         OpenWriteDelegate = OnOpenWrite;
         WriteDelegate = OnWrite;
         CloseWriteDelegate = OnCloseWrite;
+        IsWritableDelegate = OnIsWritable;
     }
 
     private ulong AllocateHandle(Stream stream)
@@ -195,6 +197,11 @@ internal sealed class ProviderBridge
         if (_streams.Remove(handle, out var stream))
             stream.Dispose();
     }
+
+    private bool OnIsWritable(IntPtr ctx)
+    {
+        return _provider.IsWritable;
+    }
 }
 
 /// <summary>
@@ -328,6 +335,7 @@ public sealed class StackManager : IDisposable
                 OpenWrite = Marshal.GetFunctionPointerForDelegate(bridge.OpenWriteDelegate),
                 Write = Marshal.GetFunctionPointerForDelegate(bridge.WriteDelegate),
                 CloseWrite = Marshal.GetFunctionPointerForDelegate(bridge.CloseWriteDelegate),
+                IsWritable = Marshal.GetFunctionPointerForDelegate(bridge.IsWritableDelegate),
             };
 
             var result = NativeMethods.photostax_manager_add_foreign_repo(

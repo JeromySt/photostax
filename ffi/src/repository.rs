@@ -620,6 +620,26 @@ pub unsafe extern "C" fn photostax_stack_folder(stack: *const PhotostaxStack) ->
     result.unwrap_or(ptr::null_mut())
 }
 
+/// Return whether the stack is writable (supports rotate, delete, metadata write).
+///
+/// Returns false if the stack pointer is null or the stack comes from a
+/// read-only repository.
+///
+/// # Safety
+///
+/// - `stack` must be a valid pointer or null
+#[no_mangle]
+pub unsafe extern "C" fn photostax_stack_is_writable(stack: *const PhotostaxStack) -> bool {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        if stack.is_null() {
+            return false;
+        }
+        let inner = unsafe { &*stack };
+        inner.inner.is_writable()
+    }));
+    result.unwrap_or(false)
+}
+
 // ── ImageRef FFI ─────────────────────────────────────────────────────────────
 
 /// Check whether an image variant is present in the stack.
@@ -1366,6 +1386,39 @@ mod tests {
             .join("testdata")
     }
 
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> tempfile::TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
+
+    /// Helper: create a temp dir pre-populated with a copy of testdata files.
+    fn tempdir_with_testdata() -> tempfile::TempDir {
+        let dir = stable_tempdir();
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                // Ignore NotFound — file may vanish between read_dir and copy
+                // (e.g., probe files from concurrent is_writable() checks).
+                match std::fs::copy(entry.path(), dir.path().join(entry.file_name())) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => panic!("failed to copy testdata file: {e}"),
+                }
+            }
+        }
+        dir
+    }
+
     /// Helper: open repo at testdata
     fn open_testdata_repo() -> *mut PhotostaxRepo {
         let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
@@ -1515,7 +1568,7 @@ mod tests {
 
     #[test]
     fn test_repo_scan_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
         assert!(!repo.is_null());
@@ -1828,7 +1881,7 @@ mod tests {
 
     #[test]
     fn test_image_rotate_invalid_degrees() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
 
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
@@ -1848,7 +1901,7 @@ mod tests {
 
     #[test]
     fn test_image_rotate_happy_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         create_test_image_jpeg(&dir.path().join("IMG_001.jpg"), 4, 2);
         create_test_image_jpeg(&dir.path().join("IMG_001_a.jpg"), 4, 2);
 
@@ -2016,13 +2069,7 @@ mod tests {
 
     #[test]
     fn test_metadata_write_happy_path() {
-        let dir = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(testdata_path()).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_file() {
-                std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
-            }
-        }
+        let dir = tempdir_with_testdata();
 
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
@@ -2249,15 +2296,8 @@ mod tests {
 
     #[test]
     fn test_manager_add_multiple_repos() {
-        let dir1 = tempfile::tempdir().unwrap();
-        let dir2 = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(testdata_path()).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_file() {
-                std::fs::copy(entry.path(), dir1.path().join(entry.file_name())).unwrap();
-                std::fs::copy(entry.path(), dir2.path().join(entry.file_name())).unwrap();
-            }
-        }
+        let dir1 = tempdir_with_testdata();
+        let dir2 = tempdir_with_testdata();
 
         let mgr = unsafe { photostax_manager_new() };
         let path1 = CString::new(dir1.path().to_str().unwrap()).unwrap();
@@ -2277,15 +2317,8 @@ mod tests {
 
     #[test]
     fn test_manager_query_across_repos() {
-        let dir1 = tempfile::tempdir().unwrap();
-        let dir2 = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(testdata_path()).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_file() {
-                std::fs::copy(entry.path(), dir1.path().join(entry.file_name())).unwrap();
-                std::fs::copy(entry.path(), dir2.path().join(entry.file_name())).unwrap();
-            }
-        }
+        let dir1 = tempdir_with_testdata();
+        let dir2 = tempdir_with_testdata();
 
         let mgr = unsafe { photostax_manager_new() };
         let path1 = CString::new(dir1.path().to_str().unwrap()).unwrap();

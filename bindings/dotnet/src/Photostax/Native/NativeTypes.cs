@@ -286,6 +286,10 @@ internal delegate FfiWriteResult WriteDelegate(IntPtr ctx, ulong handle, IntPtr 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate void CloseWriteDelegate(IntPtr ctx, ulong handle);
 
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+[return: MarshalAs(UnmanagedType.U1)]
+internal delegate bool IsWritableDelegate(IntPtr ctx);
+
 /// <summary>
 /// Callback function pointers for a foreign repository provider.
 /// Field order must match the C header exactly.
@@ -304,4 +308,5 @@ internal struct FfiProviderCallbacks
     public IntPtr OpenWrite;
     public IntPtr Write;
     public IntPtr CloseWrite;
+    public IntPtr IsWritable;
 }

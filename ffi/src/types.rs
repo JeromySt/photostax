@@ -318,6 +318,12 @@ pub struct FfiProviderCallbacks {
 
     /// Close a write stream.
     pub close_write: unsafe extern "C" fn(ctx: *mut std::os::raw::c_void, handle: u64),
+
+    /// Whether the repository supports write operations.
+    ///
+    /// Return `true` for read-write repos, `false` for read-only.
+    /// When null, defaults to `true` (writable).
+    pub is_writable: Option<unsafe extern "C" fn(ctx: *mut std::os::raw::c_void) -> bool>,
 }
 
 #[cfg(test)]

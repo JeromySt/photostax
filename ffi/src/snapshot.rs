@@ -389,6 +389,21 @@ mod tests {
             .join("testdata")
     }
 
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> tempfile::TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
+
     fn open_testdata_repo() -> *mut PhotostaxRepo {
         let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repo_open(path.as_ptr()) };
@@ -487,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_check_status_after_change() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = stable_tempdir();
         let dir = tmp.path();
         std::fs::write(dir.join("IMG_001.jpg"), b"fake").unwrap();
 

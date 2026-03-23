@@ -115,6 +115,13 @@ pub enum RepositoryError {
     /// The operation was cancelled via a [`CancellationToken`](tokio_util::sync::CancellationToken).
     #[error("operation cancelled")]
     Cancelled,
+
+    /// The repository is read-only and does not support write operations.
+    ///
+    /// Returned when a mutation (rotate, delete, metadata write, swap) is
+    /// attempted on a stack from a read-only repository.
+    #[error("repository is read-only: {0}")]
+    ReadOnly(String),
 }
 
 /// Abstraction over a storage backend containing Epson FastFoto photo stacks.
@@ -239,6 +246,20 @@ pub trait Repository: FileAccess + Send + Sync {
     fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
         let (_tx, rx) = std::sync::mpsc::channel();
         Ok(rx)
+    }
+
+    /// Whether this repository supports write operations (rotate, delete,
+    /// metadata write, swap).
+    ///
+    /// Read-only repositories can still be scanned and queried. Any write
+    /// attempt on a stack from a read-only repository returns
+    /// [`RepositoryError::ReadOnly`].
+    ///
+    /// Defaults to `true`. Backends that are inherently read-only (e.g.,
+    /// archive volumes, network shares without write access) should return
+    /// `false`.
+    fn is_writable(&self) -> bool {
+        true
     }
 }
 

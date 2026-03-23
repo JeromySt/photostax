@@ -368,6 +368,7 @@ pub(crate) struct PhotoStackInner {
     pub(crate) folder: Option<String>,
     pub(crate) repo_id: Option<String>,
     pub(crate) location: Option<String>,
+    pub(crate) writable: bool,
     pub(crate) original: ImageRef,
     pub(crate) enhanced: ImageRef,
     pub(crate) back: ImageRef,
@@ -491,6 +492,11 @@ impl<'a> ImageProxy<'a> {
     /// Rotate the image on disk.
     pub fn rotate(&self, rotation: Rotation) -> Result<(), RepositoryError> {
         let inner = self.inner.read().unwrap();
+        if !inner.writable {
+            return Err(RepositoryError::ReadOnly(
+                "cannot rotate an image on a read-only stack".into(),
+            ));
+        }
         self.get(&inner).rotate(rotation)
     }
 
@@ -503,6 +509,11 @@ impl<'a> ImageProxy<'a> {
     /// Deletes the backing file from disk and invalidates the handle.
     pub fn delete(&self) -> Result<(), RepositoryError> {
         let inner = self.inner.read().unwrap();
+        if !inner.writable {
+            return Err(RepositoryError::ReadOnly(
+                "cannot delete an image on a read-only stack".into(),
+            ));
+        }
         self.get(&inner).delete()
     }
 
@@ -566,6 +577,11 @@ impl<'a> MetadataProxy<'a> {
     /// Write metadata to the backing store.
     pub fn write(&self, tags: &Metadata) -> Result<(), RepositoryError> {
         let inner = self.inner.read().unwrap();
+        if !inner.writable {
+            return Err(RepositoryError::ReadOnly(
+                "cannot write metadata on a read-only stack".into(),
+            ));
+        }
         inner.metadata.write(tags)
     }
 
@@ -743,6 +759,7 @@ impl PhotoStack {
                 folder: None,
                 repo_id: None,
                 location: None,
+                writable: true,
                 original: ImageRef::absent(),
                 enhanced: ImageRef::absent(),
                 back: ImageRef::absent(),
@@ -776,6 +793,14 @@ impl PhotoStack {
     /// Base directory where this stack's files live.
     pub fn location(&self) -> Option<String> {
         self.inner.read().unwrap().location.clone()
+    }
+
+    /// Whether this stack supports write operations (rotate, delete,
+    /// metadata write, swap).
+    ///
+    /// Returns `false` when the stack comes from a read-only repository.
+    pub fn is_writable(&self) -> bool {
+        self.inner.read().unwrap().writable
     }
 
     // ── Sub-object proxies ──────────────────────────────────────────────
@@ -903,6 +928,11 @@ impl PhotoStack {
     /// backend.
     pub fn swap_front_back(&self) -> Result<(), RepositoryError> {
         let mut inner = self.inner.write().unwrap();
+        if !inner.writable {
+            return Err(RepositoryError::ReadOnly(
+                "cannot swap front/back on a read-only stack".into(),
+            ));
+        }
         if !inner.back.is_present() {
             return Err(RepositoryError::Other(
                 "Cannot swap front/back: back image is not present".into(),
@@ -1292,5 +1322,83 @@ mod tests {
         assert!(result.is_ok());
         assert!(stack.original().is_present());
         assert!(!stack.back().is_present());
+    }
+
+    #[test]
+    fn test_read_only_stack_blocks_rotate() {
+        let stack = PhotoStack::new("test");
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = mock_ref();
+            inner.writable = false;
+        }
+        let err = stack.original().rotate(Rotation::Cw90).unwrap_err();
+        assert!(matches!(err, RepositoryError::ReadOnly(_)));
+        assert!(err.to_string().contains("read-only"));
+    }
+
+    #[test]
+    fn test_read_only_stack_blocks_delete() {
+        let stack = PhotoStack::new("test");
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = mock_ref();
+            inner.writable = false;
+        }
+        let err = stack.original().delete().unwrap_err();
+        assert!(matches!(err, RepositoryError::ReadOnly(_)));
+    }
+
+    #[test]
+    fn test_read_only_stack_blocks_metadata_write() {
+        let stack = PhotoStack::new("test");
+        stack.inner.write().unwrap().writable = false;
+        let err = stack.metadata().write(&Metadata::default()).unwrap_err();
+        assert!(matches!(err, RepositoryError::ReadOnly(_)));
+    }
+
+    #[test]
+    fn test_read_only_stack_blocks_swap_front_back() {
+        let stack = PhotoStack::new("test");
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.original = mock_ref();
+            inner.back = mock_ref();
+            inner.writable = false;
+        }
+        let err = stack.swap_front_back().unwrap_err();
+        assert!(matches!(err, RepositoryError::ReadOnly(_)));
+    }
+
+    #[test]
+    fn test_writable_stack_allows_operations() {
+        let stack = PhotoStack::new("test");
+        assert!(stack.is_writable());
+        // Default stacks are writable — operations pass the writable check
+        // (they may still fail at the I/O level, but NOT with ReadOnly)
+        {
+            let mut inner = stack.inner.write().unwrap();
+            inner.writable = true;
+            inner.original = mock_ref();
+        }
+        // Rotate on a mock handle succeeds (no real file to open)
+        // The important thing is it doesn't return ReadOnly
+        let result = stack.original().rotate(Rotation::Cw90);
+        assert!(
+            !matches!(result, Err(RepositoryError::ReadOnly(_))),
+            "writable stack should not return ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_is_writable_reflects_inner_flag() {
+        let stack = PhotoStack::new("test");
+        assert!(stack.is_writable());
+
+        stack.inner.write().unwrap().writable = false;
+        assert!(!stack.is_writable());
+
+        stack.inner.write().unwrap().writable = true;
+        assert!(stack.is_writable());
     }
 }

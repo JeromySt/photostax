@@ -148,6 +148,13 @@ impl RepositoryProvider for FfiRepositoryProvider {
             closed: false,
         }))
     }
+
+    fn is_writable(&self) -> bool {
+        match self.callbacks.is_writable {
+            Some(f) => unsafe { f(self.callbacks.ctx) },
+            None => true,
+        }
+    }
 }
 
 /// A reader that delegates to FFI callback function pointers.
@@ -526,6 +533,7 @@ mod tests {
             open_write: mock_open_write,
             write: mock_write,
             close_write: mock_close_write,
+            is_writable: None,
         };
         (callbacks, location_ptr)
     }
