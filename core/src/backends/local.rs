@@ -93,6 +93,7 @@ pub struct LocalRepository {
     repo_id: String,
     generation: AtomicU64,
     classifier: Option<Arc<dyn ImageClassifier>>,
+    writable: bool,
 }
 
 impl LocalRepository {
@@ -116,6 +117,7 @@ impl LocalRepository {
         let root: PathBuf = root.into();
         let location = Self::compute_location(&root);
         let repo_id = crate::hashing::make_stack_id(&location, "", "");
+        let writable = Self::probe_writable(&root);
         Self {
             root,
             config: ScannerConfig::default(),
@@ -123,6 +125,7 @@ impl LocalRepository {
             repo_id,
             generation: AtomicU64::new(0),
             classifier: None,
+            writable,
         }
     }
 
@@ -146,6 +149,7 @@ impl LocalRepository {
         let root: PathBuf = root.into();
         let location = Self::compute_location(&root);
         let repo_id = crate::hashing::make_stack_id(&location, "", "");
+        let writable = Self::probe_writable(&root);
         Self {
             root,
             config,
@@ -153,6 +157,7 @@ impl LocalRepository {
             repo_id,
             generation: AtomicU64::new(0),
             classifier: None,
+            writable,
         }
     }
 
@@ -259,6 +264,20 @@ impl LocalRepository {
             let _ = stack.inner.write().unwrap().metadata.read()?;
         }
         Ok(stacks)
+    }
+
+    /// Probe actual write access by attempting to create a temp file.
+    /// This is the most reliable cross-platform check — metadata/ACL
+    /// queries can be misleading, especially on Windows and network mounts.
+    fn probe_writable(root: &Path) -> bool {
+        let probe = root.join(".photostax_write_probe");
+        match std::fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -376,17 +395,7 @@ impl Repository for LocalRepository {
     }
 
     fn is_writable(&self) -> bool {
-        // Probe actual write access by attempting to create a temp file.
-        // This is the most reliable cross-platform check — metadata/ACL
-        // queries can be misleading, especially on Windows and network mounts.
-        let probe = self.root.join(".photostax_write_probe");
-        match std::fs::File::create(&probe) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&probe);
-                true
-            }
-            Err(_) => false,
-        }
+        self.writable
     }
 
     fn watch(&self) -> Result<std::sync::mpsc::Receiver<StackEvent>, RepositoryError> {
@@ -500,6 +509,21 @@ mod tests {
     use std::fs;
     use std::io::Read;
     use tempfile::TempDir;
+
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
 
     /// Scan and find a stack by its display name.
     fn find_stack_by_name(
@@ -1269,7 +1293,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_check_status_after_addition() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = stable_tempdir();
         let dir = tmp.path();
         std::fs::write(dir.join("IMG_001.jpg"), b"fake jpeg").unwrap();
 
@@ -1290,7 +1314,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_check_status_after_removal() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = stable_tempdir();
         let dir = tmp.path();
         std::fs::write(dir.join("IMG_001.jpg"), b"fake").unwrap();
         std::fs::write(dir.join("IMG_002.jpg"), b"fake").unwrap();

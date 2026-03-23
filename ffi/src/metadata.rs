@@ -279,6 +279,37 @@ mod tests {
             .join("testdata")
     }
 
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> tempfile::TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
+
+    /// Helper: create a temp dir pre-populated with a copy of testdata files.
+    fn tempdir_with_testdata() -> tempfile::TempDir {
+        let dir = stable_tempdir();
+        for entry in std::fs::read_dir(testdata_path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                match std::fs::copy(entry.path(), dir.path().join(entry.file_name())) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => panic!("failed to copy testdata file: {e}"),
+                }
+            }
+        }
+        dir
+    }
+
     fn open_testdata_repo() -> *mut crate::types::PhotostaxRepo {
         let path = CString::new(testdata_path().to_str().unwrap()).unwrap();
         let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };
@@ -470,12 +501,7 @@ mod tests {
 
     #[test]
     fn test_set_custom_tag_happy_path() {
-        // Copy testdata to temp dir
-        let dir = tempfile::tempdir().unwrap();
-        for entry in std::fs::read_dir(testdata_path()).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
-        }
+        let dir = tempdir_with_testdata();
 
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { crate::repository::photostax_repo_open(path.as_ptr()) };

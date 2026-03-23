@@ -85,6 +85,21 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    /// Helper: create a temp dir inside target/test-tmp/ to avoid system
+    /// tmp cleanup on CI runners that can cause flaky test failures.
+    fn stable_tempdir() -> tempfile::TempDir {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("photostax-")
+            .tempdir_in(&base)
+            .unwrap()
+    }
+
     #[test]
     fn test_repository_new_null_path() {
         let result = unsafe { photostax_repository_new(ptr::null()) };
@@ -127,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_repository_scan_count_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = stable_tempdir();
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         let repo = unsafe { photostax_repository_new(path.as_ptr()) };
         assert!(!repo.is_null());
