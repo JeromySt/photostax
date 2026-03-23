@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-23
+
+### Added
+
+- **Read-only repository support** — `Repository::is_writable()` trait method with auto-detection via filesystem probe at construction
+- **Write guards** — `ImageProxy::rotate/delete`, `MetadataProxy::write`, `PhotoStack::swap_front_back` return `RepositoryError::ReadOnly` on read-only repos
+- **FFI** — `photostax_stack_is_writable()` function, `is_writable` callback in `FfiProviderCallbacks`
+- **.NET** — `PhotoStack.IsWritable` property, `IRepositoryProvider.IsWritable` (default `true`)
+- **TypeScript** — `JsPhotoStack.isWritable` getter
+
+### Fixed
+
+- **Flaky test elimination** — moved test temp dirs from system `/tmp` to `target/test-tmp/`; extracted `stable_tempdir()`/`tempdir_with_testdata()` helpers; copy helpers now tolerate `NotFound` from concurrent probe files
+- **Writability probe race** — probe runs once at `LocalRepository` construction (not per-scan), eliminating ephemeral files in shared test fixtures
+
 ## [0.6.0] - 2026-03-22
 
 ### ⚠️ BREAKING CHANGES
