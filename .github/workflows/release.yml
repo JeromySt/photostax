@@ -132,7 +132,7 @@ jobs:
         toolchain: stable
 
     - name: Publish photostax-core to crates.io
-      run: cargo publish -p photostax-core
+      run: cargo publish -p photostax-core || echo "::warning::photostax-core already published (or error occurred)"
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -140,7 +140,7 @@ jobs:
       run: sleep 30
 
     - name: Publish photostax-ffi to crates.io
-      run: cargo publish -p photostax-ffi
+      run: cargo publish -p photostax-ffi || echo "::warning::photostax-ffi already published (or error occurred)"
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -148,7 +148,7 @@ jobs:
       run: sleep 30
 
     - name: Publish photostax-cli to crates.io
-      run: cargo publish -p photostax-cli
+      run: cargo publish -p photostax-cli || echo "::warning::photostax-cli already published (or error occurred)"
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
