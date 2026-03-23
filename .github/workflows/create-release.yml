@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: write
-  id-token: write
+  actions: write
 
 jobs:
   create-tag:
@@ -130,13 +130,22 @@ jobs:
         echo "Tag: ${{ steps.version.outputs.tag }}"
         echo "All validations passed. Run again without dry_run to create the release."
 
-  # Chain to the Release workflow via workflow_call.
-  # GITHUB_TOKEN can trigger workflow_call (unlike push/create events),
-  # so no PAT or persistent credentials are needed.
+  # Trigger the Release workflow via workflow_dispatch on the tag ref.
+  # We use workflow_dispatch (not workflow_call) so the OIDC token's
+  # job_workflow_ref claim references the tag (e.g. @refs/tags/v0.6.1),
+  # which npm trusted publishing requires for provenance verification.
+  # GITHUB_TOKEN can trigger workflow_dispatch events (documented exception).
   trigger-release:
     needs: create-tag
     if: ${{ !inputs.dry_run }}
-    uses: ./.github/workflows/release.yml
-    with:
-      tag: ${{ needs.create-tag.outputs.tag }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ needs.create-tag.outputs.tag }}" \
+            -f tag="${{ needs.create-tag.outputs.tag }}"
+          echo "🚀 Triggered release.yml on ref ${{ needs.create-tag.outputs.tag }}"

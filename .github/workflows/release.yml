@@ -209,6 +209,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: write
     if: >-
       !contains(inputs.tag || github.ref_name, '-beta') &&
       !contains(inputs.tag || github.ref_name, '-alpha') &&
